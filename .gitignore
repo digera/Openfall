@@ -1,0 +1,41 @@
+# Build
+/bin/
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.so
+*.dylib
+*.dSYM/
+
+# Sokol (called, not shipped)
+/third_party/sokol-odin/
+
+# sokol-shdc output
+/src/scene.odin
+
+# Odin
+.odin-cache/
+*.ll
+*.bc
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.ols/
