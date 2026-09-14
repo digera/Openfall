@@ -82,18 +82,28 @@ client_frame :: proc "c" () {
 	
 	// Receive snapshots from server
 	for i in 0..<10 {  // Process up to 10 snapshots per frame
-		snapshot, ok := network_client_receive(&game_client.network)
+		snapshot, welcome, ptype, ok := network_client_receive(&game_client.network)
 		if !ok {
 			break
 		}
 		
-		if !game_client.connected {
-			game_client.connected = true
-			fmt.println("[Client] Connected to server")
+		// Handle welcome packet (entity ID assignment)
+		if ptype == .Server_Welcome {
+			game_client.client_world.local_entity_id = welcome.your_entity_id
+			fmt.printf("[Client] Assigned entity ID: %d\n", welcome.your_entity_id)
+			continue
 		}
 		
-		// Apply snapshot
-		client_world_apply_snapshot(&game_client.client_world, snapshot)
+		// Handle snapshot packet
+		if ptype == .Server_Snapshot {
+			if !game_client.connected {
+				game_client.connected = true
+				fmt.println("[Client] Connected to server")
+			}
+			
+			// Apply snapshot
+			client_world_apply_snapshot(&game_client.client_world, snapshot)
+		}
 	}
 	
 	// Send input to server at 60Hz

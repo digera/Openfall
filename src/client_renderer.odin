@@ -12,6 +12,21 @@ import sg "sokol:gfx"
 import sglue "sokol:glue"
 import slog "sokol:log"
 
+// Camera helper functions
+camera_forward :: proc(yaw, pitch: f32) -> vec3 {
+	cp := math.cos(pitch)
+	return {math.cos(yaw) * cp, math.sin(yaw) * cp, math.sin(pitch)}
+}
+
+camera_right :: proc(yaw: f32) -> vec3 {
+	return {math.sin(yaw), -math.cos(yaw), 0}
+}
+
+// Debug text constants (from original template)
+SDTX_ORIGIN_CELLS :: f32(1)
+SDTX_CHAR_PX :: f32(8)
+SDTX_CANVAS_SCALE :: f32(0.5)
+
 Client_Renderer :: struct {
 	pip:          sg.Pipeline,
 	bind:         sg.Bindings,
