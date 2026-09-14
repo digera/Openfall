@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:time"
 import "core:math"
 import "core:math/rand"
+import "core:net"
 
 // Headless dedicated server for Nexus Arena.
 // Phase 1 Goals:
@@ -25,7 +26,15 @@ Server :: struct {
 	tick_idx:        int,
 	total_ticks:     u64,
 	start_time:      time.Tick,
+	
+	// Network state
+	connected_clients: [MAX_CLIENTS]net.Endpoint,
+	client_count:      int,
+	last_snapshot_tick: u32,
 }
+
+MAX_CLIENTS :: 16
+SNAPSHOT_RATE :: 30  // Send snapshots at 30Hz (every 2 ticks at 60Hz)
 
 // Bot AI state
 Bot_AI :: struct {
@@ -159,6 +168,9 @@ server_update_bot_ai :: proc(server: ^Server, bot_idx: int, dt: f32) {
 server_tick :: proc(server: ^Server) {
 	tick_start := time.tick_now()
 	
+	// Process incoming packets
+	server_process_packets(server)
+	
 	// Update bot AI
 	for i in 0..<server.bot_count {
 		server_update_bot_ai(server, i, SIMULATION_DT)
@@ -167,8 +179,10 @@ server_tick :: proc(server: ^Server) {
 	// Run simulation step (deterministic kernel)
 	simulate_world_step(&server.world)
 	
-	// TODO Phase 2: Process network packets
-	// TODO Phase 2: Send snapshots to clients (20-30Hz, not every tick)
+	// Send snapshots to clients (30Hz = every 2 ticks)
+	if server.tick_id % 2 == 0 {
+		server_send_snapshots(server)
+	}
 	
 	server.tick_id += 1
 	server.total_ticks += 1
@@ -178,6 +192,99 @@ server_tick :: proc(server: ^Server) {
 	tick_ms := f32(time.duration_milliseconds(tick_duration))
 	server.tick_times_ms[server.tick_idx] = tick_ms
 	server.tick_idx = (server.tick_idx + 1) % len(server.tick_times_ms)
+}
+
+// Process incoming network packets
+server_process_packets :: proc(server: ^Server) {
+	buffer: [MAX_PACKET_SIZE]u8
+	
+	// Process up to 100 packets per tick
+	for i in 0..<100 {
+		n, from, ok := network_receive(&server.network, buffer[:])
+		if !ok || n < 2 {
+			break
+		}
+		
+		// Check packet type
+		if n < 2 {
+			continue
+		}
+		
+		ptype := Packet_Type(buffer[1])
+		
+		if ptype == .Client_Input {
+			// Register client if new
+			server_register_client(server, from)
+			
+			// Process input packet (Phase 2: not used yet, server runs bots only)
+			// In Phase 3, this would apply player inputs
+		}
+	}
+}
+
+// Register a client connection
+server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) {
+	// Check if already registered
+	for i in 0..<server.client_count {
+		if server.connected_clients[i].port == client_addr.port {
+			// Already registered
+			return
+		}
+	}
+	
+	// Add new client
+	if server.client_count < MAX_CLIENTS {
+		server.connected_clients[server.client_count] = client_addr
+		server.client_count += 1
+		fmt.printf("[Server] Client connected: %v (total: %d)\n", client_addr, server.client_count)
+	}
+}
+
+// Send world snapshot to all connected clients
+server_send_snapshots :: proc(server: ^Server) {
+	if server.client_count == 0 {
+		return
+	}
+	
+	// Build snapshot packet
+	snapshot := Server_Snapshot_Packet{
+		tick_id = server.tick_id,
+		entity_count = 0,
+	}
+	
+	// Add all active entities
+	for i in 1..<MAX_ENTITIES {
+		if !server.world.characters[i].active {
+			continue
+		}
+		
+		if int(snapshot.entity_count) >= MAX_ENTITIES {
+			break
+		}
+		
+		char := server.world.characters[i]
+		snapshot.entities[snapshot.entity_count] = Snapshot_Entity{
+			id = Entity_ID(i),
+			pos = char.pos,
+			yaw = char.yaw,
+			pitch = char.pitch,
+			vel_z = char.vel_z,
+			on_ground = char.on_ground,
+		}
+		snapshot.entity_count += 1
+	}
+	
+	// Serialize
+	buffer: [MAX_PACKET_SIZE]u8
+	size := serialize_server_snapshot(&snapshot, buffer[:])
+	if size <= 0 {
+		return
+	}
+	
+	// Send to all clients
+	for i in 0..<server.client_count {
+		network_send(&server.network, buffer[:], size, server.connected_clients[i])
+	}
 }
 
 // Get average tick time
@@ -253,8 +360,8 @@ server_print_stats :: proc(server: ^Server) {
 	avg_tick := server_avg_tick_time(server)
 	max_tick := server_max_tick_time(server)
 	
-	fmt.printf("[Server Stats] Uptime: %.1fs | Ticks: %d | Entities: %d | Avg tick: %.3fms | Max tick: %.3fms\n",
-		uptime_sec, server.total_ticks, server.world.count, avg_tick, max_tick)
+	fmt.printf("[Server Stats] Uptime: %.1fs | Ticks: %d | Entities: %d | Clients: %d | Avg tick: %.3fms | Max tick: %.3fms\n",
+		uptime_sec, server.total_ticks, server.world.count, server.client_count, avg_tick, max_tick)
 	
 	// Print first few bot positions for verification
 	fmt.printf("  Bot positions: ")

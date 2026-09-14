@@ -1,5 +1,6 @@
 #!/bin/bash
 # Build script for Nexus Arena (Linux/Unix)
+# Usage: ./build.sh [server|client|both] [run]
 
 set -e
 
@@ -25,37 +26,74 @@ echo -e "${GREEN}=== Building Nexus Arena ===${NC}"
 # Create output directory
 mkdir -p "$OUT_DIR"
 
-# Build headless server (exclude client-only files)
-echo -e "${YELLOW}>> Building headless server...${NC}"
+BUILD_MODE="${1:-both}"
 
-# Create temporary directory with only server files
-TMP_SRC="$OUT_DIR/server_src"
-rm -rf "$TMP_SRC"
-mkdir -p "$TMP_SRC"
+# Build headless server
+if [ "$BUILD_MODE" = "server" ] || [ "$BUILD_MODE" = "both" ]; then
+    echo -e "${YELLOW}>> Building headless server...${NC}"
 
-# Copy server files (exclude client files)
-for f in "$SRC_DIR"/*.odin; do
-    base=$(basename "$f")
-    if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" ]]; then
-        cp "$f" "$TMP_SRC/"
-    fi
-done
+    TMP_SRC="$OUT_DIR/server_src"
+    rm -rf "$TMP_SRC"
+    mkdir -p "$TMP_SRC"
 
-# Rename main_server.odin to main.odin for build
-mv "$TMP_SRC/main_server.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
+    # Copy server files
+    for f in "$SRC_DIR"/*.odin; do
+        base=$(basename "$f")
+        # Exclude client-only files
+        if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
+              "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
+              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "main_test_client.odin" ]]; then
+            cp "$f" "$TMP_SRC/"
+        fi
+    done
 
-$ODIN_BIN build "$TMP_SRC" \
-    -out:"$OUT_DIR/nexus_server" \
-    ${BUILD_FLAGS:--debug}
+    mv "$TMP_SRC/main_server.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
 
-# Clean up temp
-rm -rf "$TMP_SRC"
+    $ODIN_BIN build "$TMP_SRC" -out:"$OUT_DIR/nexus_server" ${BUILD_FLAGS:--debug}
+    rm -rf "$TMP_SRC"
+
+    echo -e "${GREEN}✓ Server built${NC}"
+fi
+
+# Build headless test client
+if [ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ]; then
+    echo -e "${YELLOW}>> Building headless test client...${NC}"
+
+    TMP_SRC="$OUT_DIR/client_src"
+    rm -rf "$TMP_SRC"
+    mkdir -p "$TMP_SRC"
+
+    # Copy client files
+    for f in "$SRC_DIR"/*.odin; do
+        base=$(basename "$f")
+        # Exclude server and render files
+        if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
+              "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
+              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && \
+              "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" ]]; then
+            cp "$f" "$TMP_SRC/"
+        fi
+    done
+
+    mv "$TMP_SRC/main_test_client.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
+
+    $ODIN_BIN build "$TMP_SRC" -out:"$OUT_DIR/nexus_client_test" ${BUILD_FLAGS:--debug}
+    rm -rf "$TMP_SRC"
+
+    echo -e "${GREEN}✓ Test client built${NC}"
+fi
 
 echo -e "${GREEN}>> Build complete!${NC}"
-echo -e "  Server: $OUT_DIR/nexus_server"
+[ "$BUILD_MODE" = "server" ] || [ "$BUILD_MODE" = "both" ] && echo -e "  Server: $OUT_DIR/nexus_server"
+[ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ] && echo -e "  Test Client: $OUT_DIR/nexus_client_test"
 
 # Run if requested
-if [ "${1:-}" == "run" ] || [ "${2:-}" == "run" ]; then
-    echo -e "\n${GREEN}>> Running server...${NC}\n"
-    exec "$OUT_DIR/nexus_server"
+if [ "${2:-}" == "run" ]; then
+    if [ "$BUILD_MODE" = "server" ]; then
+        echo -e "\n${GREEN}>> Running server...${NC}\n"
+        exec "$OUT_DIR/nexus_server"
+    elif [ "$BUILD_MODE" = "client" ]; then
+        echo -e "\n${GREEN}>> Running test client...${NC}\n"
+        exec "$OUT_DIR/nexus_client_test"
+    fi
 fi
