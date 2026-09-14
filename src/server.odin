@@ -328,6 +328,7 @@ server_send_snapshots :: proc(server: ^Server) {
 	snapshot := Server_Snapshot_Packet{
 		tick_id = server.tick_id,
 		entity_count = 0,
+		projectile_count = 0,
 	}
 	
 	// Add all active entities
@@ -348,8 +349,35 @@ server_send_snapshots :: proc(server: ^Server) {
 			pitch = char.pitch,
 			vel_z = char.vel_z,
 			on_ground = char.on_ground,
+			// Phase 3: Resources
+			health = char.health,
+			mana = char.mana,
+			stamina = char.stamina,
 		}
 		snapshot.entity_count += 1
+	}
+	
+	// Phase 3: Add active projectiles (cap at 32 for bandwidth)
+	for i in 0..<MAX_PROJECTILES {
+		if !server.projectiles.projectiles[i].active {
+			continue
+		}
+		
+		if int(snapshot.projectile_count) >= 32 {
+			break
+		}
+		
+		proj := server.projectiles.projectiles[i]
+		snapshot.projectiles[snapshot.projectile_count] = Snapshot_Projectile{
+			id = proj.id,
+			spell_id = proj.spell_id,
+			owner_id = proj.owner_id,
+			pos = proj.pos,
+			vel = proj.vel,
+			lifetime = proj.lifetime,
+			radius = proj.radius,
+		}
+		snapshot.projectile_count += 1
 	}
 	
 	// Serialize

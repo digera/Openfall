@@ -40,6 +40,10 @@ Server_Snapshot_Packet :: struct {
 	tick_id:      u32,                        // Server tick ID
 	entity_count: u8,                         // Number of entities in this snapshot
 	entities:     [MAX_ENTITIES]Snapshot_Entity, // Entity states
+	
+	// Phase 3: Projectiles
+	projectile_count: u8,
+	projectiles:      [32]Snapshot_Projectile,  // Active projectiles (capped for bandwidth)
 }
 
 // Server welcome packet
@@ -56,6 +60,22 @@ Snapshot_Entity :: struct {
 	pitch:     f32,       // Pitch angle
 	vel_z:     f32,       // Vertical velocity
 	on_ground: bool,      // Ground flag
+	
+	// Phase 3: Resources
+	health:    f32,
+	mana:      f32,
+	stamina:   f32,
+}
+
+// Projectile state in snapshot (Phase 3)
+Snapshot_Projectile :: struct {
+	id:       Projectile_ID,
+	spell_id: Spell_ID,
+	owner_id: Entity_ID,
+	pos:      vec3,
+	vel:      vec3,
+	lifetime: f32,
+	radius:   f32,
 }
 
 // Network endpoint
@@ -185,6 +205,27 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		
 		// Flags (1 byte)
 		buffer[pos] = entity.on_ground ? 1 : 0; pos += 1
+		
+		// Phase 3: Resources (12 bytes)
+		mem.copy(&buffer[pos], &entity.health, 4); pos += 4
+		mem.copy(&buffer[pos], &entity.mana, 4); pos += 4
+		mem.copy(&buffer[pos], &entity.stamina, 4); pos += 4
+	}
+	
+	// Phase 3: Projectile count (1 byte)
+	buffer[pos] = packet.projectile_count; pos += 1
+	
+	// Phase 3: Projectile data (40 bytes each)
+	for i in 0..<int(packet.projectile_count) {
+		proj := &packet.projectiles[i]
+		
+		mem.copy(&buffer[pos], &proj.id, 4); pos += 4
+		buffer[pos] = u8(proj.spell_id); pos += 1
+		mem.copy(&buffer[pos], &proj.owner_id, 4); pos += 4
+		mem.copy(&buffer[pos], &proj.pos, 12); pos += 12
+		mem.copy(&buffer[pos], &proj.vel, 12); pos += 12
+		mem.copy(&buffer[pos], &proj.lifetime, 4); pos += 4
+		mem.copy(&buffer[pos], &proj.radius, 4); pos += 4
 	}
 	
 	return pos

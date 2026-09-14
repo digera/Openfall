@@ -173,9 +173,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	// Entity count (1 byte)
 	packet.entity_count = buffer[pos]; pos += 1
 	
-	// Entity data (29 bytes per entity: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1))
+	// Entity data (41 bytes per entity now: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12))
 	for i in 0..<int(packet.entity_count) {
-		if pos + 29 > len(buffer) {
+		if pos + 41 > len(buffer) {
 			return {}, false
 		}
 		
@@ -197,6 +197,35 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		// Flags (1 byte)
 		entity.on_ground = buffer[pos] != 0
 		pos += 1
+		
+		// Phase 3: Resources (12 bytes)
+		mem.copy(&entity.health, &buffer[pos], 4); pos += 4
+		mem.copy(&entity.mana, &buffer[pos], 4); pos += 4
+		mem.copy(&entity.stamina, &buffer[pos], 4); pos += 4
+	}
+	
+	// Phase 3: Projectile count (1 byte)
+	if pos >= len(buffer) {
+		// Old snapshot without projectiles, backward compat
+		return packet, true
+	}
+	packet.projectile_count = buffer[pos]; pos += 1
+	
+	// Phase 3: Projectile data (41 bytes each)
+	for i in 0..<int(packet.projectile_count) {
+		if pos + 41 > len(buffer) {
+			break  // Truncated, return what we have
+		}
+		
+		proj := &packet.projectiles[i]
+		
+		mem.copy(&proj.id, &buffer[pos], 4); pos += 4
+		proj.spell_id = Spell_ID(buffer[pos]); pos += 1
+		mem.copy(&proj.owner_id, &buffer[pos], 4); pos += 4
+		mem.copy(&proj.pos, &buffer[pos], 12); pos += 12
+		mem.copy(&proj.vel, &buffer[pos], 12); pos += 12
+		mem.copy(&proj.lifetime, &buffer[pos], 4); pos += 4
+		mem.copy(&proj.radius, &buffer[pos], 4); pos += 4
 	}
 	
 	return packet, true

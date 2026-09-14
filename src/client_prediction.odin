@@ -54,6 +54,10 @@ Client_World :: struct {
 	
 	// Client tick
 	client_tick:     u32,
+	
+	// Phase 3: Client-side projectiles (synced from server)
+	projectiles:     [32]Snapshot_Projectile,
+	projectile_count: int,
 }
 
 // Initialize client prediction
@@ -239,6 +243,10 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: Server_Snaps
 				pitch = entity.pitch,
 				on_ground = entity.on_ground,
 				active = true,
+				// Phase 3: Update resources from server
+				health = entity.health,
+				mana = entity.mana,
+				stamina = entity.stamina,
 			}
 			client_prediction_reconcile(&world.prediction, snapshot.tick_id, state)
 			continue
@@ -258,9 +266,19 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: Server_Snaps
 			pitch = entity.pitch,
 			on_ground = entity.on_ground,
 			active = true,
+			// Phase 3: Resources
+			health = entity.health,
+			mana = entity.mana,
+			stamina = entity.stamina,
 		}
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 		remotes_found += 1
+	}
+	
+	// Phase 3: Update projectiles from snapshot
+	world.projectile_count = int(snapshot.projectile_count)
+	for i in 0..<int(snapshot.projectile_count) {
+		world.projectiles[i] = snapshot.projectiles[i]
 	}
 }
 
