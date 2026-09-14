@@ -152,6 +152,37 @@ client_renderer_draw :: proc(r: ^Client_Renderer, client_world: ^Client_World) {
 		impact5    = {},
 		impact6    = {},
 		impact7    = {},
+		projectiles = {},  // Filled below
+	}
+	
+	// Pack projectile data into shader
+	// Format: xyz = position, w = radius * spell_type_sign
+	// spell_type: 1=Arcane_Missile, 2=Arcane_Orb, 3=Blink, 4=Frost_Shard
+	for i in 0..<min(client_world.projectile_count, 16) {
+		proj := &client_world.projectiles[i]
+		
+		// Map spell ID to type code
+		type_code: f32 = 0
+		#partial switch proj.spell_id {
+		case .Arcane_Missile:
+			type_code = 1
+		case .Arcane_Orb:
+			type_code = 2
+		case .Blink:
+			type_code = 3
+		case .Frost_Shard:
+			type_code = 4
+		case:
+			type_code = 1  // Default
+		}
+		
+		// Encode type in w component's sign
+		fs_params.projectiles[i] = vec4{
+			proj.pos.x,
+			proj.pos.y,
+			proj.pos.z,
+			proj.radius * type_code,
+		}
 	}
 	
 	// Draw HUD overlay
@@ -211,14 +242,86 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, client_world: ^Client_World
 	}
 	sdtx.puts("\n")
 	
-	// Remote entities
+	// Remote entities and projectiles
 	remote_count := 0
 	for i in 0..<MAX_ENTITIES {
 		if client_world.remote_entities[i].active {
 			remote_count += 1
 		}
 	}
-	sdtx.printf("Remote entities: %d\n", remote_count)
+	sdtx.printf("Remote entities: %d  Projectiles: %d\n", remote_count, client_world.projectile_count)
+	
+	// === COMBAT HUD ===
+	// Draw at bottom-left corner
+	hud_y := h / SDTX_CHAR_PX - 12 - SDTX_ORIGIN_CELLS
+	
+	// Health bar
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y)
+	sdtx.color3f(0.92, 0.32, 0.28)
+	sdtx.puts("HP:")
+	draw_bar(local_char.health, HEALTH_MAX, 20)
+	sdtx.printf(" %.0f/%.0f\n", local_char.health, HEALTH_MAX)
+	
+	// Mana bar
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 1)
+	sdtx.color3f(0.42, 0.62, 0.92)
+	sdtx.puts("MP:")
+	draw_bar(local_char.mana, MANA_MAX, 20)
+	sdtx.printf(" %.0f/%.0f\n", local_char.mana, MANA_MAX)
+	
+	// Stamina bar
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 2)
+	sdtx.color3f(0.52, 0.82, 0.42)
+	sdtx.puts("ST:")
+	draw_bar(local_char.stamina, STAMINA_MAX, 20)
+	sdtx.printf(" %.0f/%.0f\n", local_char.stamina, STAMINA_MAX)
+	
+	// Spell selection
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 4)
+	sdtx.color3f(0.72, 0.70, 0.64)
+	sdtx.puts("Spells:\n")
+	
+	selected := game_client.selected_spell
+	
+	// Spell 1: Arcane Missile
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 5)
+	if selected == .Arcane_Missile {
+		sdtx.color3f(1.0, 1.0, 0.5)
+		sdtx.puts("> 1: Arcane Missile")
+	} else {
+		sdtx.color3f(0.6, 0.58, 0.54)
+		sdtx.puts("  1: Arcane Missile")
+	}
+	
+	// Spell 2: Arcane Orb
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 6)
+	if selected == .Arcane_Orb {
+		sdtx.color3f(1.0, 1.0, 0.5)
+		sdtx.puts("> 2: Arcane Orb")
+	} else {
+		sdtx.color3f(0.6, 0.58, 0.54)
+		sdtx.puts("  2: Arcane Orb")
+	}
+	
+	// Spell 3: Blink
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 7)
+	if selected == .Blink {
+		sdtx.color3f(1.0, 1.0, 0.5)
+		sdtx.puts("> 3: Blink")
+	} else {
+		sdtx.color3f(0.6, 0.58, 0.54)
+		sdtx.puts("  3: Blink")
+	}
+	
+	// Spell 4: Frost Shard
+	sdtx.pos(SDTX_ORIGIN_CELLS, hud_y + 8)
+	if selected == .Frost_Shard {
+		sdtx.color3f(1.0, 1.0, 0.5)
+		sdtx.puts("> 4: Frost Shard")
+	} else {
+		sdtx.color3f(0.6, 0.58, 0.54)
+		sdtx.puts("  4: Frost Shard")
+	}
 	
 	// Crosshair
 	col := w / SDTX_CHAR_PX * 0.5 - SDTX_ORIGIN_CELLS
@@ -230,5 +333,20 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, client_world: ^Client_World
 	// Instructions
 	sdtx.pos(SDTX_ORIGIN_CELLS, h / SDTX_CHAR_PX - 3 - SDTX_ORIGIN_CELLS)
 	sdtx.color3f(0.45, 0.42, 0.38)
-	sdtx.puts("Click to lock mouse | WASD move | Space jump | ESC unlock")
+	sdtx.puts("Click to lock mouse | WASD move | Space jump | 1-4 select spell | LMB cast | ESC unlock")
+}
+
+// Helper to draw a simple bar
+draw_bar :: proc(value: f32, max_value: f32, width: int) {
+	filled := int((value / max_value) * f32(width))
+	filled = clamp(filled, 0, width)
+	
+	sdtx.putc('[')
+	for i in 0..<filled {
+		sdtx.putc('=')
+	}
+	for i in filled..<width {
+		sdtx.putc(' ')
+	}
+	sdtx.putc(']')
 }

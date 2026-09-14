@@ -24,6 +24,7 @@ Game_Client :: struct {
 	input_state:    Input_State,
 	mouse_dx:       f32,
 	mouse_dy:       f32,
+	selected_spell: Spell_ID,
 	
 	// Timing
 	last_input_send: time.Tick,
@@ -64,6 +65,7 @@ client_init :: proc "c" () {
 	// Mark as connecting
 	game_client.network.state = .Connecting
 	game_client.last_input_send = time.tick_now()
+	game_client.selected_spell = .Arcane_Missile  // Default spell
 	
 	// Initialize renderer
 	client_renderer_init(&game_client.renderer)
@@ -190,6 +192,27 @@ client_handle_input :: proc(client: ^Game_Client, dt: f32) {
 	client.input_state.move_fwd = fwd
 	client.input_state.move_str = str
 	client.input_state.jump = input_consume_jump()
+	
+	// Handle spell selection (keys 1-4)
+	if input_consume_cast(1) {
+		client.selected_spell = .Arcane_Missile
+	}
+	if input_consume_cast(2) {
+		client.selected_spell = .Arcane_Orb
+	}
+	if input_consume_cast(3) {
+		client.selected_spell = .Blink
+	}
+	if input_consume_cast(4) {
+		client.selected_spell = .Frost_Shard
+	}
+	
+	// Cast selected spell on left click
+	if input.held_left {
+		client.input_state.cast_spell = client.selected_spell
+	} else {
+		client.input_state.cast_spell = .None
+	}
 }
 
 main_client :: proc() {
@@ -207,4 +230,8 @@ main_client :: proc() {
 		logger        = {func = slog.func},
 		swap_interval = 1,
 	})
+}
+
+main :: proc() {
+	main_client()
 }

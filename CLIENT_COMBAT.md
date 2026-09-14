@@ -347,7 +347,9 @@ for i in 0..<client_world.projectile_count {
 ✅ **Protocol Extended:** Snapshots now carry resources + projectiles  
 ✅ **Aim Implemented:** Client calculates precise yaw/pitch to targets  
 ✅ **Data Ready:** Client has all info for HUD + tracers  
-⚠️ **Integration Pending:** Welcome packet reception needs polish  
-⚠️ **Rendering Pending:** Projectile draw calls stubbed  
+✅ **Tracers Rendered:** Projectiles draw as colored spheres in shader (see TRACE_HUD.md)  
+✅ **Combat HUD:** Health/Mana/Stamina bars + spell selection displayed  
+✅ **Input Wiring:** Keys 1-4 select spells, LMB casts along aim  
 
-**Core complete. Ready for graphical client HUD + tracer implementation.**
+**Phase 3.5 complete. Graphical client combat loop implemented. See TRACE_HUD.md for details.**
+

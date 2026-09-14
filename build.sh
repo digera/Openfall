@@ -39,10 +39,11 @@ if [ "$BUILD_MODE" = "server" ] || [ "$BUILD_MODE" = "both" ]; then
     # Copy server files
     for f in "$SRC_DIR"/*.odin; do
         base=$(basename "$f")
-        # Exclude client-only files
+        # Exclude client-only files and combat test
         if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
               "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
-              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "main_test_client.odin" ]]; then
+              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "main_test_client.odin" && \
+              "$base" != "main_combat_test.odin" ]]; then
             cp "$f" "$TMP_SRC/"
         fi
     done
@@ -66,11 +67,12 @@ if [ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ]; then
     # Copy client files
     for f in "$SRC_DIR"/*.odin; do
         base=$(basename "$f")
-        # Exclude server and render files
+        # Exclude server and render files and combat test
         if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
               "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
               "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && \
-              "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" ]]; then
+              "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" && \
+              "$base" != "main_combat_test.odin" ]]; then
             cp "$f" "$TMP_SRC/"
         fi
     done

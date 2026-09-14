@@ -53,17 +53,14 @@ mkdir -p "$TMP_SRC"
 # Copy client files (exclude server and original template files)
 for f in "$SRC_DIR"/*.odin; do
     base=$(basename "$f")
-    # Exclude: server files, test client, conflicting template files
-    # Keep: input.odin (needed for main_client), scene.odin (shader bindings)
+    # Exclude: server files, test client, conflicting template files, main.odin
+    # Keep: input.odin (needed for main_client), scene.odin (shader bindings), room.odin (for room_inside)
     if [[ "$base" != "main.odin" && "$base" != "main_server.odin" && "$base" != "server.odin" && \
-          "$base" != "main_test_client.odin" && "$base" != "camera_minimal.odin" && \
-          "$base" != "camera.odin" && "$base" != "player.odin" && "$base" != "render.odin" && "$base" != "room.odin" ]]; then
+          "$base" != "main_test_client.odin" && "$base" != "main_combat_test.odin" && "$base" != "camera_minimal.odin" && \
+          "$base" != "camera.odin" && "$base" != "player.odin" && "$base" != "render.odin" ]]; then
         cp "$f" "$TMP_SRC/"
     fi
 done
-
-# Use graphical client entry point
-mv "$TMP_SRC/main_client.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
 
 # Build with sokol collection
 $ODIN_BIN build "$TMP_SRC" \
