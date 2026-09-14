@@ -85,18 +85,28 @@ main :: proc() {
 		
 		// Receive snapshots
 		for i in 0..<10 {
-			snapshot, ok := network_client_receive(&client.network)
+			snapshot, welcome, ptype, ok := network_client_receive(&client.network)
 			if !ok {
 				break
 			}
 			
-			if client.network.state != .Connected {
-				client.network.state = .Connected
-				fmt.println("[Test Client] Connected to server\n")
+			// Handle welcome packet (entity ID assignment)
+			if ptype == .Server_Welcome {
+				client.client_world.local_entity_id = welcome.your_entity_id
+				fmt.printf("[Test Client] Assigned entity ID: %d\n", welcome.your_entity_id)
+				continue
 			}
 			
-			// Apply snapshot
-			client_world_apply_snapshot(&client.client_world, snapshot)
+			// Handle snapshot packet
+			if ptype == .Server_Snapshot {
+				if client.network.state != .Connected {
+					client.network.state = .Connected
+					fmt.println("[Test Client] Connected to server\n")
+				}
+				
+				// Apply snapshot
+				client_world_apply_snapshot(&client.client_world, snapshot)
+			}
 		}
 		
 		// Send input at 60Hz

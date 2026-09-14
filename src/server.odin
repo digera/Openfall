@@ -29,6 +29,7 @@ Server :: struct {
 	
 	// Network state
 	connected_clients: [MAX_CLIENTS]net.Endpoint,
+	client_entity_ids: [MAX_CLIENTS]Entity_ID,  // Entity ID for each client
 	client_count:      int,
 	last_snapshot_tick: u32,
 }
@@ -213,8 +214,13 @@ server_process_packets :: proc(server: ^Server) {
 		ptype := Packet_Type(buffer[1])
 		
 		if ptype == .Client_Input {
-			// Register client if new
-			server_register_client(server, from)
+			// Register client if new (spawns entity and sends welcome)
+			entity_id, is_new := server_register_client(server, from)
+			
+			// If this is a new connection, send welcome packet
+			if is_new && entity_id != INVALID_ENTITY {
+				server_send_welcome(server, from, entity_id)
+			}
 			
 			// Process input packet (Phase 2: not used yet, server runs bots only)
 			// In Phase 3, this would apply player inputs
@@ -222,21 +228,61 @@ server_process_packets :: proc(server: ^Server) {
 	}
 }
 
-// Register a client connection
-server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) {
+// Register a client connection and spawn player entity
+server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (entity_id: Entity_ID, is_new: bool) {
 	// Check if already registered
 	for i in 0..<server.client_count {
 		if server.connected_clients[i].port == client_addr.port {
-			// Already registered
-			return
+			// Already registered, return existing entity ID
+			return server.client_entity_ids[i], false
 		}
 	}
 	
 	// Add new client
 	if server.client_count < MAX_CLIENTS {
-		server.connected_clients[server.client_count] = client_addr
+		// Spawn player entity for this client
+		// Place players in a circle around center, offset from bots
+		angle := f32(server.client_count) * (2.0 * math.PI / f32(MAX_CLIENTS))
+		radius := f32(6.0)  // Slightly larger radius than bots
+		center := (ROOM_MIN + ROOM_MAX) * 0.5
+		spawn_pos := vec3{
+			center.x + math.cos(angle) * radius,
+			center.y + math.sin(angle) * radius,
+			ROOM_MIN.z,
+		}
+		
+		player_id := entity_spawn(&server.world, spawn_pos)
+		if player_id == INVALID_ENTITY {
+			fmt.eprintf("[Server] Failed to spawn player entity for client\n")
+			return INVALID_ENTITY, false
+		}
+		
+		// Register client
+		idx := server.client_count
+		server.connected_clients[idx] = client_addr
+		server.client_entity_ids[idx] = player_id
 		server.client_count += 1
-		fmt.printf("[Server] Client connected: %v (total: %d)\n", client_addr, server.client_count)
+		
+		fmt.printf("[Server] Client connected: %v → Entity ID %d (total clients: %d)\n", 
+			client_addr, player_id, server.client_count)
+		
+		return player_id, true
+	}
+	
+	return INVALID_ENTITY, false
+}
+
+// Send welcome packet to client with their entity ID
+server_send_welcome :: proc(server: ^Server, client_addr: net.Endpoint, entity_id: Entity_ID) {
+	welcome := Server_Welcome_Packet{
+		your_entity_id = entity_id,
+	}
+	
+	buffer: [MAX_PACKET_SIZE]u8
+	size := serialize_server_welcome(&welcome, buffer[:])
+	if size > 0 {
+		network_send(&server.network, buffer[:], size, client_addr)
+		fmt.printf("[Server] Sent welcome to client: Entity ID %d\n", entity_id)
 	}
 }
 

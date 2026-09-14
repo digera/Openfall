@@ -100,26 +100,54 @@ network_client_send_input :: proc(client: ^Network_Client, tick_id: u32, input: 
 }
 
 // Receive snapshot from server
-network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Snapshot_Packet, ok: bool) {
+network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Snapshot_Packet, welcome: Server_Welcome_Packet, packet_type: Packet_Type, ok: bool) {
 	buffer: [MAX_PACKET_SIZE]u8
 	
 	n, from, recv_ok := network_receive(&client.endpoint, buffer[:])
-	if !recv_ok || n < 7 {  // Minimum snapshot size
-		return {}, false
+	if !recv_ok || n < 2 {
+		return {}, {}, .Invalid, false
 	}
 	
 	client.packets_recv += 1
 	client.bytes_recv += n
 	client.last_recv_time = time.tick_now()
 	
-	// Deserialize snapshot
-	snapshot, ok = deserialize_server_snapshot(buffer[:n])
-	if ok && client.state == .Connecting {
-		client.state = .Connected
-		fmt.println("[Client] Connected to server")
+	// Check packet type
+	if n < 2 {
+		return {}, {}, .Invalid, false
 	}
 	
-	return snapshot, ok
+	version := buffer[0]
+	if version != PROTOCOL_VERSION {
+		return {}, {}, .Invalid, false
+	}
+	
+	ptype := Packet_Type(buffer[1])
+	
+	if ptype == .Server_Snapshot {
+		// Deserialize snapshot
+		snap, snap_ok := deserialize_server_snapshot(buffer[:n])
+		if snap_ok && client.state == .Connecting {
+			client.state = .Connected
+		}
+		return snap, {}, ptype, snap_ok
+	} else if ptype == .Server_Welcome {
+		// Deserialize welcome (entity ID assignment)
+		if n < 6 {
+			return {}, {}, .Invalid, false
+		}
+		
+		welcome_packet := Server_Welcome_Packet{}
+		mem.copy(&welcome_packet.your_entity_id, &buffer[2], 4)
+		
+		if client.state == .Connecting {
+			client.state = .Connected
+		}
+		
+		return {}, welcome_packet, ptype, true
+	}
+	
+	return {}, {}, .Invalid, false
 }
 
 // Deserialize server snapshot from bytes
@@ -140,41 +168,31 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	}
 	
 	// Tick ID (4 bytes)
-	copy(mem.ptr_to_bytes(&packet.tick_id), buffer[pos:pos+4])
-	pos += 4
+	mem.copy(&packet.tick_id, &buffer[pos], 4); pos += 4
 	
 	// Entity count (1 byte)
 	packet.entity_count = buffer[pos]; pos += 1
 	
-	// Entity data
+	// Entity data (29 bytes per entity: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1))
 	for i in 0..<int(packet.entity_count) {
-		if pos + 33 > len(buffer) {
+		if pos + 29 > len(buffer) {
 			return {}, false
 		}
 		
 		entity := &packet.entities[i]
 		
 		// Entity ID (4 bytes)
-		copy(mem.ptr_to_bytes(&entity.id), buffer[pos:pos+4])
-		pos += 4
+		mem.copy(&entity.id, &buffer[pos], 4); pos += 4
 		
-		// Position (12 bytes)
-		copy(mem.ptr_to_bytes(&entity.pos.x), buffer[pos:pos+4])
-		pos += 4
-		copy(mem.ptr_to_bytes(&entity.pos.y), buffer[pos:pos+4])
-		pos += 4
-		copy(mem.ptr_to_bytes(&entity.pos.z), buffer[pos:pos+4])
-		pos += 4
+		// Position (12 bytes) - copy as a block
+		mem.copy(&entity.pos, &buffer[pos], 12); pos += 12
 		
 		// Angles (8 bytes)
-		copy(mem.ptr_to_bytes(&entity.yaw), buffer[pos:pos+4])
-		pos += 4
-		copy(mem.ptr_to_bytes(&entity.pitch), buffer[pos:pos+4])
-		pos += 4
+		mem.copy(&entity.yaw, &buffer[pos], 4); pos += 4
+		mem.copy(&entity.pitch, &buffer[pos], 4); pos += 4
 		
 		// Velocity Z (4 bytes)
-		copy(mem.ptr_to_bytes(&entity.vel_z), buffer[pos:pos+4])
-		pos += 4
+		mem.copy(&entity.vel_z, &buffer[pos], 4); pos += 4
 		
 		// Flags (1 byte)
 		entity.on_ground = buffer[pos] != 0

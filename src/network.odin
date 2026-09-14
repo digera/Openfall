@@ -17,8 +17,9 @@ MAX_PACKET_SIZE :: 1400 // Safe UDP payload size
 // Packet types
 Packet_Type :: enum u8 {
 	Invalid = 0,
-	Client_Input = 1,    // Client -> Server: inputs for this tick
-	Server_Snapshot = 2, // Server -> Client: world state snapshot
+	Client_Input = 1,       // Client -> Server: inputs for this tick
+	Server_Snapshot = 2,    // Server -> Client: world state snapshot
+	Server_Welcome = 3,     // Server -> Client: entity ID assignment
 }
 
 // Client input packet
@@ -38,6 +39,12 @@ Server_Snapshot_Packet :: struct {
 	tick_id:      u32,                        // Server tick ID
 	entity_count: u8,                         // Number of entities in this snapshot
 	entities:     [MAX_ENTITIES]Snapshot_Entity, // Entity states
+}
+
+// Server welcome packet
+// Sent once when client connects to assign entity ID
+Server_Welcome_Packet :: struct {
+	your_entity_id: Entity_ID,  // The entity ID assigned to this client
 }
 
 // Entity state in snapshot
@@ -186,6 +193,22 @@ network_send :: proc(endpoint: ^Network_Endpoint, buffer: []u8, size: int, to: n
 	
 	_, err := net.send_udp(endpoint.socket, buffer[:size], to)
 	return err == nil
+}
+
+// Serialize welcome packet
+serialize_server_welcome :: proc(packet: ^Server_Welcome_Packet, buffer: []u8) -> int {
+	if len(buffer) < 7 {
+		return 0
+	}
+	
+	pos := 0
+	buffer[pos] = u8(PROTOCOL_VERSION); pos += 1
+	buffer[pos] = u8(Packet_Type.Server_Welcome); pos += 1
+	
+	// Entity ID (4 bytes)
+	mem.copy(&buffer[pos], &packet.your_entity_id, 4); pos += 4
+	
+	return pos
 }
 
 // Receive packet (non-blocking)

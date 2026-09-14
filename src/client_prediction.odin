@@ -223,6 +223,8 @@ client_world_init :: proc() -> Client_World {
 
 // Process server snapshot
 client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: Server_Snapshot_Packet) {
+	remotes_found := 0
+	
 	// Update remote entities
 	for i in 0..<int(snapshot.entity_count) {
 		entity := snapshot.entities[i]
@@ -258,6 +260,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: Server_Snaps
 			active = true,
 		}
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
+		remotes_found += 1
 	}
 }
 
