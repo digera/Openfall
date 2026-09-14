@@ -31,6 +31,7 @@ Client_Input_Packet :: struct {
 	jump:        bool, // Jump button
 	delta_yaw:   i16,  // Yaw delta * 1000 (milliradian precision)
 	delta_pitch: i16,  // Pitch delta * 1000
+	cast_spell:  u8,   // Phase 3: Spell button (Spell_ID)
 }
 
 // Server snapshot packet
@@ -115,6 +116,9 @@ serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> in
 	mem.copy(&buffer[pos], &packet.delta_yaw, 2); pos += 2
 	mem.copy(&buffer[pos], &packet.delta_pitch, 2); pos += 2
 	
+	// Phase 3: Cast spell (1 byte)
+	buffer[pos] = packet.cast_spell; pos += 1
+	
 	return pos
 }
 
@@ -141,6 +145,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 	packet.jump = buffer[pos] != 0; pos += 1
 	mem.copy(&packet.delta_yaw, &buffer[pos], 2); pos += 2
 	mem.copy(&packet.delta_pitch, &buffer[pos], 2); pos += 2
+	packet.cast_spell = buffer[pos]; pos += 1  // Phase 3
 	
 	return packet, true
 }
@@ -234,6 +239,7 @@ input_to_packet :: proc(input: Input_State, tick_id: u32) -> Client_Input_Packet
 		jump = input.jump,
 		delta_yaw = i16(input.delta_yaw * 1000),
 		delta_pitch = i16(input.delta_pitch * 1000),
+		cast_spell = u8(input.cast_spell),  // Phase 3
 	}
 }
 
@@ -245,5 +251,6 @@ packet_to_input :: proc(packet: Client_Input_Packet) -> Input_State {
 		jump = packet.jump,
 		delta_yaw = f32(packet.delta_yaw) / 1000.0,
 		delta_pitch = f32(packet.delta_pitch) / 1000.0,
+		cast_spell = Spell_ID(packet.cast_spell),  // Phase 3
 	}
 }

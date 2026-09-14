@@ -32,6 +32,10 @@ Server :: struct {
 	client_entity_ids: [MAX_CLIENTS]Entity_ID,  // Entity ID for each client
 	client_count:      int,
 	last_snapshot_tick: u32,
+	
+	// Phase 3: Combat systems
+	projectiles:     Projectile_World,
+	lag_comp:        Lag_Comp_State,
 }
 
 MAX_CLIENTS :: 16
@@ -57,6 +61,10 @@ server_init :: proc(port: u16, bot_count: int) -> (server: Server, ok: bool) {
 	server.world = entity_world_init()
 	server.bot_count = min(bot_count, 16)
 	server.start_time = time.tick_now()
+	
+	// Phase 3: Initialize combat systems
+	server.projectiles = projectile_world_init()
+	server.lag_comp = lag_comp_init()
 	
 	// Initialize network (optional for Phase 1 bot testing)
 	if port > 0 {
@@ -177,8 +185,21 @@ server_tick :: proc(server: ^Server) {
 		server_update_bot_ai(server, i, SIMULATION_DT)
 	}
 	
+	// Phase 3: Update spell cooldowns and regenerate resources
+	server_update_resources(server, SIMULATION_DT)
+	
 	// Run simulation step (deterministic kernel)
 	simulate_world_step(&server.world)
+	
+	// Phase 3: Update projectiles
+	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
+	
+	// Phase 3: Record entity positions for lag compensation
+	for i in 1..<MAX_ENTITIES {
+		if server.world.characters[i].active {
+			lag_comp_record(&server.lag_comp, Entity_ID(i), server.world.characters[i].pos, server.tick_id)
+		}
+	}
 	
 	// Send snapshots to clients (30Hz = every 2 ticks)
 	if server.tick_id % 2 == 0 {
@@ -222,8 +243,19 @@ server_process_packets :: proc(server: ^Server) {
 				server_send_welcome(server, from, entity_id)
 			}
 			
-			// Process input packet (Phase 2: not used yet, server runs bots only)
-			// In Phase 3, this would apply player inputs
+			// Phase 3: Process input packet and apply to player entity
+			if entity_id != INVALID_ENTITY {
+				input_packet, input_ok := deserialize_client_input(buffer[:n])
+				if input_ok {
+					input := packet_to_input(input_packet)
+					server.world.inputs[entity_id] = input
+					
+					// Handle spell casting
+					if input.cast_spell != .None {
+						server_handle_spell_cast(server, entity_id, input.cast_spell, input_packet.tick_id)
+					}
+				}
+			}
 		}
 	}
 }
@@ -425,6 +457,138 @@ server_shutdown :: proc(server: ^Server) {
 	server.running = false
 	network_shutdown(&server.network)
 	fmt.println("Server stopped.")
+}
+
+// Phase 3: Update resource pools and cooldowns
+server_update_resources :: proc(server: ^Server, dt: f32) {
+	for i in 1..<MAX_ENTITIES {
+		if !server.world.characters[i].active {
+			continue
+		}
+		
+		char := &server.world.characters[i]
+		spell_state := &server.world.spell_states[i]
+		
+		// Regenerate mana
+		char.mana = min(char.mana + MANA_REGEN_PER_SEC * dt, MANA_MAX)
+		
+		// Regenerate stamina
+		char.stamina = min(char.stamina + STAMINA_REGEN_PER_SEC * dt, STAMINA_MAX)
+		
+		// Update cooldowns
+		for spell_id in Spell_ID {
+			if spell_state.cooldowns[spell_id] > 0 {
+				spell_state.cooldowns[spell_id] -= dt
+				if spell_state.cooldowns[spell_id] < 0 {
+					spell_state.cooldowns[spell_id] = 0
+				}
+			}
+		}
+	}
+}
+
+// Phase 3: Handle spell cast attempt
+server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, client_tick: u32) {
+	if caster_id >= MAX_ENTITIES || !server.world.characters[caster_id].active {
+		return
+	}
+	
+	// Get spell definition
+	def := &SPELL_DEFS[spell_id]
+	if def.payload == .None {
+		return  // Spell not implemented
+	}
+	
+	char := &server.world.characters[caster_id]
+	spell_state := &server.world.spell_states[caster_id]
+	
+	// Check cooldown
+	if spell_state.cooldowns[spell_id] > 0 {
+		fmt.printf("[Combat] Entity %d: %s on cooldown (%.1fs remaining)\n", 
+			caster_id, def.name, spell_state.cooldowns[spell_id])
+		return  // On cooldown
+	}
+	
+	// Check mana cost
+	if char.mana < def.mana_cost {
+		fmt.printf("[Combat] Entity %d: Not enough mana for %s (%.1f/%.1f)\n", 
+			caster_id, def.name, char.mana, def.mana_cost)
+		return  // Not enough mana
+	}
+	
+	// Consume mana
+	char.mana -= def.mana_cost
+	
+	// Set cooldown
+	spell_state.cooldowns[spell_id] = def.cooldown_sec
+	
+	fmt.printf("[Combat] Entity %d cast %s (mana: %.1f→%.1f, cooldown: %.1fs)\n",
+		caster_id, def.name, char.mana + def.mana_cost, char.mana, def.cooldown_sec)
+	
+	// Build cast request
+	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
+	direction := camera_forward(char.yaw, char.pitch)
+	
+	spell_cast := Spell_Cast{
+		caster_id = caster_id,
+		spell_id  = spell_id,
+		origin    = origin,
+		direction = direction,
+		tick      = client_tick,
+	}
+	
+	// Execute spell based on type
+	switch def.payload {
+	case .Projectile:
+		// Spawn projectile
+		proj_id := projectile_spawn(&server.projectiles, &spell_cast, def)
+		fmt.printf("[Combat] Projectile spawned: ID %d, speed %.1fm/s, lifetime %.1fs\n",
+			proj_id, def.proj_speed, def.proj_lifetime)
+		
+	case .Hitscan:
+		// Perform lag-compensated hitscan
+		hit, hit_entity, hit_pos := hitscan_check(
+			&server.lag_comp,
+			&server.world,
+			caster_id,
+			origin,
+			direction,
+			def.beam_range,
+			client_tick,
+		)
+		
+		if hit {
+			// Apply damage
+			old_health := server.world.characters[hit_entity].health
+			server.world.characters[hit_entity].health -= def.damage
+			fmt.printf("[Combat] Hitscan hit! Entity %d → Entity %d: %.1f damage (%.1f→%.1f HP)\n",
+				caster_id, hit_entity, def.damage, old_health, server.world.characters[hit_entity].health)
+		} else {
+			fmt.printf("[Combat] Hitscan miss (range: %.1fm)\n", def.beam_range)
+		}
+		
+	case .Teleport:
+		// Blink
+		if spell_id == .Blink {
+			old_pos := char.pos
+			// Move in facing direction
+			blink_dir := norm_vec3(vec3{direction.x, direction.y, 0})  // Horizontal only
+			new_pos := char.pos + blink_dir * def.beam_range
+			
+			// Clamp to room
+			if room_inside(new_pos, CHARACTER_RADIUS_M) {
+				char.pos = new_pos
+				fmt.printf("[Combat] Blink: Entity %d teleported %.1fm\n",
+					caster_id, len_vec3(new_pos - old_pos))
+			} else {
+				fmt.printf("[Combat] Blink: Entity %d blocked by wall\n", caster_id)
+			}
+		}
+		
+	case .Beam_Channel, .AoE_Instant, .None:
+		// Not implemented in Phase 3
+		fmt.printf("[Combat] Spell type not implemented: %v\n", def.payload)
+	}
 }
 
 // Entry point for headless server

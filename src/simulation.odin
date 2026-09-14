@@ -12,16 +12,6 @@ import "core:math"
 SIMULATION_TICK_RATE :: 60
 SIMULATION_DT :: f32(1.0 / SIMULATION_TICK_RATE)
 
-// Room bounds check (for collision)
-room_inside :: proc(pos: vec3, pad: f32) -> bool {
-	return pos.x >= ROOM_MIN.x + pad &&
-		pos.x <= ROOM_MAX.x - pad &&
-		pos.y >= ROOM_MIN.y + pad &&
-		pos.y <= ROOM_MAX.y - pad &&
-		pos.z >= ROOM_MIN.z &&
-		pos.z <= ROOM_MAX.z - pad
-}
-
 // Character dimensions (same as player constants)
 CHARACTER_HEIGHT_M :: 1.72
 CHARACTER_EYE_HEIGHT_M :: 1.56

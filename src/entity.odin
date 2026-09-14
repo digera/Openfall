@@ -17,6 +17,11 @@ Character_State :: struct {
 	pitch:     f32,   // Vertical look angle  
 	on_ground: bool,  // Ground contact flag
 	active:    bool,  // Entity slot is in use
+	
+	// Phase 3: Resource pools
+	health:    f32,   // Current health
+	mana:      f32,   // Current mana
+	stamina:   f32,   // Current stamina
 }
 
 // Input state for one entity for one tick
@@ -26,6 +31,9 @@ Input_State :: struct {
 	jump:       bool, // Jump input
 	delta_yaw:  f32,  // Yaw change this tick
 	delta_pitch: f32, // Pitch change this tick
+	
+	// Phase 3: Spell casting
+	cast_spell: Spell_ID,  // Spell button pressed (0 = none)
 }
 
 // Entity world - data-oriented storage
@@ -33,6 +41,7 @@ Entity_World :: struct {
 	// Parallel arrays indexed by entity ID
 	characters: #soa[MAX_ENTITIES]Character_State,
 	inputs:     [MAX_ENTITIES]Input_State,
+	spell_states: [MAX_ENTITIES]Entity_Spell_State,  // Phase 3: cooldowns, buffs
 	next_id:    Entity_ID,
 	count:      int,
 }
@@ -58,8 +67,13 @@ entity_spawn :: proc(world: ^Entity_World, pos: vec3) -> Entity_ID {
 				pitch = 0,
 				on_ground = false,
 				active = true,
+				// Phase 3: Initialize resources
+				health = HEALTH_MAX,
+				mana = MANA_MAX,
+				stamina = STAMINA_MAX,
 			}
 			world.inputs[i] = {}
+			world.spell_states[i] = {}
 			world.count += 1
 			return id
 		}
