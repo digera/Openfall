@@ -55,7 +55,7 @@ obelisk_world_init :: proc() -> Obelisk_World {
 	// Center Obelisk (neutral spawn)
 	world.obelisks[0] = Obelisk{
 		id = 0,
-		pos = vec3{center.x, center.y, ROOM_MIN.z + 0.5},
+		pos = vec3{center.x, center.y, ROOM_MIN.z},  // Floor level
 		radius = OBELISK_RADIUS,
 		state = .Neutral,
 		owner = .None,
@@ -64,7 +64,7 @@ obelisk_world_init :: proc() -> Obelisk_World {
 	// Alpha-side Obelisk (south)
 	world.obelisks[1] = Obelisk{
 		id = 1,
-		pos = vec3{center.x - 4.5, center.y - 4.5, ROOM_MIN.z + 0.5},
+		pos = vec3{center.x - 4.5, center.y - 4.5, ROOM_MIN.z},
 		radius = OBELISK_RADIUS,
 		state = .Neutral,
 		owner = .None,
@@ -73,7 +73,7 @@ obelisk_world_init :: proc() -> Obelisk_World {
 	// Beta-side Obelisk (north)
 	world.obelisks[2] = Obelisk{
 		id = 2,
-		pos = vec3{center.x + 4.5, center.y + 4.5, ROOM_MIN.z + 0.5},
+		pos = vec3{center.x + 4.5, center.y + 4.5, ROOM_MIN.z},
 		radius = OBELISK_RADIUS,
 		state = .Neutral,
 		owner = .None,

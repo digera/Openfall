@@ -5,6 +5,8 @@ import "core:time"
 import "core:math"
 import "core:math/rand"
 import "core:net"
+import "core:os"
+import "core:strconv"
 
 // Headless dedicated server for Nexus Arena.
 // Phase 1 Goals:
@@ -74,6 +76,31 @@ server_init :: proc(port: u16, bot_count: int) -> (server: Server, ok: bool) {
 	// Phase 4: Initialize Dominion systems
 	server.obelisks = obelisk_world_init()
 	server.match = match_init()
+	
+	// Check for test mode environment variables
+	// NEXUS_TEST_ESSENCE=50 ./bin/nexus_server
+	// NEXUS_TEST_FAST=10 ./bin/nexus_server (10x essence generation)
+	{
+		buf: [64]u8
+		test_essence := os.get_env_buf(buf[:], "NEXUS_TEST_ESSENCE")
+		if test_essence != "" {
+			threshold, ok_threshold := strconv.parse_f32(test_essence)
+			if ok_threshold && threshold > 0 {
+				match_configure_test_mode(threshold, test_essence_multiplier)
+			}
+		}
+	}
+	
+	{
+		buf: [64]u8
+		test_fast := os.get_env_buf(buf[:], "NEXUS_TEST_FAST")
+		if test_fast != "" {
+			multiplier, ok_mult := strconv.parse_f32(test_fast)
+			if ok_mult && multiplier > 0 {
+				match_configure_test_mode(test_essence_threshold, multiplier)
+			}
+		}
+	}
 	
 	// Initialize network (optional for Phase 1 bot testing)
 	if port > 0 {
@@ -146,27 +173,64 @@ server_update_bot_ai :: proc(server: ^Server, bot_idx: int, dt: f32) {
 	}
 	
 	ai := &bot_ais[bot_idx]
+	bot_team := entity_get_team(&server.world, bot_id)
 	
-	// Think timer - change movement every 1-3 seconds
-	ai.think_timer -= dt
-	if ai.think_timer <= 0 {
-		ai.think_timer = rand.float32_range(1.0, 3.0)
-		ai.move_dir = rand.float32_range(-1, 1)
-		ai.strafe_dir = rand.float32_range(-1, 1)
-		ai.target_yaw = rand.float32_range(0, 2.0 * math.PI)
-		ai.turn_speed = rand.float32_range(0.5, 2.0)
+	// Phase 4: Obelisk-seeking AI
+	// Find nearest Obelisk that is not held by our team
+	target_obelisk: ^Obelisk = nil
+	min_dist_sq := f32(999999)
+	
+	for i in 0..<server.obelisks.count {
+		obelisk := &server.obelisks.obelisks[i]
+		
+		// Skip if already held by our team (defend less priority than capture)
+		if obelisk.state == .Held && obelisk.owner == bot_team {
+			continue
+		}
+		
+		// Calculate distance
+		dx := obelisk.pos.x - char.pos.x
+		dy := obelisk.pos.y - char.pos.y
+		dist_sq := dx*dx + dy*dy
+		
+		if dist_sq < min_dist_sq {
+			min_dist_sq = dist_sq
+			target_obelisk = obelisk
+		}
 	}
 	
-	// Jump timer - jump every 1-2 seconds
-	ai.jump_timer -= dt
-	should_jump := false
-	if ai.jump_timer <= 0 && char.on_ground {
-		ai.jump_timer = rand.float32_range(1.0, 2.0)
-		should_jump = true
+	// Move toward target Obelisk
+	move_fwd: f32 = 1.0  // Always move forward
+	move_str: f32 = 0
+	target_yaw := char.yaw
+	
+	if target_obelisk != nil {
+		// Calculate direction to Obelisk
+		dx := target_obelisk.pos.x - char.pos.x
+		dy := target_obelisk.pos.y - char.pos.y
+		
+		target_yaw = math.atan2(dy, dx)
+		
+		// Move forward if not at Obelisk
+		if min_dist_sq > OBELISK_RADIUS * OBELISK_RADIUS * 0.5 {
+			move_fwd = 1.0
+		} else {
+			// At Obelisk, stand still to capture
+			move_fwd = 0.5  // Slow movement to stay in capture zone
+		}
+	} else {
+		// Fallback: random movement if no objective (shouldn't happen)
+		ai.think_timer -= dt
+		if ai.think_timer <= 0 {
+			ai.think_timer = rand.float32_range(2.0, 4.0)
+			ai.target_yaw = rand.float32_range(0, 2.0 * math.PI)
+		}
+		target_yaw = ai.target_yaw
+		move_fwd = 1.0
 	}
 	
 	// Smooth turn toward target yaw
-	yaw_diff := ai.target_yaw - char.yaw
+	yaw_diff := target_yaw - char.yaw
 	// Normalize to [-PI, PI]
 	for yaw_diff > math.PI {
 		yaw_diff -= 2.0 * math.PI
@@ -175,15 +239,30 @@ server_update_bot_ai :: proc(server: ^Server, bot_idx: int, dt: f32) {
 		yaw_diff += 2.0 * math.PI
 	}
 	
-	delta_yaw := clampf(yaw_diff * ai.turn_speed * dt, -0.1, 0.1)
+	delta_yaw := clampf(yaw_diff * 2.0 * dt, -0.15, 0.15)
+	
+	// Jump occasionally for movement (less than before)
+	ai.jump_timer -= dt
+	should_jump := false
+	if ai.jump_timer <= 0 && char.on_ground {
+		ai.jump_timer = rand.float32_range(2.0, 4.0)
+		should_jump = rand.float32() < 0.3  // 30% chance
+	}
 	
 	// Set input for this bot
 	input := Input_State{
-		move_fwd = ai.move_dir,
-		move_str = ai.strafe_dir,
+		move_fwd = move_fwd,
+		move_str = move_str,
 		jump = should_jump,
 		delta_yaw = delta_yaw,
 		delta_pitch = 0,
+	}
+	
+	// Debug: Log first bot's target every 120 ticks (2 seconds)
+	if bot_idx == 0 && server.tick_id % 120 == 0 && target_obelisk != nil {
+		fmt.printf("[Bot AI] Bot 0 → Obelisk %d at (%.1f, %.1f), dist=%.1fm, moving=%.1f\n",
+			target_obelisk.id, target_obelisk.pos.x, target_obelisk.pos.y, 
+			math.sqrt(min_dist_sq), move_fwd)
 	}
 	
 	entity_set_input(&server.world, bot_id, input)

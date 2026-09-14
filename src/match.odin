@@ -43,6 +43,18 @@ ESSENCE_WIN_THRESHOLD :: f32(1000.0)   // Essence needed to trigger Nexus Collap
 DEFAULT_MATCH_DURATION :: f32(15 * 60) // 15 minutes (900 seconds)
 WARMUP_DURATION :: f32(5.0)            // Warmup time in Waiting state
 
+// Test configuration (can be overridden via environment or build flag)
+test_essence_threshold := ESSENCE_WIN_THRESHOLD
+test_essence_multiplier := f32(1.0)  // Multiply essence gain for fast testing
+
+// Configure test mode for faster matches (call from server init)
+match_configure_test_mode :: proc(win_threshold: f32, essence_multiplier: f32) {
+	test_essence_threshold = win_threshold
+	test_essence_multiplier = essence_multiplier
+	fmt.printf("[Match] Test mode configured: Win at %.0f essence, %.1fx generation rate\n", 
+		test_essence_threshold, test_essence_multiplier)
+}
+
 match_init :: proc() -> Match {
 	return Match{
 		state = .Waiting,
@@ -72,9 +84,9 @@ match_tick :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt: f32) {
 		match_generate_essence(match, obelisk_world, dt)
 		
 		// Check win conditions
-		if match.alpha_essence >= ESSENCE_WIN_THRESHOLD {
+		if match.alpha_essence >= test_essence_threshold {
 			match_end(match, .Alpha_Wins)
-		} else if match.beta_essence >= ESSENCE_WIN_THRESHOLD {
+		} else if match.beta_essence >= test_essence_threshold {
 			match_end(match, .Beta_Wins)
 		} else if match.match_duration > 0 && match.match_time >= match.match_duration {
 			// Time limit reached
@@ -99,7 +111,7 @@ match_generate_essence :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt:
 		obelisk := &obelisk_world.obelisks[i]
 		
 		if obelisk.state == .Held {
-			essence_gain := ESSENCE_PER_SEC * dt
+			essence_gain := ESSENCE_PER_SEC * dt * test_essence_multiplier
 			
 			switch obelisk.owner {
 			case .Alpha:
@@ -121,7 +133,7 @@ match_start :: proc(match: ^Match) {
 	match.beta_essence = 0
 	match.result = .None
 	
-	fmt.println("[Match] Match started!")
+	fmt.printf("[Match] Match started! (Win threshold: %.0f essence)\n", test_essence_threshold)
 }
 
 // End match with result

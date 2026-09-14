@@ -92,6 +92,7 @@ client_frame :: proc "c" () {
 		// Handle welcome packet (entity ID assignment)
 		if ptype == .Server_Welcome {
 			game_client.client_world.local_entity_id = welcome.your_entity_id
+			// Extract team from snapshot once we receive one
 			fmt.printf("[Client] Assigned entity ID: %d\n", welcome.your_entity_id)
 			continue
 		}
@@ -105,7 +106,24 @@ client_frame :: proc "c" () {
 			
 			// Apply snapshot
 			client_world_apply_snapshot(&game_client.client_world, snapshot)
+			
+			// Extract our team from the snapshot (once)
+			if game_client.client_world.local_team == .None {
+				for i in 0..<int(snapshot.entity_count) {
+					if snapshot.entities[i].id == game_client.client_world.local_entity_id {
+						game_client.client_world.local_team = snapshot.entities[i].team
+						fmt.printf("[Client] Joined Team %s\n", team_name(game_client.client_world.local_team))
+						break
+					}
+				}
+			}
 		}
+	}
+	
+	// Receive game state updates (Phase 4)
+	gamestate, gs_ok := network_client_receive_gamestate(&game_client.network)
+	if gs_ok {
+		game_client.client_world.game_state = gamestate
 	}
 	
 	// Send input to server at 60Hz

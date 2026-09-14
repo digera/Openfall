@@ -289,6 +289,39 @@ network_client_stats :: proc(client: ^Network_Client) -> (sent: int, recv: int, 
 	return client.packets_sent, client.packets_recv, rtt_est
 }
 
+// Receive game state update (Phase 4)
+network_client_receive_gamestate :: proc(client: ^Network_Client) -> (gamestate: Server_GameState_Packet, ok: bool) {
+	buffer: [MAX_PACKET_SIZE]u8
+	
+	n, from, recv_ok := network_receive(&client.endpoint, buffer[:])
+	if !recv_ok || n < 2 {
+		return {}, false
+	}
+	
+	// Check packet type
+	if n < 2 {
+		return {}, false
+	}
+	
+	version := buffer[0]
+	if version != PROTOCOL_VERSION {
+		return {}, false
+	}
+	
+	ptype := Packet_Type(buffer[1])
+	if ptype != .Server_GameState {
+		return {}, false
+	}
+	
+	// Deserialize game state
+	gs, gs_ok := deserialize_server_gamestate(buffer[:n])
+	if gs_ok {
+		client.packets_recv += 1
+		client.bytes_recv += n
+	}
+	return gs, gs_ok
+}
+
 // Enable latency simulation
 network_client_sim_latency :: proc(client: ^Network_Client, latency_ms: int, loss_rate: f32) {
 	client.sim_latency_ms = latency_ms

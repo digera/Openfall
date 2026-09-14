@@ -251,6 +251,90 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, client_world: ^Client_World
 	}
 	sdtx.printf("Remote entities: %d  Projectiles: %d\n", remote_count, client_world.projectile_count)
 	
+	// === DOMINION HUD (Phase 4) ===
+	gs := &client_world.game_state
+	
+	// Match state and scores (centered at top)
+	match_state_str := ""
+	#partial switch Match_State(gs.match_state) {
+	case .Waiting:
+		match_state_str = "WARMUP"
+	case .Active:
+		match_state_str = "ACTIVE"
+	case .Ended:
+		#partial switch Match_Result(gs.match_result) {
+		case .Alpha_Wins:
+			match_state_str = "ALPHA WINS!"
+		case .Beta_Wins:
+			match_state_str = "BETA WINS!"
+		case .Draw:
+			match_state_str = "DRAW"
+		case:
+			match_state_str = "ENDED"
+		}
+	}
+	
+	sdtx.pos(SDTX_ORIGIN_CELLS, 6)
+	sdtx.color3f(0.95, 0.92, 0.85)
+	sdtx.printf("=== %s ===\n", match_state_str)
+	
+	// Essence scores
+	sdtx.pos(SDTX_ORIGIN_CELLS, 7)
+	sdtx.color3f(0.92, 0.32, 0.28)  // Red for Alpha
+	sdtx.printf("ALPHA: %.0f", gs.alpha_essence)
+	sdtx.color3f(0.72, 0.70, 0.64)
+	sdtx.puts("  |  ")
+	sdtx.color3f(0.42, 0.62, 0.92)  // Blue for Beta
+	sdtx.printf("BETA: %.0f\n", gs.beta_essence)
+	
+	// Obelisk ownership indicators
+	sdtx.pos(SDTX_ORIGIN_CELLS, 8)
+	sdtx.color3f(0.72, 0.70, 0.64)
+	sdtx.puts("Obelisks: ")
+	
+	for i in 0..<MAX_OBELISKS {
+		owner := Team_ID(gs.obelisk_owners[i])
+		state := Obelisk_State(gs.obelisk_states[i])
+		
+		// Color by owner
+		if owner == .Alpha {
+			sdtx.color3f(0.92, 0.32, 0.28)  // Red
+		} else if owner == .Beta {
+			sdtx.color3f(0.42, 0.62, 0.92)  // Blue
+		} else {
+			sdtx.color3f(0.5, 0.5, 0.5)  // Grey for neutral
+		}
+		
+		// Icon based on state
+		icon := "?"
+		#partial switch state {
+		case .Neutral:
+			icon = "○"
+		case .Contested:
+			icon = "◎"
+		case .Capturing:
+			icon = "◐"
+		case .Held:
+			icon = "●"
+		}
+		
+		sdtx.printf("%s", icon)
+		if i < MAX_OBELISKS - 1 {
+			sdtx.color3f(0.6, 0.6, 0.6)
+			sdtx.puts(" ")
+		}
+	}
+	sdtx.puts("\n")
+	
+	// Match time
+	if Match_State(gs.match_state) == .Active {
+		minutes := int(gs.match_time) / 60
+		seconds := int(gs.match_time) % 60
+		sdtx.pos(SDTX_ORIGIN_CELLS, 9)
+		sdtx.color3f(0.65, 0.62, 0.58)
+		sdtx.printf("Time: %02d:%02d\n", minutes, seconds)
+	}
+	
 	// === COMBAT HUD ===
 	// Draw at bottom-left corner
 	hud_y := h / SDTX_CHAR_PX - 12 - SDTX_ORIGIN_CELLS
