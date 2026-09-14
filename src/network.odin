@@ -35,6 +35,16 @@ Client_Input_Packet :: struct {
 	cast_spell:  u8,   // Phase 3: Spell button (Spell_ID)
 }
 
+// Wire size for client input (hand-packed, not sizeof due to alignment):
+// Header: 2 bytes (version + type)
+// tick_id: 4 bytes
+// move_fwd, move_str: 2 bytes
+// jump: 1 byte
+// delta_yaw, delta_pitch: 4 bytes
+// cast_spell: 1 byte
+// Total: 2 + 4 + 2 + 1 + 4 + 1 = 14 bytes
+CLIENT_INPUT_WIRE_SIZE :: 14
+
 // Server snapshot packet
 // Sent from server to clients at 20-30Hz (lower than tick rate)
 Server_Snapshot_Packet :: struct {
@@ -133,7 +143,7 @@ network_shutdown :: proc(endpoint: ^Network_Endpoint) {
 
 // Serialize client input packet to bytes
 serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> int {
-	if len(buffer) < size_of(Client_Input_Packet) + 2 {
+	if len(buffer) < CLIENT_INPUT_WIRE_SIZE {
 		return 0
 	}
 	
@@ -163,7 +173,7 @@ serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> in
 
 // Deserialize client input packet from bytes
 deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, ok: bool) {
-	if len(buffer) < size_of(Client_Input_Packet) + 2 {
+	if len(buffer) < CLIENT_INPUT_WIRE_SIZE {
 		return {}, false
 	}
 	
@@ -190,10 +200,39 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 }
 
 // Serialize server snapshot to bytes
+// Size budget breakdown (must fit in MAX_PACKET_SIZE = 1400 bytes):
+//   Header: 2 bytes (version + type)
+//   Tick ID: 4 bytes
+//   Entity count: 1 byte
+//   Per entity: 50 bytes (id=4, pos=12, angles=8, vel_z=4, flags=1, resources=12, team=1, padding)
+//   Projectile count: 1 byte
+//   Per projectile: 41 bytes (id=4, spell_id=1, owner=4, pos=12, vel=12, lifetime=4, radius=4)
+//
+// Max entities: (1400 - 2 - 4 - 1 - 1) / 50 = ~27 entities (conservatively cap at 24)
+// With 24 entities (1200 bytes), room for ~4 projectiles
+// Strategy: prioritize closest entities to viewer (future); for now, truncate at capacity
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	if len(buffer) < MAX_PACKET_SIZE {
 		return 0
 	}
+	
+	// Calculate safe limits to fit in MAX_PACKET_SIZE
+	HEADER_SIZE :: 2 + 4 + 1  // version, type, tick_id, entity_count
+	ENTITY_SIZE :: 50
+	PROJECTILE_HEADER :: 1  // projectile_count byte
+	PROJECTILE_SIZE :: 41
+	
+	MAX_ENTITIES_IN_PACKET :: 24  // Leaves room for projectiles
+	MAX_PROJECTILES_IN_PACKET :: 8
+	
+	// Cap entity count to fit in packet
+	capped_entity_count := min(int(packet.entity_count), MAX_ENTITIES_IN_PACKET)
+	
+	// Calculate remaining space for projectiles
+	used := HEADER_SIZE + capped_entity_count * ENTITY_SIZE + PROJECTILE_HEADER
+	remaining := MAX_PACKET_SIZE - used
+	max_projectiles := remaining / PROJECTILE_SIZE
+	capped_projectile_count := min(int(packet.projectile_count), max_projectiles, MAX_PROJECTILES_IN_PACKET)
 	
 	pos := 0
 	buffer[pos] = u8(PROTOCOL_VERSION); pos += 1
@@ -202,11 +241,11 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	// Tick ID (4 bytes)
 	mem.copy(&buffer[pos], &packet.tick_id, 4); pos += 4
 	
-	// Entity count (1 byte)
-	buffer[pos] = packet.entity_count; pos += 1
+	// Entity count (1 byte) - capped
+	buffer[pos] = u8(capped_entity_count); pos += 1
 	
 	// Entity data
-	for i in 0..<int(packet.entity_count) {
+	for i in 0..<capped_entity_count {
 		entity := &packet.entities[i]
 		
 		// Entity ID (4 bytes)
@@ -234,11 +273,11 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		buffer[pos] = u8(entity.team); pos += 1
 	}
 	
-	// Phase 3: Projectile count (1 byte)
-	buffer[pos] = packet.projectile_count; pos += 1
+	// Phase 3: Projectile count (1 byte) - capped
+	buffer[pos] = u8(capped_projectile_count); pos += 1
 	
-	// Phase 3: Projectile data (40 bytes each)
-	for i in 0..<int(packet.projectile_count) {
+	// Phase 3: Projectile data (41 bytes each)
+	for i in 0..<capped_projectile_count {
 		proj := &packet.projectiles[i]
 		
 		mem.copy(&buffer[pos], &proj.id, 4); pos += 4

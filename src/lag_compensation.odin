@@ -107,6 +107,13 @@ hitscan_check :: proc(
 			continue  // Skip self
 		}
 		
+		// B4: Check for friendly fire (skip same-team targets)
+		caster_team := entity_get_team(entity_world, caster_id)
+		target_team := entity_get_team(entity_world, Entity_ID(entity_idx))
+		if !teams_are_enemies(caster_team, target_team) {
+			continue
+		}
+		
 		// Get entity position at client's view tick (lag compensation)
 		entity_pos, found := lag_comp_get_position(lag_comp, Entity_ID(entity_idx), client_tick)
 		if !found {

@@ -366,9 +366,11 @@ server_process_packets :: proc(server: ^Server) {
 
 // Register a client connection and spawn player entity
 server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (entity_id: Entity_ID, is_new: bool) {
-	// Check if already registered
+	// Check if already registered (match full endpoint: address + port)
 	for i in 0..<server.client_count {
-		if server.connected_clients[i].port == client_addr.port {
+		registered := &server.connected_clients[i]
+		// Compare address and port
+		if registered.address == client_addr.address && registered.port == client_addr.port {
 			// Already registered, return existing entity ID
 			return server.client_entity_ids[i], false
 		}
@@ -682,10 +684,19 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return
 	}
 	
+	// B5: Validate Spell_ID from wire (must be in valid range and implemented)
+	if int(spell_id) < 0 || int(spell_id) >= len(SPELL_DEFS) {
+		fmt.printf("[Combat] Invalid Spell_ID %d from entity %d\n", spell_id, caster_id)
+		return
+	}
+	
 	// Get spell definition
 	def := &SPELL_DEFS[spell_id]
 	if def.payload == .None {
-		return  // Spell not implemented
+		// Stub spell with no implementation (like Purifying_Beam)
+		// Do not consume mana or set cooldown for unimplemented spells
+		fmt.printf("[Combat] Entity %d: %s not implemented (stub payload)\n", caster_id, def.name)
+		return
 	}
 	
 	char := &server.world.characters[caster_id]
@@ -705,7 +716,25 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return  // Not enough mana
 	}
 	
-	// Consume mana
+	// B6: Clamp client_tick to sane window (within history size / ~1 second)
+	// Prevent client from rewinding to arbitrary past/future
+	MAX_REWIND_TICKS :: u32(60)  // 1 second at 60Hz
+	clamped_tick := client_tick
+	if server.tick_id > client_tick {
+		// Client is in past (normal with latency)
+		tick_delta := server.tick_id - client_tick
+		if tick_delta > MAX_REWIND_TICKS {
+			clamped_tick = server.tick_id - MAX_REWIND_TICKS
+			fmt.printf("[Combat] Clamped rewind: client_tick %d → %d (delta %d > max %d)\n",
+				client_tick, clamped_tick, tick_delta, MAX_REWIND_TICKS)
+		}
+	} else if client_tick > server.tick_id {
+		// Client is in future (suspicious or clock desync)
+		clamped_tick = server.tick_id
+		fmt.printf("[Combat] Clamped future tick: client_tick %d → %d\n", client_tick, clamped_tick)
+	}
+	
+	// Consume mana (only after all checks pass)
 	char.mana -= def.mana_cost
 	
 	// Set cooldown
@@ -714,7 +743,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	fmt.printf("[Combat] Entity %d cast %s (mana: %.1f→%.1f, cooldown: %.1fs)\n",
 		caster_id, def.name, char.mana + def.mana_cost, char.mana, def.cooldown_sec)
 	
-	// Build cast request
+	// Build cast request (use clamped tick for lag comp)
 	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
 	direction := camera_forward(char.yaw, char.pitch)
 	
@@ -723,7 +752,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		spell_id  = spell_id,
 		origin    = origin,
 		direction = direction,
-		tick      = client_tick,
+		tick      = clamped_tick,  // Use clamped tick, not raw client_tick
 	}
 	
 	// Execute spell based on type

@@ -7,6 +7,22 @@ import "core:strings"
 import "core:strconv"
 import "core:c"
 
+// B7: Simple SQL escape for single quotes (prevent basic injection)
+// TODO: Migrate to PQexecParams for proper parameterized queries
+sql_escape_single_quotes :: proc(s: string, allocator := context.temp_allocator) -> string {
+	if !strings.contains(s, "'") {
+		return s
+	}
+	sb := strings.builder_make(allocator)
+	for r in s {
+		if r == '\'' {
+			strings.write_rune(&sb, '\'')  // Double single quote
+		}
+		strings.write_rune(&sb, r)
+	}
+	return strings.to_string(sb)
+}
+
 // Persistence store (PostgreSQL connection)
 Persistence_Store :: struct {
 	conn: PGconn,
@@ -83,7 +99,8 @@ persistence_create_account :: proc(store: ^Persistence_Store, display_name: stri
 		return 0, false
 	}
 	
-	query := fmt.ctprintf("INSERT INTO accounts (display_name) VALUES ('%s') RETURNING account_id", display_name)
+	safe_name := sql_escape_single_quotes(display_name)
+	query := fmt.ctprintf("INSERT INTO accounts (display_name) VALUES ('%s') RETURNING account_id", safe_name)
 	res := PQexec(store.conn, query)
 	defer PQclear(res)
 	
@@ -108,7 +125,8 @@ persistence_get_account :: proc(store: ^Persistence_Store, display_name: string)
 		return {}, false
 	}
 	
-	query := fmt.ctprintf("SELECT account_id, display_name FROM accounts WHERE display_name = '%s'", display_name)
+	safe_name := sql_escape_single_quotes(display_name)
+	query := fmt.ctprintf("SELECT account_id, display_name FROM accounts WHERE display_name = '%s'", safe_name)
 	res := PQexec(store.conn, query)
 	defer PQclear(res)
 	
@@ -136,9 +154,10 @@ persistence_grant_item :: proc(store: ^Persistence_Store, account_id: i64, item_
 	PQclear(res)
 	
 	// Insert ledger entry
+	safe_reason := sql_escape_single_quotes(reason)
 	ledger_query := fmt.ctprintf(
 		"INSERT INTO ledger_entries (account_id, entry_type, item_def_id, quantity, reason) VALUES (%d, 'grant', %d, %d, '%s')",
-		account_id, item_def_id, quantity, reason,
+		account_id, item_def_id, quantity, safe_reason,
 	)
 	res = PQexec(store.conn, ledger_query)
 	if PQresultStatus(res) != .PGRES_COMMAND_OK {

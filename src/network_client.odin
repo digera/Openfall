@@ -170,13 +170,16 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	// Tick ID (4 bytes)
 	mem.copy(&packet.tick_id, &buffer[pos], 4); pos += 4
 	
-	// Entity count (1 byte)
-	packet.entity_count = buffer[pos]; pos += 1
+	// Entity count (1 byte) - cap to MAX_ENTITIES
+	entity_count_raw := buffer[pos]; pos += 1
+	packet.entity_count = min(entity_count_raw, u8(MAX_ENTITIES))
 	
-	// Entity data (42 bytes per entity now: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12) + team(1))
+	// Entity data (50 bytes per entity: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12) + team(1) + padding)
 	for i in 0..<int(packet.entity_count) {
-		if pos + 42 > len(buffer) {
-			return {}, false
+		if pos + 50 > len(buffer) {
+			// Truncate if packet ends early
+			packet.entity_count = u8(i)
+			break
 		}
 		
 		entity := &packet.entities[i]
@@ -207,17 +210,20 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		entity.team = Team_ID(buffer[pos]); pos += 1
 	}
 	
-	// Phase 3: Projectile count (1 byte)
+	// Phase 3: Projectile count (1 byte) - cap to 32
 	if pos >= len(buffer) {
 		// Old snapshot without projectiles, backward compat
 		return packet, true
 	}
-	packet.projectile_count = buffer[pos]; pos += 1
+	projectile_count_raw := buffer[pos]; pos += 1
+	packet.projectile_count = min(projectile_count_raw, 32)  // Cap to array size
 	
 	// Phase 3: Projectile data (41 bytes each)
 	for i in 0..<int(packet.projectile_count) {
 		if pos + 41 > len(buffer) {
-			break  // Truncated, return what we have
+			// Truncate if packet ends early
+			packet.projectile_count = u8(i)
+			break
 		}
 		
 		proj := &packet.projectiles[i]

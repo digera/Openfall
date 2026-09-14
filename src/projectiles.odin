@@ -165,11 +165,11 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 			// Apply damage
 			entity_world.characters[entity_idx].health -= proj.damage
 			
-			// Apply AoE if applicable
+			// Apply AoE if applicable (exclude primary target to avoid double-dip)
 			if proj.aoe_radius > 0 {
 				fmt.printf("[Combat] AoE explosion at (%.1f, %.1f, %.1f) radius %.1fm\n",
 					new_pos.x, new_pos.y, new_pos.z, proj.aoe_radius)
-				projectile_apply_aoe(world, entity_world, i, new_pos)
+				projectile_apply_aoe(world, entity_world, i, new_pos, Entity_ID(entity_idx))  // Pass primary target
 			}
 			
 			// Apply knockback
@@ -196,8 +196,8 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 	}
 }
 
-// Apply AoE damage
-projectile_apply_aoe :: proc(proj_world: ^Projectile_World, entity_world: ^Entity_World, proj_slot: int, center: vec3) {
+// Apply AoE damage (exclude primary_target to avoid double-dip)
+projectile_apply_aoe :: proc(proj_world: ^Projectile_World, entity_world: ^Entity_World, proj_slot: int, center: vec3, primary_target: Entity_ID) {
 	proj := &proj_world.projectiles[proj_slot]
 	
 	for entity_idx in 1..<MAX_ENTITIES {
@@ -207,6 +207,10 @@ projectile_apply_aoe :: proc(proj_world: ^Projectile_World, entity_world: ^Entit
 		
 		if Entity_ID(entity_idx) == proj.owner_id {
 			continue  // Skip owner
+		}
+		
+		if Entity_ID(entity_idx) == primary_target {
+			continue  // Skip primary target (already took full damage)
 		}
 		
 		entity_pos := entity_world.characters[entity_idx].pos
