@@ -42,6 +42,7 @@ Entity_World :: struct {
 	characters: #soa[MAX_ENTITIES]Character_State,
 	inputs:     [MAX_ENTITIES]Input_State,
 	spell_states: [MAX_ENTITIES]Entity_Spell_State,  // Phase 3: cooldowns, buffs
+	teams:      [MAX_ENTITIES]Team_ID,               // Phase 4: team assignments
 	next_id:    Entity_ID,
 	count:      int,
 }
@@ -52,7 +53,7 @@ entity_world_init :: proc() -> Entity_World {
 	return world
 }
 
-entity_spawn :: proc(world: ^Entity_World, pos: vec3) -> Entity_ID {
+entity_spawn :: proc(world: ^Entity_World, pos: vec3, team := Team_ID.None) -> Entity_ID {
 	if world.count >= MAX_ENTITIES {
 		return INVALID_ENTITY
 	}
@@ -74,6 +75,7 @@ entity_spawn :: proc(world: ^Entity_World, pos: vec3) -> Entity_ID {
 			}
 			world.inputs[i] = {}
 			world.spell_states[i] = {}
+			world.teams[i] = team  // Phase 4: team assignment
 			world.count += 1
 			return id
 		}
@@ -119,4 +121,20 @@ entity_set_input :: proc(world: ^Entity_World, id: Entity_ID, input: Input_State
 		return
 	}
 	world.inputs[id] = input
+}
+
+// Get entity team
+entity_get_team :: proc(world: ^Entity_World, id: Entity_ID) -> Team_ID {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return .None
+	}
+	return world.teams[id]
+}
+
+// Set entity team
+entity_set_team :: proc(world: ^Entity_World, id: Entity_ID, team: Team_ID) {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return
+	}
+	world.teams[id] = team
 }

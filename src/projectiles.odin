@@ -147,6 +147,14 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 				continue
 			}
 			
+			// Phase 4: No friendly fire (check teams)
+			owner_team := entity_get_team(entity_world, proj.owner_id)
+			target_team := entity_get_team(entity_world, Entity_ID(entity_idx))
+			
+			if !teams_are_enemies(owner_team, target_team) {
+				continue  // Skip friendly targets
+			}
+			
 			// Hit!
 			hit = true
 			
@@ -210,8 +218,14 @@ projectile_apply_aoe :: proc(proj_world: ^Projectile_World, entity_world: ^Entit
 		dist := math.sqrt(dx*dx + dy*dy + dz*dz)
 		
 		if dist <= proj.aoe_radius {
-			// Apply damage (half damage for AoE to avoid double-hit on primary target)
-			entity_world.characters[entity_idx].health -= proj.damage * 0.5
+			// Phase 4: No friendly fire (check teams)
+			owner_team := entity_get_team(entity_world, proj.owner_id)
+			target_team := entity_get_team(entity_world, Entity_ID(entity_idx))
+			
+			if teams_are_enemies(owner_team, target_team) {
+				// Apply damage (half damage for AoE to avoid double-hit on primary target)
+				entity_world.characters[entity_idx].health -= proj.damage * 0.5
+			}
 		}
 	}
 }

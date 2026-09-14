@@ -173,9 +173,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	// Entity count (1 byte)
 	packet.entity_count = buffer[pos]; pos += 1
 	
-	// Entity data (41 bytes per entity now: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12))
+	// Entity data (42 bytes per entity now: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12) + team(1))
 	for i in 0..<int(packet.entity_count) {
-		if pos + 41 > len(buffer) {
+		if pos + 42 > len(buffer) {
 			return {}, false
 		}
 		
@@ -202,6 +202,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		mem.copy(&entity.health, &buffer[pos], 4); pos += 4
 		mem.copy(&entity.mana, &buffer[pos], 4); pos += 4
 		mem.copy(&entity.stamina, &buffer[pos], 4); pos += 4
+		
+		// Phase 4: Team (1 byte)
+		entity.team = Team_ID(buffer[pos]); pos += 1
 	}
 	
 	// Phase 3: Projectile count (1 byte)
@@ -226,6 +229,52 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		mem.copy(&proj.vel, &buffer[pos], 12); pos += 12
 		mem.copy(&proj.lifetime, &buffer[pos], 4); pos += 4
 		mem.copy(&proj.radius, &buffer[pos], 4); pos += 4
+	}
+	
+	return packet, true
+}
+
+// Deserialize game state packet (Phase 4)
+deserialize_server_gamestate :: proc(buffer: []u8) -> (packet: Server_GameState_Packet, ok: bool) {
+	if len(buffer) < 30 {
+		return {}, false
+	}
+	
+	pos := 0
+	version := buffer[pos]; pos += 1
+	if version != PROTOCOL_VERSION {
+		return {}, false
+	}
+	
+	ptype := Packet_Type(buffer[pos]); pos += 1
+	if ptype != .Server_GameState {
+		return {}, false
+	}
+	
+	// Match state (2 bytes)
+	packet.match_state = buffer[pos]; pos += 1
+	packet.match_result = buffer[pos]; pos += 1
+	
+	// Essence (8 bytes)
+	mem.copy(&packet.alpha_essence, &buffer[pos], 4); pos += 4
+	mem.copy(&packet.beta_essence, &buffer[pos], 4); pos += 4
+	
+	// Match time (4 bytes)
+	mem.copy(&packet.match_time, &buffer[pos], 4); pos += 4
+	
+	// Obelisk states (3 bytes)
+	for i in 0..<MAX_OBELISKS {
+		packet.obelisk_states[i] = buffer[pos]; pos += 1
+	}
+	
+	// Obelisk owners (3 bytes)
+	for i in 0..<MAX_OBELISKS {
+		packet.obelisk_owners[i] = buffer[pos]; pos += 1
+	}
+	
+	// Obelisk progress (12 bytes)
+	for i in 0..<MAX_OBELISKS {
+		mem.copy(&packet.obelisk_progress[i], &buffer[pos], 4); pos += 4
 	}
 	
 	return packet, true

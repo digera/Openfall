@@ -20,6 +20,7 @@ Packet_Type :: enum u8 {
 	Client_Input = 1,       // Client -> Server: inputs for this tick
 	Server_Snapshot = 2,    // Server -> Client: world state snapshot
 	Server_Welcome = 3,     // Server -> Client: entity ID assignment
+	Server_GameState = 4,   // Server -> Client: match state and scores (Phase 4)
 }
 
 // Client input packet
@@ -65,6 +66,9 @@ Snapshot_Entity :: struct {
 	health:    f32,
 	mana:      f32,
 	stamina:   f32,
+	
+	// Phase 4: Team
+	team:      Team_ID,
 }
 
 // Projectile state in snapshot (Phase 3)
@@ -76,6 +80,21 @@ Snapshot_Projectile :: struct {
 	vel:      vec3,
 	lifetime: f32,
 	radius:   f32,
+}
+
+// Game state packet (Phase 4) - Match state and Obelisk info
+// Sent at lower rate than snapshots (every 2-3 seconds or on state change)
+Server_GameState_Packet :: struct {
+	match_state:     u8,   // Match_State
+	match_result:    u8,   // Match_Result
+	alpha_essence:   f32,  // Team Alpha essence points
+	beta_essence:    f32,  // Team Beta essence points
+	match_time:      f32,  // Match time in seconds
+	
+	// Obelisk states (3 Obelisks)
+	obelisk_states:  [MAX_OBELISKS]u8,       // Obelisk_State for each
+	obelisk_owners:  [MAX_OBELISKS]u8,       // Team_ID for each
+	obelisk_progress: [MAX_OBELISKS]f32,     // Capture progress [0, 1]
 }
 
 // Network endpoint
@@ -210,6 +229,9 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		mem.copy(&buffer[pos], &entity.health, 4); pos += 4
 		mem.copy(&buffer[pos], &entity.mana, 4); pos += 4
 		mem.copy(&buffer[pos], &entity.stamina, 4); pos += 4
+		
+		// Phase 4: Team (1 byte)
+		buffer[pos] = u8(entity.team); pos += 1
 	}
 	
 	// Phase 3: Projectile count (1 byte)
@@ -253,6 +275,45 @@ serialize_server_welcome :: proc(packet: ^Server_Welcome_Packet, buffer: []u8) -
 	
 	// Entity ID (4 bytes)
 	mem.copy(&buffer[pos], &packet.your_entity_id, 4); pos += 4
+	
+	return pos
+}
+
+// Serialize game state packet (Phase 4)
+serialize_server_gamestate :: proc(packet: ^Server_GameState_Packet, buffer: []u8) -> int {
+	if len(buffer) < 64 {
+		return 0
+	}
+	
+	pos := 0
+	buffer[pos] = u8(PROTOCOL_VERSION); pos += 1
+	buffer[pos] = u8(Packet_Type.Server_GameState); pos += 1
+	
+	// Match state (2 bytes)
+	buffer[pos] = packet.match_state; pos += 1
+	buffer[pos] = packet.match_result; pos += 1
+	
+	// Essence (8 bytes)
+	mem.copy(&buffer[pos], &packet.alpha_essence, 4); pos += 4
+	mem.copy(&buffer[pos], &packet.beta_essence, 4); pos += 4
+	
+	// Match time (4 bytes)
+	mem.copy(&buffer[pos], &packet.match_time, 4); pos += 4
+	
+	// Obelisk states (3 bytes)
+	for i in 0..<MAX_OBELISKS {
+		buffer[pos] = packet.obelisk_states[i]; pos += 1
+	}
+	
+	// Obelisk owners (3 bytes)
+	for i in 0..<MAX_OBELISKS {
+		buffer[pos] = packet.obelisk_owners[i]; pos += 1
+	}
+	
+	// Obelisk progress (12 bytes)
+	for i in 0..<MAX_OBELISKS {
+		mem.copy(&buffer[pos], &packet.obelisk_progress[i], 4); pos += 4
+	}
 	
 	return pos
 }

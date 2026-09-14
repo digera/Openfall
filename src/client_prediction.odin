@@ -46,6 +46,7 @@ Remote_Entity :: struct {
 Client_World :: struct {
 	// Local player
 	local_entity_id: Entity_ID,
+	local_team:      Team_ID,  // Phase 4: client's team
 	prediction:      Client_Prediction,
 	
 	// Remote entities
@@ -58,6 +59,9 @@ Client_World :: struct {
 	// Phase 3: Client-side projectiles (synced from server)
 	projectiles:     [32]Snapshot_Projectile,
 	projectile_count: int,
+	
+	// Phase 4: Game state (synced from server)
+	game_state:      Server_GameState_Packet,
 }
 
 // Initialize client prediction

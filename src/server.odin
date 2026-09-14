@@ -36,6 +36,11 @@ Server :: struct {
 	// Phase 3: Combat systems
 	projectiles:     Projectile_World,
 	lag_comp:        Lag_Comp_State,
+	
+	// Phase 4: Dominion systems
+	obelisks:        Obelisk_World,
+	match:           Match,
+	last_gamestate_tick: u32,
 }
 
 MAX_CLIENTS :: 16
@@ -66,6 +71,10 @@ server_init :: proc(port: u16, bot_count: int) -> (server: Server, ok: bool) {
 	server.projectiles = projectile_world_init()
 	server.lag_comp = lag_comp_init()
 	
+	// Phase 4: Initialize Dominion systems
+	server.obelisks = obelisk_world_init()
+	server.match = match_init()
+	
 	// Initialize network (optional for Phase 1 bot testing)
 	if port > 0 {
 		if !network_init(&server.network, port) {
@@ -73,20 +82,27 @@ server_init :: proc(port: u16, bot_count: int) -> (server: Server, ok: bool) {
 		}
 	}
 	
-	// Spawn bots
-	fmt.printf("Spawning %d bots...\n", server.bot_count)
+	// Spawn bots on teams
+	fmt.printf("Spawning %d bots on teams...\n", server.bot_count)
 	for i in 0..<server.bot_count {
-		// Spawn bots in a rough circle
+		// Assign bots to teams (alternating)
+		team := i % 2 == 0 ? Team_ID.Alpha : Team_ID.Beta
+		
+		// Spawn bots in team areas
 		angle := f32(i) * (2.0 * math.PI / f32(server.bot_count))
 		radius := f32(4.0)
 		center := (ROOM_MIN + ROOM_MAX) * 0.5
+		
+		// Alpha on south side, Beta on north side
+		offset := team == .Alpha ? vec3{-2, -2, 0} : vec3{2, 2, 0}
+		
 		pos := vec3{
-			center.x + math.cos(angle) * radius,
-			center.y + math.sin(angle) * radius,
+			center.x + math.cos(angle) * radius + offset.x,
+			center.y + math.sin(angle) * radius + offset.y,
 			ROOM_MIN.z,
 		}
 		
-		bot_id := entity_spawn(&server.world, pos)
+		bot_id := entity_spawn(&server.world, pos, team)
 		if bot_id == INVALID_ENTITY {
 			fmt.eprintf("Failed to spawn bot %d\n", i)
 			continue
@@ -110,8 +126,8 @@ server_init :: proc(port: u16, bot_count: int) -> (server: Server, ok: bool) {
 		}
 	}
 	
-	fmt.printf("Server initialized: %d bots spawned, %d entities active\n", 
-		server.bot_count, server.world.count)
+	fmt.printf("Server initialized: %d bots spawned (%d Alpha, %d Beta), %d entities active\n", 
+		server.bot_count, (server.bot_count+1)/2, server.bot_count/2, server.world.count)
 	
 	server.running = true
 	return server, true
@@ -194,6 +210,10 @@ server_tick :: proc(server: ^Server) {
 	// Phase 3: Update projectiles
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
 	
+	// Phase 4: Update Obelisks and match state
+	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
+	match_tick(&server.match, &server.obelisks, SIMULATION_DT)
+	
 	// Phase 3: Record entity positions for lag compensation
 	for i in 1..<MAX_ENTITIES {
 		if server.world.characters[i].active {
@@ -204,6 +224,11 @@ server_tick :: proc(server: ^Server) {
 	// Send snapshots to clients (30Hz = every 2 ticks)
 	if server.tick_id % 2 == 0 {
 		server_send_snapshots(server)
+	}
+	
+	// Phase 4: Send game state updates (slower rate, every 60 ticks = 1 second)
+	if server.tick_id % 60 == 0 {
+		server_send_gamestate(server)
 	}
 	
 	server.tick_id += 1
@@ -272,18 +297,37 @@ server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (e
 	
 	// Add new client
 	if server.client_count < MAX_CLIENTS {
-		// Spawn player entity for this client
-		// Place players in a circle around center, offset from bots
+		// Assign team (balance teams)
+		alpha_count := 0
+		beta_count := 0
+		for i in 0..<server.client_count {
+			team := entity_get_team(&server.world, server.client_entity_ids[i])
+			if team == .Alpha {
+				alpha_count += 1
+			} else if team == .Beta {
+				beta_count += 1
+			}
+		}
+		
+		// Assign to team with fewer players
+		client_team := alpha_count <= beta_count ? Team_ID.Alpha : Team_ID.Beta
+		
+		// Spawn player entity for this client on their team
+		// Place players in team areas (Alpha south, Beta north)
 		angle := f32(server.client_count) * (2.0 * math.PI / f32(MAX_CLIENTS))
 		radius := f32(6.0)  // Slightly larger radius than bots
 		center := (ROOM_MIN + ROOM_MAX) * 0.5
+		
+		// Team-based offset
+		offset := client_team == .Alpha ? vec3{-2, -2, 0} : vec3{2, 2, 0}
+		
 		spawn_pos := vec3{
-			center.x + math.cos(angle) * radius,
-			center.y + math.sin(angle) * radius,
+			center.x + math.cos(angle) * radius + offset.x,
+			center.y + math.sin(angle) * radius + offset.y,
 			ROOM_MIN.z,
 		}
 		
-		player_id := entity_spawn(&server.world, spawn_pos)
+		player_id := entity_spawn(&server.world, spawn_pos, client_team)
 		if player_id == INVALID_ENTITY {
 			fmt.eprintf("[Server] Failed to spawn player entity for client\n")
 			return INVALID_ENTITY, false
@@ -295,8 +339,8 @@ server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (e
 		server.client_entity_ids[idx] = player_id
 		server.client_count += 1
 		
-		fmt.printf("[Server] Client connected: %v → Entity ID %d (total clients: %d)\n", 
-			client_addr, player_id, server.client_count)
+		fmt.printf("[Server] Client connected: %v → Entity ID %d, Team %s (total clients: %d)\n", 
+			client_addr, player_id, team_name(client_team), server.client_count)
 		
 		return player_id, true
 	}
@@ -353,6 +397,8 @@ server_send_snapshots :: proc(server: ^Server) {
 			health = char.health,
 			mana = char.mana,
 			stamina = char.stamina,
+			// Phase 4: Team
+			team = server.world.teams[i],
 		}
 		snapshot.entity_count += 1
 	}
@@ -383,6 +429,42 @@ server_send_snapshots :: proc(server: ^Server) {
 	// Serialize
 	buffer: [MAX_PACKET_SIZE]u8
 	size := serialize_server_snapshot(&snapshot, buffer[:])
+	if size <= 0 {
+		return
+	}
+	
+	// Send to all clients
+	for i in 0..<server.client_count {
+		network_send(&server.network, buffer[:], size, server.connected_clients[i])
+	}
+}
+
+// Send game state update (Phase 4: Dominion)
+server_send_gamestate :: proc(server: ^Server) {
+	if server.client_count == 0 {
+		return
+	}
+	
+	// Build game state packet
+	gamestate := Server_GameState_Packet{
+		match_state = u8(server.match.state),
+		match_result = u8(server.match.result),
+		alpha_essence = server.match.alpha_essence,
+		beta_essence = server.match.beta_essence,
+		match_time = server.match.match_time,
+	}
+	
+	// Add Obelisk states
+	for i in 0..<MAX_OBELISKS {
+		obelisk := &server.obelisks.obelisks[i]
+		gamestate.obelisk_states[i] = u8(obelisk.state)
+		gamestate.obelisk_owners[i] = u8(obelisk.owner)
+		gamestate.obelisk_progress[i] = obelisk.capture_progress
+	}
+	
+	// Serialize
+	buffer: [MAX_PACKET_SIZE]u8
+	size := serialize_server_gamestate(&gamestate, buffer[:])
 	if size <= 0 {
 		return
 	}
