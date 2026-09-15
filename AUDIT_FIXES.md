@@ -26,13 +26,14 @@ All critical and "should fix" bugs from the second technical audit have been add
 **Verification**: Build passes, no packet loss from multiple poll calls.
 
 ### 3. Lag-comp clamp unused ✓
-**Issue**: Server was supposed to pass `clamped_tick` to `hitscan_check` but might have been using raw `client_tick`.
+**Issue**: Server was supposed to pass `clamped_tick` to `hitscan_check` but was using raw `client_tick`.
 
 **Fix**:
-- Verified that `server_handle_spell_cast` already uses `clamped_tick` for the `Spell_Cast.tick` field (line 755)
-- This field is passed to lag compensation rewind, so fix was already present from previous review round
+- Updated `server_handle_spell_cast` line 811 to pass `clamped_tick` instead of `client_tick` to `hitscan_check()`
+- The `clamped_tick` is computed from `max(server.tick_id - 60, client_tick)` to prevent excessive rewind
+- Now lag compensation correctly uses the clamped value for rewinding entity positions
 
-**Verification**: Code inspection confirms correct usage.
+**Verification**: Code inspection and grep confirm correct usage.
 
 ## Playtest Sturdiness Fixes
 
