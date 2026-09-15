@@ -808,7 +808,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 			origin,
 			direction,
 			def.beam_range,
-			client_tick,
+			clamped_tick,  // Use clamped tick for lag compensation rewind
 		)
 		
 		if hit {
