@@ -30,10 +30,11 @@ Server :: struct {
 	start_time:      time.Tick,
 	
 	// Network state
-	connected_clients: [MAX_CLIENTS]net.Endpoint,
-	client_entity_ids: [MAX_CLIENTS]Entity_ID,  // Entity ID for each client
-	client_count:      int,
-	last_snapshot_tick: u32,
+	connected_clients:     [MAX_CLIENTS]net.Endpoint,
+	client_entity_ids:     [MAX_CLIENTS]Entity_ID,  // Entity ID for each client
+	client_last_packet:    [MAX_CLIENTS]time.Tick,  // Last packet time for disconnect timeout
+	client_count:          int,
+	last_snapshot_tick:    u32,
 	
 	// Phase 3: Combat systems
 	projectiles:     Projectile_World,
@@ -275,6 +276,36 @@ server_tick :: proc(server: ^Server) {
 	// Process incoming packets
 	server_process_packets(server)
 	
+	// Check for client timeouts (5 second silence = disconnect)
+	CLIENT_TIMEOUT_SEC :: 5.0
+	for i := 0; i < server.client_count; {
+		elapsed := time.duration_seconds(time.tick_diff(server.client_last_packet[i], time.tick_now()))
+		
+		if elapsed > CLIENT_TIMEOUT_SEC {
+			// Client timed out, disconnect
+			entity_id := server.client_entity_ids[i]
+			fmt.printf("[Server] Client %v timed out (%.1fs silence), disconnecting entity %d\n", 
+				server.connected_clients[i], elapsed, entity_id)
+			
+			// Despawn entity
+			if entity_id != INVALID_ENTITY {
+				server.world.characters[entity_id].active = false
+			}
+			
+			// Remove client from list (swap with last)
+			last_idx := server.client_count - 1
+			if i != last_idx {
+				server.connected_clients[i] = server.connected_clients[last_idx]
+				server.client_entity_ids[i] = server.client_entity_ids[last_idx]
+				server.client_last_packet[i] = server.client_last_packet[last_idx]
+			}
+			server.client_count -= 1
+			// Don't increment i, check this slot again (now contains the old last element)
+		} else {
+			i += 1
+		}
+	}
+	
 	// Update bot AI
 	for i in 0..<server.bot_count {
 		server_update_bot_ai(server, i, SIMULATION_DT)
@@ -282,6 +313,9 @@ server_tick :: proc(server: ^Server) {
 	
 	// Phase 3: Update spell cooldowns and regenerate resources
 	server_update_resources(server, SIMULATION_DT)
+	
+	// Death/respawn system (playtesting)
+	entity_tick_death_respawn(&server.world, SIMULATION_DT)
 	
 	// Run simulation step (deterministic kernel)
 	simulate_world_step(&server.world)
@@ -371,7 +405,8 @@ server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (e
 		registered := &server.connected_clients[i]
 		// Compare address and port
 		if registered.address == client_addr.address && registered.port == client_addr.port {
-			// Already registered, return existing entity ID
+			// Already registered, update last packet time and return existing entity ID
+			server.client_last_packet[i] = time.tick_now()
 			return server.client_entity_ids[i], false
 		}
 	}
@@ -418,6 +453,7 @@ server_register_client :: proc(server: ^Server, client_addr: net.Endpoint) -> (e
 		idx := server.client_count
 		server.connected_clients[idx] = client_addr
 		server.client_entity_ids[idx] = player_id
+		server.client_last_packet[idx] = time.tick_now()  // Initialize last packet time
 		server.client_count += 1
 		
 		fmt.printf("[Server] Client connected: %v → Entity ID %d, Team %s (total clients: %d)\n", 

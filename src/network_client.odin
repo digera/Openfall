@@ -99,13 +99,13 @@ network_client_send_input :: proc(client: ^Network_Client, tick_id: u32, input: 
 	return false
 }
 
-// Receive snapshot from server
-network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Snapshot_Packet, welcome: Server_Welcome_Packet, packet_type: Packet_Type, ok: bool) {
+// Receive packet from server (unified dispatcher for all packet types)
+network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Snapshot_Packet, welcome: Server_Welcome_Packet, gamestate: Server_GameState_Packet, packet_type: Packet_Type, ok: bool) {
 	buffer: [MAX_PACKET_SIZE]u8
 	
 	n, from, recv_ok := network_receive(&client.endpoint, buffer[:])
 	if !recv_ok || n < 2 {
-		return {}, {}, .Invalid, false
+		return {}, {}, {}, .Invalid, false
 	}
 	
 	client.packets_recv += 1
@@ -114,12 +114,12 @@ network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Sna
 	
 	// Check packet type
 	if n < 2 {
-		return {}, {}, .Invalid, false
+		return {}, {}, {}, .Invalid, false
 	}
 	
 	version := buffer[0]
 	if version != PROTOCOL_VERSION {
-		return {}, {}, .Invalid, false
+		return {}, {}, {}, .Invalid, false
 	}
 	
 	ptype := Packet_Type(buffer[1])
@@ -130,11 +130,11 @@ network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Sna
 		if snap_ok && client.state == .Connecting {
 			client.state = .Connected
 		}
-		return snap, {}, ptype, snap_ok
+		return snap, {}, {}, ptype, snap_ok
 	} else if ptype == .Server_Welcome {
 		// Deserialize welcome (entity ID assignment)
 		if n < 6 {
-			return {}, {}, .Invalid, false
+			return {}, {}, {}, .Invalid, false
 		}
 		
 		welcome_packet := Server_Welcome_Packet{}
@@ -144,10 +144,14 @@ network_client_receive :: proc(client: ^Network_Client) -> (snapshot: Server_Sna
 			client.state = .Connected
 		}
 		
-		return {}, welcome_packet, ptype, true
+		return {}, welcome_packet, {}, ptype, true
+	} else if ptype == .Server_GameState {
+		// Deserialize game state
+		gs, gs_ok := deserialize_server_gamestate(buffer[:n])
+		return {}, {}, gs, ptype, gs_ok
 	}
 	
-	return {}, {}, .Invalid, false
+	return {}, {}, {}, .Invalid, false
 }
 
 // Deserialize server snapshot from bytes
@@ -174,9 +178,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	entity_count_raw := buffer[pos]; pos += 1
 	packet.entity_count = min(entity_count_raw, u8(MAX_ENTITIES))
 	
-	// Entity data (50 bytes per entity: ID(4) + pos(12) + angles(8) + vel_z(4) + on_ground(1) + resources(12) + team(1) + padding)
+	// Entity data (42 bytes per entity: id=4, pos=12, yaw=4, pitch=4, vel_z=4, on_ground=1, health=4, mana=4, stamina=4, team=1)
 	for i in 0..<int(packet.entity_count) {
-		if pos + 50 > len(buffer) {
+		if pos + 42 > len(buffer) {
 			// Truncate if packet ends early
 			packet.entity_count = u8(i)
 			break
@@ -293,39 +297,6 @@ network_client_stats :: proc(client: ^Network_Client) -> (sent: int, recv: int, 
 	rtt_est := f32(time.duration_milliseconds(since_recv))
 	
 	return client.packets_sent, client.packets_recv, rtt_est
-}
-
-// Receive game state update (Phase 4)
-network_client_receive_gamestate :: proc(client: ^Network_Client) -> (gamestate: Server_GameState_Packet, ok: bool) {
-	buffer: [MAX_PACKET_SIZE]u8
-	
-	n, from, recv_ok := network_receive(&client.endpoint, buffer[:])
-	if !recv_ok || n < 2 {
-		return {}, false
-	}
-	
-	// Check packet type
-	if n < 2 {
-		return {}, false
-	}
-	
-	version := buffer[0]
-	if version != PROTOCOL_VERSION {
-		return {}, false
-	}
-	
-	ptype := Packet_Type(buffer[1])
-	if ptype != .Server_GameState {
-		return {}, false
-	}
-	
-	// Deserialize game state
-	gs, gs_ok := deserialize_server_gamestate(buffer[:n])
-	if gs_ok {
-		client.packets_recv += 1
-		client.bytes_recv += n
-	}
-	return gs, gs_ok
 }
 
 // Enable latency simulation

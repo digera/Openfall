@@ -5,6 +5,7 @@ package main
 import "core:fmt"
 import "core:time"
 import "core:math"
+import "core:os"
 import "base:runtime"
 import sapp "sokol:app"
 import slog "sokol:log"
@@ -43,8 +44,14 @@ client_init :: proc "c" () {
 		return
 	}
 	
-	// Enable latency simulation (100ms RTT = 50ms one-way, 2% loss)
-	network_client_sim_latency(&game_client.network, 50, 0.02)
+	// Disable artificial latency for playtesting (use real network latency)
+	// For testing, set environment variable ENABLE_SIM_LATENCY=1
+	env_buf: [256]u8
+	env_val := os.get_env_buf(env_buf[:], "ENABLE_SIM_LATENCY")
+	if env_val == "1" {
+		network_client_sim_latency(&game_client.network, 50, 0.02)
+		fmt.println("[Client] Artificial latency enabled (50ms, 2% loss)")
+	}
 	
 	// Initialize client world
 	game_client.client_world = client_world_init()
@@ -82,17 +89,16 @@ client_frame :: proc "c" () {
 	// Handle input
 	client_handle_input(&game_client, dt)
 	
-	// Receive snapshots from server
-	for i in 0..<10 {  // Process up to 10 snapshots per frame
-		snapshot, welcome, ptype, ok := network_client_receive(&game_client.network)
-		if !ok {
+	// Receive packets from server (unified dispatcher)
+	for i in 0..<10 {  // Process up to 10 packets per frame
+		snapshot, welcome, gamestate, ptype, packet_ok := network_client_receive(&game_client.network)
+		if !packet_ok {
 			break
 		}
 		
 		// Handle welcome packet (entity ID assignment)
 		if ptype == .Server_Welcome {
 			game_client.client_world.local_entity_id = welcome.your_entity_id
-			// Extract team from snapshot once we receive one
 			fmt.printf("[Client] Assigned entity ID: %d\n", welcome.your_entity_id)
 			continue
 		}
@@ -109,26 +115,31 @@ client_frame :: proc "c" () {
 			
 			// Extract our team from the snapshot (once)
 			if game_client.client_world.local_team == .None {
-				for i in 0..<int(snapshot.entity_count) {
-					if snapshot.entities[i].id == game_client.client_world.local_entity_id {
-						game_client.client_world.local_team = snapshot.entities[i].team
+				for j in 0..<int(snapshot.entity_count) {
+					if snapshot.entities[j].id == game_client.client_world.local_entity_id {
+						game_client.client_world.local_team = snapshot.entities[j].team
 						fmt.printf("[Client] Joined Team %s\n", team_name(game_client.client_world.local_team))
 						break
 					}
 				}
 			}
 		}
+		
+		// Handle game state packet
+		if ptype == .Server_GameState {
+			game_client.client_world.game_state = gamestate
+		}
 	}
 	
-	// Receive game state updates (Phase 4)
-	gamestate, gs_ok := network_client_receive_gamestate(&game_client.network)
-	if gs_ok {
-		game_client.client_world.game_state = gamestate
-	}
-	
-	// Send input to server at 60Hz
+	// Send input and simulate at 60Hz (with catch-up for long frames)
 	send_interval := time.Duration(1_000_000_000 / 60)  // 16.67ms
-	if time.tick_since(game_client.last_input_send) >= send_interval {
+	elapsed_since_last := time.tick_since(game_client.last_input_send)
+	
+	// Calculate how many ticks we should run (capped at 5 to avoid spiral of death)
+	ticks_to_run := int(elapsed_since_last / send_interval)
+	ticks_to_run = min(ticks_to_run, 5)
+	
+	for tick_i in 0..<ticks_to_run {
 		// Build input from current state
 		input := game_client.input_state
 		input.delta_yaw = game_client.mouse_dx * CAM_LOOK_SENS
@@ -141,9 +152,15 @@ client_frame :: proc "c" () {
 		// Send to server
 		network_client_send_input(&game_client.network, game_client.client_world.client_tick, input)
 		
+		// Only reset mouse deltas after last tick
+		if tick_i == ticks_to_run - 1 {
+			game_client.mouse_dx = 0
+			game_client.mouse_dy = 0
+		}
+	}
+	
+	if ticks_to_run > 0 {
 		game_client.last_input_send = time.tick_now()
-		game_client.mouse_dx = 0
-		game_client.mouse_dy = 0
 	}
 	
 	// Update remote entity interpolation (50ms delay = 3 ticks at 60Hz)

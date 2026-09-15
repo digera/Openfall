@@ -22,6 +22,10 @@ Character_State :: struct {
 	health:    f32,   // Current health
 	mana:      f32,   // Current mana
 	stamina:   f32,   // Current stamina
+	
+	// Death/respawn (playtesting)
+	dead:           bool,  // Entity is dead (no capture contribution, awaiting respawn)
+	respawn_timer:  f32,   // Time until respawn (seconds)
 }
 
 // Input state for one entity for one tick

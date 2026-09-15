@@ -204,12 +204,12 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 //   Header: 2 bytes (version + type)
 //   Tick ID: 4 bytes
 //   Entity count: 1 byte
-//   Per entity: 50 bytes (id=4, pos=12, angles=8, vel_z=4, flags=1, resources=12, team=1, padding)
+//   Per entity: 42 bytes (id=4, pos=12, yaw=4, pitch=4, vel_z=4, on_ground=1, health=4, mana=4, stamina=4, team=1)
 //   Projectile count: 1 byte
 //   Per projectile: 41 bytes (id=4, spell_id=1, owner=4, pos=12, vel=12, lifetime=4, radius=4)
 //
-// Max entities: (1400 - 2 - 4 - 1 - 1) / 50 = ~27 entities (conservatively cap at 24)
-// With 24 entities (1200 bytes), room for ~4 projectiles
+// Max entities: (1400 - 2 - 4 - 1 - 1) / 42 = ~33 entities (conservatively cap at 28)
+// With 28 entities (1176 bytes), room for ~5 projectiles (205 bytes) = 1388 bytes total
 // Strategy: prioritize closest entities to viewer (future); for now, truncate at capacity
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	if len(buffer) < MAX_PACKET_SIZE {
@@ -218,11 +218,11 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	
 	// Calculate safe limits to fit in MAX_PACKET_SIZE
 	HEADER_SIZE :: 2 + 4 + 1  // version, type, tick_id, entity_count
-	ENTITY_SIZE :: 50
+	ENTITY_SIZE :: 42  // Actual wire size (see breakdown above)
 	PROJECTILE_HEADER :: 1  // projectile_count byte
 	PROJECTILE_SIZE :: 41
 	
-	MAX_ENTITIES_IN_PACKET :: 24  // Leaves room for projectiles
+	MAX_ENTITIES_IN_PACKET :: 28  // Leaves room for projectiles
 	MAX_PROJECTILES_IN_PACKET :: 8
 	
 	// Cap entity count to fit in packet

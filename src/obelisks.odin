@@ -113,6 +113,12 @@ obelisk_tick :: proc(world: ^Obelisk_World, entity_world: ^Entity_World, dt: f32
 			}
 			
 			char := entity_world.characters[eid]
+			
+			// Ignore dead players (no capture contribution)
+			if char.dead {
+				continue
+			}
+			
 			team := entity_get_team(entity_world, Entity_ID(eid))
 			
 			if obelisk_contains(obelisk, char.pos) {
