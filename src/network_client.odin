@@ -41,10 +41,19 @@ network_client_init :: proc(client: ^Network_Client, server_host: string, server
 		return false
 	}
 	
-	// Resolve server address
-	// For now, assume server is localhost
+	addr := net.IP4_Loopback
+	if server_host != "" && server_host != "localhost" && server_host != "127.0.0.1" {
+		parsed, parse_ok := net.parse_ip4_address(server_host)
+		if !parse_ok {
+			fmt.eprintf("Failed to parse server address '%s' (expected IPv4 or localhost)\n", server_host)
+			network_shutdown(&client.endpoint)
+			return false
+		}
+		addr = parsed
+	}
+
 	client.server_addr = net.Endpoint{
-		address = net.IP4_Loopback,
+		address = addr,
 		port = int(server_port),
 	}
 	

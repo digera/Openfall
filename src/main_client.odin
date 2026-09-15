@@ -38,8 +38,13 @@ client_init :: proc "c" () {
 	
 	fmt.println("=== Nexus Arena Client ===")
 	
-	// Initialize network client
-	if !network_client_init(&game_client.network, "localhost", 27015) {
+	// Initialize network client (SERVER_IP overrides localhost)
+	server_host := "localhost"
+	ip_buf: [256]u8
+	if env_ip := os.get_env_buf(ip_buf[:], "SERVER_IP"); env_ip != "" {
+		server_host = env_ip
+	}
+	if !network_client_init(&game_client.network, server_host, 27015) {
 		fmt.eprintln("Failed to initialize network client")
 		return
 	}
@@ -142,7 +147,7 @@ client_frame :: proc "c" () {
 	for tick_i in 0..<ticks_to_run {
 		// Build input from current state
 		input := game_client.input_state
-		input.delta_yaw = game_client.mouse_dx * CAM_LOOK_SENS
+		input.delta_yaw = -game_client.mouse_dx * CAM_LOOK_SENS
 		input.delta_pitch = -game_client.mouse_dy * CAM_LOOK_SENS
 		
 		// Predict locally
@@ -161,6 +166,7 @@ client_frame :: proc "c" () {
 	
 	if ticks_to_run > 0 {
 		game_client.last_input_send = time.tick_now()
+		game_client.input_state.jump = false
 	}
 	
 	// Update remote entity interpolation (50ms delay = 3 ticks at 60Hz)
@@ -226,7 +232,11 @@ client_handle_input :: proc(client: ^Game_Client, dt: f32) {
 	
 	client.input_state.move_fwd = fwd
 	client.input_state.move_str = str
-	client.input_state.jump = input_consume_jump()
+	// Hold Space to jump; also latch a press that landed on a render frame
+	// that did not run a sim tick.
+	if input_consume_jump() || input.key_space {
+		client.input_state.jump = true
+	}
 	
 	// Handle spell selection (keys 1-4)
 	if input_consume_cast(1) {

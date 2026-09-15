@@ -1,4 +1,6 @@
 param(
+    [ValidateSet("server", "client", "testclient", "both")]
+    [string]$Target = "both",
     [switch]$Run,
     [switch]$Release
 )
@@ -12,27 +14,16 @@ if (-not (Test-Path $Sokol)) {
     $Sokol = "C:\Users\lusr\yearning\third_party\sokol-odin\sokol"
 }
 $OutDir = Join-Path $Root "bin"
-$Out = Join-Path $OutDir "odinfps.exe"
+$SrcDir = Join-Path $Root "src"
 
 if (-not (Test-Path $Odin)) {
     Write-Error "Odin not found at $Odin. Set ODIN_ROOT or install to C:\Users\lusr\tools\odin"
 }
-if (-not (Test-Path $Shdc)) {
-    Write-Error "sokol-shdc not found at $Shdc"
-}
 if (-not (Test-Path $Sokol)) {
-    Write-Error "sokol-odin missing. Copy yearning/third_party/sokol-odin into third_party/"
+    Write-Error "sokol-odin missing. Copy yearning/third_party/sokol-odin into third_party/ or run third_party\build_sokol_d3d11.cmd"
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-
-Write-Host ">> Compiling shaders..."
-& $Shdc `
-    -i (Join-Path $Root "shaders\scene.glsl") `
-    -o (Join-Path $Root "src\scene.odin") `
-    -l hlsl5:glsl430:metal_macos:wgsl `
-    -f sokol_odin
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $modeArgs = @()
 if ($Release) {
@@ -41,14 +32,133 @@ if ($Release) {
     $modeArgs += "-debug"
 }
 
-Write-Host ">> Building odinfps..."
-& $Odin build (Join-Path $Root "src") `
-    -out:$Out `
-    "-collection:sokol=$Sokol" `
-    @modeArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+function Copy-StagedSources {
+    param(
+        [string]$Dest,
+        [string[]]$Exclude,
+        [string]$RenameFrom,
+        [string]$RenameTo
+    )
 
-Write-Host ">> Built $Out"
+    if (Test-Path $Dest) {
+        Remove-Item -Recurse -Force $Dest
+    }
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+
+    Get-ChildItem -Path $SrcDir -Filter "*.odin" -File | ForEach-Object {
+        if ($Exclude -contains $_.Name) {
+            return
+        }
+        Copy-Item $_.FullName (Join-Path $Dest $_.Name)
+    }
+
+    if ($RenameFrom -and $RenameTo) {
+        $fromPath = Join-Path $Dest $RenameFrom
+        $toPath = Join-Path $Dest $RenameTo
+        if (Test-Path $fromPath) {
+            Move-Item -Force $fromPath $toPath
+        }
+    }
+}
+
+function Build-OdinPackage {
+    param(
+        [string]$PackageDir,
+        [string]$OutFile,
+        [string[]]$ExtraArgs
+    )
+
+    $odinArgs = @(
+        "build", $PackageDir,
+        "-out:$OutFile"
+    ) + $ExtraArgs + $modeArgs
+
+    & $Odin @odinArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
+$serverExclude = @(
+    "render.odin", "input.odin", "scene.odin", "main.odin", "player.odin", "camera.odin",
+    "main_client.odin", "client_renderer.odin", "main_test_client.odin", "main_combat_test.odin",
+    "postgres.odin", "persistence.odin"
+)
+
+$clientExclude = @(
+    "main.odin", "main_server.odin", "server.odin",
+    "main_test_client.odin", "main_combat_test.odin", "camera_minimal.odin",
+    "camera.odin", "player.odin", "render.odin",
+    "postgres.odin", "persistence.odin"
+)
+
+$testClientExclude = @(
+    "render.odin", "input.odin", "scene.odin", "main.odin", "player.odin", "camera.odin",
+    "main_client.odin", "client_renderer.odin", "main_server.odin", "server.odin",
+    "camera_minimal.odin", "main_combat_test.odin",
+    "postgres.odin", "persistence.odin"
+)
+
+if ($Target -eq "server" -or $Target -eq "both") {
+    Write-Host ">> Building headless server..."
+    $tmp = Join-Path $OutDir "server_src"
+    Copy-StagedSources -Dest $tmp -Exclude $serverExclude -RenameFrom "main_server.odin" -RenameTo "main.odin"
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_server.exe")
+    Remove-Item -Recurse -Force $tmp
+    Write-Host ">> Built $(Join-Path $OutDir 'nexus_server.exe')"
+}
+
+if ($Target -eq "client" -or $Target -eq "both") {
+    $shaderSrc = Join-Path $Root "shaders\scene.glsl"
+    $shaderOut = Join-Path $SrcDir "scene.odin"
+    $needShader = -not (Test-Path $shaderOut)
+    if (-not $needShader -and (Test-Path $shaderSrc)) {
+        $needShader = (Get-Item $shaderSrc).LastWriteTime -gt (Get-Item $shaderOut).LastWriteTime
+    }
+    if ($needShader) {
+        if (-not (Test-Path $Shdc)) {
+            Write-Error "sokol-shdc not found at $Shdc"
+        }
+        Write-Host ">> Compiling shaders..."
+        & $Shdc `
+            -i $shaderSrc `
+            -o $shaderOut `
+            -l hlsl5:glsl430:metal_macos:wgsl `
+            -f sokol_odin
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } else {
+        Write-Host ">> Shaders up to date"
+    }
+
+    Write-Host ">> Building graphical client..."
+    $tmp = Join-Path $OutDir "gfx_client_src"
+    Copy-StagedSources -Dest $tmp -Exclude $clientExclude
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client.exe") -ExtraArgs @("-collection:sokol=$Sokol")
+    Remove-Item -Recurse -Force $tmp
+    Write-Host ">> Built $(Join-Path $OutDir 'nexus_client.exe')"
+}
+
+if ($Target -eq "testclient") {
+    Write-Host ">> Building headless test client..."
+    $tmp = Join-Path $OutDir "client_src"
+    Copy-StagedSources -Dest $tmp -Exclude $testClientExclude -RenameFrom "main_test_client.odin" -RenameTo "main.odin"
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client_test.exe")
+    Remove-Item -Recurse -Force $tmp
+    Write-Host ">> Built $(Join-Path $OutDir 'nexus_client_test.exe')"
+}
+
+Write-Host ""
+Write-Host "Playtest:"
+Write-Host "  1. .\bin\nexus_server.exe"
+Write-Host "  2. .\bin\nexus_client.exe"
+Write-Host "  Optional: `$env:SERVER_IP = '127.0.0.1' before launching the client"
+
 if ($Run) {
-    & $Out
+    if ($Target -eq "client") {
+        & (Join-Path $OutDir "nexus_client.exe")
+    } elseif ($Target -eq "testclient") {
+        & (Join-Path $OutDir "nexus_client_test.exe")
+    } else {
+        & (Join-Path $OutDir "nexus_server.exe")
+    }
 }

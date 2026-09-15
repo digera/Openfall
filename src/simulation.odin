@@ -80,53 +80,38 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 
 @(private)
 simulate_character_move_z :: proc(char: ^Character_State, input: Input_State, dt: f32) {
-	// Check ground contact
-	simulate_character_check_ground(char)
-	
-	if char.on_ground {
-		// Jump input
-		if input.jump {
-			char.on_ground = false
-			char.vel_z = CHARACTER_JUMP_VELOCITY
-		}
-	} else {
-		// Apply gravity
+	// Only snap to the floor when not already leaving it. Zeroing vel_z while
+	// still at z=0 was cancelling jumps on the tick after they started.
+	on_floor := char.pos.z <= ROOM_MIN.z + 0.001
+	if on_floor && char.vel_z <= 0 {
+		char.pos.z = ROOM_MIN.z
+		char.vel_z = 0
+		char.on_ground = true
+	}
+
+	if char.on_ground && input.jump {
+		char.on_ground = false
+		char.vel_z = CHARACTER_JUMP_VELOCITY
+	}
+
+	if !char.on_ground {
 		char.vel_z -= CHARACTER_GRAVITY * dt
-		
-		// Try to move vertically
+
 		try := char.pos
 		try.z += char.vel_z * dt
-		
-		// Check collisions and update position
-		if try.z < ROOM_MIN.z {
-			// Floor collision
-			try.z = ROOM_MIN.z
+
+		if try.z <= ROOM_MIN.z {
+			char.pos.z = ROOM_MIN.z
 			char.vel_z = 0
 			char.on_ground = true
-			char.pos.z = try.z
 		} else if char.vel_z > 0 && simulate_character_blocked(try) {
-			// Ceiling collision (moving up)
 			char.vel_z = 0
 		} else if char.vel_z <= 0 && simulate_character_blocked(try) {
-			// Floor collision (moving down into obstacle)
 			char.vel_z = 0
 			char.on_ground = true
 		} else {
-			// Free movement
 			char.pos.z = try.z
-			simulate_character_check_ground(char)
 		}
-	}
-}
-
-@(private)
-simulate_character_check_ground :: proc(char: ^Character_State) {
-	if char.pos.z <= ROOM_MIN.z + 0.001 {
-		char.on_ground = true
-		char.vel_z = 0
-		char.pos.z = ROOM_MIN.z
-	} else {
-		char.on_ground = false
 	}
 }
 
@@ -162,110 +147,11 @@ simulate_world_step :: proc(world: ^Entity_World) {
 		if !world.characters[i].active {
 			continue
 		}
-		
-		input := world.inputs[i]
-		
-		// Simulate character inline to avoid SOA pointer issues
-		char := &world.characters[i]
-		
-		// Apply look input
-		char.yaw += input.delta_yaw
-		char.pitch += input.delta_pitch
-		char.pitch = clampf(char.pitch, -CAM_PITCH_MAX, CAM_PITCH_MAX)
-		
-		// Horizontal movement
-		simulate_character_move_xy_inline(world, i, input, SIMULATION_DT)
-		
-		// Vertical movement and jumping
-		simulate_character_move_z_inline(world, i, input, SIMULATION_DT)
-		
-		// Clamp to room bounds
-		char.pos.x = clampf(char.pos.x, ROOM_MIN.x + CHARACTER_RADIUS_M, ROOM_MAX.x - CHARACTER_RADIUS_M)
-		char.pos.y = clampf(char.pos.y, ROOM_MIN.y + CHARACTER_RADIUS_M, ROOM_MAX.y - CHARACTER_RADIUS_M)
+
+		// Copy out of the SOA array — a #soa pointer is not ^Character_State
+		char := world.characters[i]
+		simulate_character_step(&char, world.inputs[i], SIMULATION_DT)
+		world.characters[i] = char
 	}
 }
 
-// Inline versions that work with SOA indexed access
-@(private)
-simulate_character_move_xy_inline :: proc(world: ^Entity_World, idx: int, input: Input_State, dt: f32) {
-	char := &world.characters[idx]
-	
-	wish_fwd := input.move_fwd
-	wish_str := input.move_str
-	wish_len := math.sqrt(wish_fwd * wish_fwd + wish_str * wish_str)
-	
-	if wish_len > 0 {
-		wish_fwd /= wish_len
-		wish_str /= wish_len
-		
-		look := camera_forward(char.yaw, 0)
-		right := camera_right(char.yaw)
-		
-		step := CHARACTER_WALK_SPEED * dt
-		vx := look.x * wish_fwd + right.x * wish_str
-		vy := look.y * wish_fwd + right.y * wish_str
-		
-		try := char.pos
-		try.x += vx * step
-		if !simulate_character_blocked(try) {
-			char.pos.x = try.x
-		}
-		
-		try = char.pos
-		try.y += vy * step
-		if !simulate_character_blocked(try) {
-			char.pos.y = try.y
-		}
-	}
-}
-
-@(private)
-simulate_character_move_z_inline :: proc(world: ^Entity_World, idx: int, input: Input_State, dt: f32) {
-	char := &world.characters[idx]
-	
-	// Check ground contact
-	if char.pos.z <= ROOM_MIN.z + 0.001 {
-		char.on_ground = true
-		char.vel_z = 0
-		char.pos.z = ROOM_MIN.z
-	} else {
-		char.on_ground = false
-	}
-	
-	if char.on_ground {
-		if input.jump {
-			char.on_ground = false
-			char.vel_z = CHARACTER_JUMP_VELOCITY
-		}
-	} else {
-		char.vel_z -= CHARACTER_GRAVITY * dt
-		
-		try := char.pos
-		try.z += char.vel_z * dt
-		
-		// Check collisions and update position
-		if try.z < ROOM_MIN.z {
-			// Floor collision
-			try.z = ROOM_MIN.z
-			char.vel_z = 0
-			char.on_ground = true
-			char.pos.z = try.z
-		} else if char.vel_z > 0 && simulate_character_blocked(try) {
-			// Ceiling collision (moving up)
-			char.vel_z = 0
-		} else if char.vel_z <= 0 && simulate_character_blocked(try) {
-			// Floor collision (moving down into obstacle)
-			char.vel_z = 0
-			char.on_ground = true
-		} else {
-			// Free movement
-			char.pos.z = try.z
-			// Recheck ground
-			if char.pos.z <= ROOM_MIN.z + 0.001 {
-				char.on_ground = true
-				char.vel_z = 0
-				char.pos.z = ROOM_MIN.z
-			}
-		}
-	}
-}

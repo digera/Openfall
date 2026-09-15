@@ -1,9 +1,8 @@
-# Odin FPS Template
+# Nexus Arena
 
-A guy in an empty room with a gun.
-: the Sokol loop, Z-up first-person body, mouse look, and viewmodel pose. Everything else (mine, grains, camp) is gone.
+Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
 
-## Requirements
+## Requirements (Windows)
 
 - [Odin](https://odin-lang.org/) (dev-2026-07 or newer)
 - Visual Studio 2022/2026 x64 toolchain (sokol C libs)
@@ -16,22 +15,32 @@ This machine:
 | Odin | `C:\Users\lusr\tools\odin\odin.exe` |
 | sokol-shdc | `C:\Users\lusr\tools\sokol-shdc\sokol-shdc.exe` |
 
-`third_party/sokol-odin` is vendored. First-time D3D11 libs: `third_party\build_sokol_d3d11.cmd` from an x64 VS prompt (or just run it — it calls vcvars itself).
+`third_party/sokol-odin` is gitignored. First-time D3D11 libs: `third_party\build_sokol_d3d11.cmd` from an x64 VS prompt (or use the existing yearning copy).
 
 ## Build
 
 ```powershell
-# First time: build sokol C libs from an x64 VS developer prompt
-cd third_party\sokol-odin\sokol
-.\build_clibs_windows.cmd
-cd ..\..\..
-
-.\build.ps1          # debug
+.\build.ps1                 # server + graphical client
+.\build.ps1 -Target server
+.\build.ps1 -Target client
 .\build.ps1 -Release
-.\build.ps1 -Run
 ```
 
-Output: `bin\odinfps.exe`
+Output:
+
+- `bin\nexus_server.exe`
+- `bin\nexus_client.exe`
+
+## Playtest
+
+Start the server, then the client (two terminals):
+
+```powershell
+.\bin\nexus_server.exe
+.\bin\nexus_client.exe
+```
+
+Remote host: `$env:SERVER_IP = "192.168.x.x"` before launching the client. Default is `127.0.0.1:27015`.
 
 ## Controls
 
@@ -41,5 +50,15 @@ Output: `bin\odinfps.exe`
 | Mouse | Look |
 | WASD | Walk |
 | Space | Jump |
-| Hold LMB | Fire |
+| 1–4 | Select spell (Missile / Orb / Blink / Frost Shard) |
+| Hold LMB | Cast selected spell |
 | Esc | Unlock mouse |
+
+## Linux
+
+```bash
+./build.sh server
+./build_graphical_client.sh
+./bin/nexus_server
+./bin/nexus_client
+```
