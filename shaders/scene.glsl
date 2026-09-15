@@ -38,7 +38,7 @@ layout(binding=1) uniform fs_params {
     vec3 gun_grip;
     float gun_on;
     vec3 gun_muzzle;
-    float _pad_g;
+    float local_team;
     vec3 gun_right;
     float _pad_r;
     vec3 gun_up;
@@ -52,6 +52,7 @@ layout(binding=1) uniform fs_params {
     vec4 impact6;
     vec4 impact7;
     vec4 projectiles[16];
+    vec4 wisps[16];
 };
 
 in vec3 ray_origin;
@@ -65,6 +66,7 @@ const uint MAT_GUN_METAL = 4u;
 const uint MAT_GUN_GRIP = 5u;
 const uint MAT_FLASH = 6u;
 const uint MAT_PROJECTILE = 7u;
+const uint MAT_WISP = 8u;
 
 bool intersect_aabb(vec3 ro, vec3 inv, vec3 bmin, vec3 bmax, out float t0, out float t1) {
     vec3 tbot = (bmin - ro) * inv;
@@ -184,6 +186,236 @@ bool flash_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
     return true;
 }
 
+vec3 wisp_team_tint(float packed) {
+    if (packed < 0.0) {
+        return vec3(0.40, 0.72, 1.0);
+    }
+    return vec3(1.0, 0.36, 0.28);
+}
+
+vec3 wisp_core_tint(float packed) {
+    if (packed < 0.0) {
+        return vec3(0.82, 0.94, 1.0);
+    }
+    return vec3(1.0, 0.90, 0.70);
+}
+
+vec3 wisp_center(vec4 w, float phase) {
+    return w.xyz + vec3(
+        0.045 * sin(world_t * 1.37 + phase),
+        0.045 * cos(world_t * 1.11 + phase * 0.83),
+        0.11 * sin(world_t * 2.07 + phase)
+    );
+}
+
+vec3 self_wisp_center() {
+    return lamp_pos + vec3(
+        0.02 * sin(world_t * 1.37),
+        0.02 * cos(world_t * 1.11),
+        -0.66 + 0.07 * sin(world_t * 2.07)
+    );
+}
+
+vec3 self_wisp_team_tint() {
+    if (local_team > 1.5) {
+        return vec3(0.40, 0.72, 1.0);
+    }
+    if (local_team > 0.5) {
+        return vec3(1.0, 0.36, 0.28);
+    }
+    return vec3(0.78, 0.52, 1.0);
+}
+
+vec3 self_wisp_core_tint() {
+    if (local_team > 1.5) {
+        return vec3(0.82, 0.94, 1.0);
+    }
+    if (local_team > 0.5) {
+        return vec3(1.0, 0.90, 0.70);
+    }
+    return vec3(0.96, 0.88, 1.0);
+}
+
+bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    vec3 oc = ro - c;
+    float b = dot(oc, rd);
+    float h = b * b - dot(oc, oc) + r * r;
+    if (h < 0.0) {
+        return false;
+    }
+    float s = sqrt(h);
+    t = -b - s;
+    if (t < tmin) {
+        t = -b + s;
+    }
+    if (t < tmin || t > tmax) {
+        return false;
+    }
+    n = normalize((ro + rd * t) - c);
+    return true;
+}
+
+bool intersect_ellipsoid(vec3 ro, vec3 rd, vec3 c, vec3 rad, float tmin, float tmax, out float t, out vec3 n) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    vec3 o = (ro - c) / rad;
+    vec3 d = rd / rad;
+    float a = dot(d, d);
+    float b = dot(o, d);
+    float cc = dot(o, o) - 1.0;
+    float h = b * b - a * cc;
+    if (h < 0.0 || a < 1e-8) {
+        return false;
+    }
+    float s = sqrt(h);
+    t = (-b - s) / a;
+    if (t < tmin) {
+        t = (-b + s) / a;
+    }
+    if (t < tmin || t > tmax) {
+        return false;
+    }
+    vec3 p = ro + rd * t;
+    n = normalize((p - c) / (rad * rad));
+    return true;
+}
+
+bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax, out float t, out vec3 n, out float part) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    part = 0.0;
+    bool hit = false;
+    float best = tmax;
+    float scale = 0.82 + 0.18 * life;
+
+    float et;
+    vec3 en;
+    vec3 mantle = vec3(0.17, 0.17, 0.40) * scale;
+    if (intersect_ellipsoid(ro, rd, c, mantle, tmin, best, et, en)) {
+        best = et;
+        n = en;
+        part = 0.0;
+        hit = true;
+    }
+
+    float st;
+    vec3 sn;
+    vec3 core_c = c + vec3(0.0, 0.0, 0.06 * scale);
+    if (intersect_sphere(ro, rd, core_c, 0.07 * scale, tmin, best, st, sn)) {
+        best = st;
+        n = sn;
+        part = 1.0;
+        hit = true;
+    }
+
+    float a1 = world_t * 2.55 + c.x * 3.1;
+    float a2 = world_t * 1.85 + c.y * 2.4;
+    float a3 = world_t * 3.15 + c.z * 1.7;
+    vec3 m1 = c + vec3(cos(a1), sin(a1), 0.28 * sin(a1 * 1.35)) * (0.24 * scale);
+    vec3 m2 = c + vec3(cos(a2 + 2.094), sin(a2 + 2.094), 0.22 * cos(a2 * 1.2)) * (0.20 * scale);
+    vec3 m3 = c + vec3(cos(a3 + 4.188), sin(a3 + 4.188), 0.16 * sin(a3 * 0.9)) * (0.17 * scale);
+
+    if (intersect_sphere(ro, rd, m1, 0.042 * scale, tmin, best, st, sn)) {
+        best = st;
+        n = sn;
+        part = 2.0;
+        hit = true;
+    }
+    if (intersect_sphere(ro, rd, m2, 0.032 * scale, tmin, best, st, sn)) {
+        best = st;
+        n = sn;
+        part = 2.0;
+        hit = true;
+    }
+    if (intersect_sphere(ro, rd, m3, 0.024 * scale, tmin, best, st, sn)) {
+        best = st;
+        n = sn;
+        part = 2.0;
+        hit = true;
+    }
+    t = best;
+    return hit;
+}
+
+bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out vec3 tint, out vec3 core, out float part, out float packed_hp) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    tint = vec3(1.0);
+    core = vec3(1.0);
+    part = 0.0;
+    packed_hp = 1.0;
+    bool hit = false;
+    float best = tmax;
+
+    for (int i = 0; i < 16; i++) {
+        vec4 w = wisps[i];
+        if (abs(w.w) < 0.001) {
+            continue;
+        }
+        float phase = float(i) * 2.21;
+        vec3 c = wisp_center(w, phase);
+        float wt, wp;
+        vec3 wn;
+        if (wisp_hit_parts(ro, rd, c, abs(w.w), 0.04, best, wt, wn, wp)) {
+            best = wt;
+            n = wn;
+            part = wp;
+            packed_hp = abs(w.w);
+            tint = wisp_team_tint(w.w);
+            core = wisp_core_tint(w.w);
+            hit = true;
+        }
+    }
+
+    float st, sp;
+    vec3 sn;
+    if (wisp_hit_parts(ro, rd, self_wisp_center(), 1.0, 0.12, best, st, sn, sp)) {
+        best = st;
+        n = sn;
+        part = sp;
+        packed_hp = 1.0;
+        tint = self_wisp_team_tint();
+        core = self_wisp_core_tint();
+        hit = true;
+    }
+
+    t = best;
+    return hit;
+}
+
+float wisp_corona(vec3 ro, vec3 rd, float tmax, vec3 c, float radius) {
+    vec3 oc = c - ro;
+    float tca = dot(oc, rd);
+    float t = clamp(tca, 0.04, tmax);
+    float d = length((ro + rd * t) - c);
+    float g = 1.0 - smoothstep(radius, radius * 3.2, d);
+    g *= g;
+    float along = smoothstep(0.0, 0.18, t) * (1.0 - smoothstep(tmax - 0.05, tmax, t));
+    return g * along;
+}
+
+vec3 wisp_glow_field(vec3 ro, vec3 rd, float tmax) {
+    vec3 glow = vec3(0.0);
+    for (int i = 0; i < 16; i++) {
+        vec4 w = wisps[i];
+        if (abs(w.w) < 0.001) {
+            continue;
+        }
+        float hp = abs(w.w);
+        float phase = float(i) * 2.21;
+        vec3 c = wisp_center(w, phase);
+        float g = wisp_corona(ro, rd, tmax, c, 0.38 + 0.10 * hp);
+        g *= 0.55 + 0.45 * hp;
+        glow += wisp_team_tint(w.w) * g * (0.55 + 0.25 * sin(world_t * 3.4 + phase));
+        glow += wisp_core_tint(w.w) * g * 0.22;
+    }
+    float sg = wisp_corona(ro, rd, tmax, self_wisp_center(), 0.30);
+    glow += self_wisp_team_tint() * sg * 0.35;
+    return glow;
+}
+
 bool projectile_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float spell_type) {
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
@@ -270,7 +502,12 @@ void main() {
     bool is_gun = false;
     bool is_flash = false;
     bool is_projectile = false;
+    bool is_wisp = false;
     float proj_spell_type = 0.0;
+    vec3 wisp_tint = vec3(1.0);
+    vec3 wisp_core = vec3(1.0);
+    float wisp_part = 0.0;
+    float wisp_hp = 1.0;
 
     float rt;
     vec3 rn;
@@ -295,6 +532,25 @@ void main() {
         is_projectile = true;
         best = pt;
     }
+
+    float wt;
+    vec3 wn;
+    vec3 wcol;
+    vec3 wcore;
+    float wpart;
+    float whp;
+    if (wisp_trace(ro, rd, best, wt, wn, wcol, wcore, wpart, whp)) {
+        hit_t = wt;
+        hit_n = wn;
+        hit_mat = MAT_WISP;
+        wisp_tint = wcol;
+        wisp_core = wcore;
+        wisp_part = wpart;
+        wisp_hp = whp;
+        is_wisp = true;
+        is_projectile = false;
+        best = wt;
+    }
     
     if (gun_on > 0.5) {
         float gt;
@@ -306,6 +562,7 @@ void main() {
             hit_mat = gm;
             is_gun = true;
             is_projectile = false;
+            is_wisp = false;
             best = gt;
         }
         float ft;
@@ -317,12 +574,16 @@ void main() {
             is_flash = true;
             is_gun = false;
             is_projectile = false;
+            is_wisp = false;
         }
     }
 
     vec3 bg = vec3(0.028, 0.030, 0.038);
+    float glow_tmax = hit_t > 0.0 ? hit_t : 24.0;
+    vec3 aura = wisp_glow_field(ro, rd, glow_tmax);
     if (hit_t < 0.0) {
-        frag_color = vec4(bg, 1.0);
+        vec3 empty = bg + aura;
+        frag_color = vec4(clamp(empty, vec3(0.0), vec3(1.0)), 1.0);
         return;
     }
 
@@ -363,6 +624,8 @@ void main() {
         } else {
             albedo = vec3(0.92, 0.82, 0.42);  // Default yellow
         }
+    } else if (hit_mat == MAT_WISP) {
+        albedo = mix(wisp_tint, wisp_core, wisp_part > 0.5 ? 0.85 : 0.35);
     }
 
     float burn = 0.0;
@@ -374,7 +637,7 @@ void main() {
     burn = max(burn, scorch(hp, impact5));
     burn = max(burn, scorch(hp, impact6));
     burn = max(burn, scorch(hp, impact7));
-    if (!is_gun && !is_flash && !is_projectile && burn > 0.0) {
+    if (!is_gun && !is_flash && !is_projectile && !is_wisp && burn > 0.0) {
         albedo *= 1.0 - burn * 0.82;
         albedo += vec3(0.12, 0.04, 0.01) * burn;
     }
@@ -387,6 +650,22 @@ void main() {
         float ndv = max(dot(hit_n, -rd), 0.0);
         float fresnel = pow(1.0 - ndv, 2.0);
         color = albedo * (0.85 + 0.65 * fresnel);
+    } else if (is_wisp) {
+        float ndv = max(dot(hit_n, -rd), 0.0);
+        float fresnel = pow(1.0 - ndv, 2.4);
+        float pulse = 0.62 + 0.38 * sin(world_t * (3.1 + 6.0 * (1.0 - wisp_hp)));
+        vec3 body = mix(wisp_core, wisp_tint, 0.42 + 0.40 * (1.0 - ndv));
+        if (wisp_part > 1.5) {
+            body = mix(wisp_core, wisp_tint, 0.18);
+            color = body * (1.15 + 0.55 * pulse);
+        } else if (wisp_part > 0.5) {
+            color = wisp_core * (1.05 + 0.35 * pulse) + wisp_tint * fresnel * 0.35;
+        } else {
+            color = body * (0.72 + 0.38 * pulse);
+            color += wisp_tint * fresnel * 0.95;
+            color += wisp_core * pow(ndv, 5.0) * 0.55;
+        }
+        color *= 0.55 + 0.45 * wisp_hp;
     } else if (is_gun) {
         float ndv = max(dot(hit_n, -rd), 0.0);
         float wrap = 0.22 + 0.78 * ndv;
@@ -403,11 +682,25 @@ void main() {
         if (flash > 0.2) {
             color += albedo * lamp(hp, hit_n, gun_muzzle, 2.2 * flash, 4.0, vec3(1.0, 0.72, 0.32)) * vec3(1.0, 0.78, 0.40);
         }
+        for (int i = 0; i < 16; i++) {
+            vec4 w = wisps[i];
+            if (abs(w.w) < 0.001) {
+                continue;
+            }
+            vec3 wc = wisp_center(w, float(i) * 2.21);
+            vec3 wtint = wisp_team_tint(w.w);
+            float intensity = 1.35 + 1.1 * abs(w.w);
+            color += albedo * lamp(hp, hit_n, wc, intensity, 9.0, wtint) * wtint;
+        }
+        vec3 sc = self_wisp_center();
+        vec3 stint = self_wisp_team_tint();
+        color += albedo * lamp(hp, hit_n, sc, 1.7, 6.5, stint) * stint;
     }
 
-    float fog = (is_gun || is_flash || is_projectile) ? 0.0 : clamp(hit_t / 28.0, 0.0, 1.0);
+    float fog = (is_gun || is_flash || is_projectile || is_wisp) ? 0.0 : clamp(hit_t / 28.0, 0.0, 1.0);
     fog *= fog;
     color = mix(color, bg, fog);
+    color += aura * (is_wisp ? 0.18 : 1.0);
     color = clamp(color, vec3(0.0), vec3(1.0));
     frag_color = vec4(color, 1.0);
 }

@@ -32,6 +32,7 @@ INTERP_BUFFER_SIZE :: 4
 
 Remote_Entity :: struct {
 	id:             Entity_ID,
+	team:           Team_ID,
 	// Interpolation buffer (newest first)
 	states:         [INTERP_BUFFER_SIZE]Character_State,
 	ticks:          [INTERP_BUFFER_SIZE]u32,
@@ -218,6 +219,9 @@ remote_entity_interpolate :: proc(remote: ^Remote_Entity, current_tick: u32, int
 	remote.display_state.vel_z = to_state.vel_z
 	remote.display_state.on_ground = to_state.on_ground
 	remote.display_state.active = true
+	remote.display_state.health = from_state.health
+	remote.display_state.mana = from_state.mana
+	remote.display_state.stamina = from_state.stamina
 }
 
 // Initialize client world
@@ -276,6 +280,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: Server_Snaps
 			stamina = entity.stamina,
 		}
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
+		remote.team = entity.team
 		remotes_found += 1
 	}
 	

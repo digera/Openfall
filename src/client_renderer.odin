@@ -1,7 +1,7 @@
 package main
 
 // Greybox client renderer
-// Renders basic geometry, floor, and entity cylinders
+// Renders the room and floating magical wisps for every character.
 
 import "core:fmt"
 import "core:time"
@@ -37,6 +37,7 @@ Client_Renderer :: struct {
 	fps_presents: int,
 	last_fps:     f32,
 	frame_ms:     f32,
+	world_t:      f32,
 }
 
 client_renderer_init :: proc(r: ^Client_Renderer) {
@@ -84,6 +85,7 @@ client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 
 client_renderer_draw :: proc(r: ^Client_Renderer, client_world: ^Client_World) {
 	t0 := time.tick_now()
+	r.world_t += f32(sapp.frame_duration())
 	
 	// Get predicted local character state
 	local_char := client_world.prediction.predicted_char
@@ -110,31 +112,34 @@ client_renderer_draw :: proc(r: ^Client_Renderer, client_world: ^Client_World) {
 		cam_forward = fwd,
 	}
 	
-	// Collect entity positions for rendering
-	// Pack remote entities into the shader
-	entity_count := 0
-	entity_positions: [16]vec4
+	// Pack remote characters as floating wisps (local self-wisp is derived in-shader)
+	wisp_count := 0
+	wisp_slots: [16]vec4
 	
 	for i in 0..<MAX_ENTITIES {
 		remote := &client_world.remote_entities[i]
-		if !remote.active || entity_count >= 16 {
+		if !remote.active || wisp_count >= 16 {
 			continue
 		}
 		
-		// Pack position + radius
-		entity_positions[entity_count] = vec4{
-			remote.display_state.pos.x,
-			remote.display_state.pos.y,
-			remote.display_state.pos.z + CHARACTER_HEIGHT_M * 0.5,  // Center of cylinder
-			CHARACTER_RADIUS_M,
+		hp := clampf(remote.display_state.health / HEALTH_MAX, 0.08, 1.0)
+		team_sign: f32 = remote.team == .Beta ? -1 : 1
+		pos := remote.display_state.pos
+		wisp_slots[wisp_count] = vec4{
+			pos.x,
+			pos.y,
+			pos.z + CHARACTER_HEIGHT_M * 0.52,
+			team_sign * hp,
 		}
-		entity_count += 1
+		wisp_count += 1
 	}
+	
+	local_team_code := f32(u8(client_world.local_team))
 	
 	// Build fragment shader params
 	fs_params := Fs_Params{
 		room_min   = ROOM_MIN,
-		world_t    = f32(time.duration_seconds(time.tick_since(time.Tick{}))),
+		world_t    = r.world_t,
 		room_max   = ROOM_MAX,
 		flash      = 0,
 		lamp_pos   = eye,
@@ -142,6 +147,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, client_world: ^Client_World) {
 		gun_grip   = {},
 		gun_on     = 0,  // No gun for now
 		gun_muzzle = {},
+		local_team = local_team_code,
 		gun_right  = {},
 		gun_up     = {},
 		impact0    = {},
@@ -153,6 +159,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, client_world: ^Client_World) {
 		impact6    = {},
 		impact7    = {},
 		projectiles = {},  // Filled below
+		wisps       = wisp_slots,
 	}
 	
 	// Pack projectile data into shader
