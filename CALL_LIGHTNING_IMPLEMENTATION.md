@@ -13,20 +13,30 @@ Added **Call Lightning** as the 5th spell - a targeted, long-cast, high-damage l
 - **Hotbar Slot**: 5 (press `5` to select)
 
 ## Spell Behavior
-1. **Target Acquisition**: Server finds the best enemy in the caster's crosshair cone (85° dot threshold)
-2. **Cast Channel**: 1.8s cast time during which the target must remain valid
-3. **Continuous Validation** (every tick + at cast end):
-   - Target alive
-   - In range (≤22m)
-   - **Clear LOS** (caster eye → target center via `world_segment_clear`)
-   - If any check fails → **spell fails and refunds mana + cooldown**
-4. **Strike**: On successful completion, lightning bolt strikes from sky (45m above ground) to target
-5. **Damage**: Direct hit on primary target + splash damage to nearby enemies
 
-### LOS Policy (Anti-Corner-Shooting)
-- **Horizontal LOS**: Gameplay collision check is caster→target (eye to center)
+### 1. Target Acquisition (Cast Start)
+- **Soft sticky targeting**: Finds best enemy under crosshair (85° dot threshold, 22m max)
+- **No LOS required** at acquisition - can start casting on enemies behind cover
+- If no valid crosshair target → cannot start cast
+
+### 2. Cast Channel (1.8s)
+- **Target locked** for duration
+- **Death interrupts**: If target dies → cancel cast, refund mana/cooldown
+- **No mid-cast LOS cancellation**: Target can move behind cover during channel without interrupting
+- **No range cancellation**: Target can move beyond 22m during channel
+
+### 3. Strike (Cast End)
+- **Mandatory LOS check**: `world_segment_clear(caster_eye, target_center)`
+  - ✅ **Clear LOS** → lightning strikes
+  - ❌ **LOS blocked** → strike fails, refund mana/cooldown, no damage/VFX
+- **No range validation**: Strike lands even if target moved beyond 22m during cast
+- Target still alive → apply damage
+
+### LOS Policy
+- **Soft targeting at start**: Can begin cast on enemy behind cover
+- **Horizontal LOS at landing**: Strike requires clear caster→target line at completion
 - **Sky bolt is VFX only**: Visual comes from above but doesn't bypass cover
-- **Cannot wall-shoot**: Target ducking behind pillar during cast = fail + refund
+- **Counterplay**: Target can move behind cover during 1.8s cast to deny strike
 
 ## Technical Implementation
 
@@ -52,17 +62,20 @@ Entity_Spell_State :: struct {
 
 #### 3. Server Logic (`src/server.odin`)
 - **`server_handle_spell_cast`**: Start cast or fire instant spell
-  - For Lightning: finds best target via `server_find_best_target`
+  - For Lightning: finds best target via `server_find_best_target(require_los=false)`
+  - **Soft sticky targeting**: No LOS requirement at acquisition
   - Consumes mana/cooldown upfront
   - Starts channel for cast-time spells
 - **`server_update_resources`**: Advances cast progress each tick
-  - **Continuous validation**: For Lightning, checks alive/range/**LOS** every tick
-  - **Interrupts cast** if target becomes invalid → refunds mana/cooldown
-- **`server_finish_cast`**: Final validation before strike
-  - **Final LOS check**: `world_segment_clear(caster_eye, target_center)` before damage
-  - Refunds mana/cooldown if target lost or **LOS broken**
+  - **Minimal validation**: For Lightning, only checks if target **died** during channel
+  - Death interrupts cast → refunds mana/cooldown
+  - **No mid-cast LOS or range checks** (allows target to move/hide)
+- **`server_finish_cast`**: Strike-time validation
+  - **Mandatory LOS check**: `world_segment_clear(caster_eye, target_center)` before damage
+  - LOS blocked → refunds mana/cooldown, no damage/VFX
+  - **No range check**: Strike lands even if target moved far away
 - **`server_lightning_strike`**: Apply damage and spawn VFX marker projectile
-- **`server_find_best_target`**: Cone-based targeting with LOS checks
+- **`server_find_best_target`**: Cone-based targeting with optional LOS filter
 
 #### 4. Client Rendering (`src/client_renderer.odin`)
 - Extended hotbar to 5 slots (adjusted layout)
@@ -106,14 +119,15 @@ The lightning bolt is rendered as:
 The effect uses segment_glow (beam) and corona (sphere glow) primitives in the ray-marching shader for performant volumetric rendering.
 
 ## Testing Notes
-- **Range**: 22m is roughly 2x character height (1.72m), balanced for medium-range dueling
-- **Cast time**: 1.8s is long enough to require commitment but usable in combat
-- **Damage**: 85 direct + 34 AoE max = 119 total if both hit, comparable to Frost Lance piercing potential
+- **Range**: 22m max at acquisition, but strike lands even if target moves beyond during cast
+- **Cast time**: 1.8s commitment - target can reposition during channel
+- **Damage**: 85 direct + 34 AoE max = 119 total if both hit
 - **Mana**: 60 cost = 60% of max mana pool, heavy investment
-- **Targeting**: Cone threshold of 0.85 dot (~32° cone) requires reasonably accurate aim
-- **LOS validation**: Cannot hit around corners - target must maintain LOS throughout entire 1.8s cast
-  - **Test**: Start cast, have target duck behind pillar → cast fails, mana/cooldown refunded
-  - **Test**: Target stays in open → strike lands successfully
+- **Targeting**: Soft sticky - can start cast on enemies behind cover
+- **LOS at strike**: Target must be in the open when bolt lands (1.8s later)
+  - **Test**: Start cast on enemy behind wall → channel completes → LOS blocked → refund
+  - **Test**: Start cast in open, target hides at 1.0s → LOS blocked at 1.8s → refund
+  - **Test**: Start cast behind cover, target moves to open at 1.0s → LOS clear at 1.8s → strike lands
 
 ## Known Limitations
 - No casting animation (reuses idle pose)

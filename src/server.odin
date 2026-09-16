@@ -602,7 +602,7 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 		if spell_state.casting {
 			def := &SPELL_DEFS[spell_state.cast_spell]
 
-			// Continuous validation for Lightning: check LOS each tick
+			// Minimal validation during channel: death only (range/LOS checked at strike)
 			if def.payload == .Lightning {
 				target_id := spell_state.cast_target_id
 				if !entity_alive(&server.world, target_id) {
@@ -613,35 +613,6 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 					server.world.characters[i] = char
 					if SERVER_VERBOSE {
 						server_log("[Combat] Lightning cast interrupted - target died")
-					}
-					continue
-				}
-
-				target := server.world.characters[target_id]
-				dist := len_vec3(target.pos - char.pos)
-				if dist > def.range {
-					// Out of range - cancel cast, refund
-					spell_state.casting = false
-					char.mana = min(char.mana + def.mana_cost, MANA_MAX)
-					spell_state.cooldowns[spell_state.cast_spell] = 0
-					server.world.characters[i] = char
-					if SERVER_VERBOSE {
-						server_log("[Combat] Lightning cast interrupted - target out of range")
-					}
-					continue
-				}
-
-				// LOS check: cannot cast through walls
-				caster_eye := char.pos + vec3{0, 0, PLAYER_EYE_M}
-				target_center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
-				if !world_segment_clear(caster_eye, target_center, 0.8) {
-					// LOS broken - cancel cast, refund
-					spell_state.casting = false
-					char.mana = min(char.mana + def.mana_cost, MANA_MAX)
-					spell_state.cooldowns[spell_state.cast_spell] = 0
-					server.world.characters[i] = char
-					if SERVER_VERBOSE {
-						server_log("[Combat] Lightning cast interrupted - LOS broken")
 					}
 					continue
 				}
@@ -686,10 +657,10 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return false
 	}
 
-	// Find target for lightning
+	// Find target for lightning (soft sticky target - no LOS required at start)
 	target_id := INVALID_ENTITY
 	if def.payload == .Lightning {
-		target_id = server_find_best_target(&server.world, caster_id, char.yaw, char.pitch, def.range)
+		target_id = server_find_best_target(&server.world, caster_id, char.yaw, char.pitch, def.range, false) // require_los = false
 		if target_id == INVALID_ENTITY {
 			return false // no valid target
 		}
@@ -774,39 +745,28 @@ server_finish_cast :: proc(server: ^Server, caster_id: Entity_ID) {
 			spell_state.cooldowns[spell_id] = 0
 			server.world.characters[caster_id] = char
 			if SERVER_VERBOSE {
-				server_log("[Combat] Lightning cast failed - target lost")
+				server_log("[Combat] Lightning strike failed - target died")
 			}
 			return
 		}
 
 		target := server.world.characters[target_id]
-		dist := len_vec3(target.pos - char.pos)
-		if dist > def.range {
-			// Target out of range - refund
-			char.mana = min(char.mana + def.mana_cost, MANA_MAX)
-			spell_state.cooldowns[spell_id] = 0
-			server.world.characters[caster_id] = char
-			if SERVER_VERBOSE {
-				server_log("[Combat] Lightning cast failed - target out of range")
-			}
-			return
-		}
 
-		// LOS check: cannot strike around corners
+		// Mandatory LOS check at strike time: cannot hit through cover
 		caster_eye := char.pos + vec3{0, 0, PLAYER_EYE_M}
 		target_center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
 		if !world_segment_clear(caster_eye, target_center, 0.8) {
-			// LOS broken - refund
+			// LOS blocked at strike - refund
 			char.mana = min(char.mana + def.mana_cost, MANA_MAX)
 			spell_state.cooldowns[spell_id] = 0
 			server.world.characters[caster_id] = char
 			if SERVER_VERBOSE {
-				server_log("[Combat] Lightning cast failed - LOS broken")
+				server_log("[Combat] Lightning strike failed - LOS blocked")
 			}
 			return
 		}
 
-		// Strike the target
+		// Strike the target (no range check - target can move away during cast)
 		server_lightning_strike(server, caster_id, target_id, def)
 	}
 }
@@ -881,7 +841,9 @@ server_lightning_strike :: proc(server: ^Server, caster_id: Entity_ID, target_id
 }
 
 // Find the best target in the caster's crosshair cone
-server_find_best_target :: proc(world: ^Entity_World, caster_id: Entity_ID, yaw, pitch: f32, max_range: f32) -> Entity_ID {
+// For Lightning: no LOS requirement at acquisition (soft sticky targeting)
+// For other spells: includes LOS check
+server_find_best_target :: proc(world: ^Entity_World, caster_id: Entity_ID, yaw, pitch: f32, max_range: f32, require_los := true) -> Entity_ID {
 	caster := world.characters[caster_id]
 	caster_team := world.teams[caster_id]
 	origin := caster.pos + vec3{0, 0, PLAYER_EYE_M}
@@ -916,8 +878,8 @@ server_find_best_target :: proc(world: ^Entity_World, caster_id: Entity_ID, yaw,
 			continue
 		}
 
-		// LOS check
-		if !world_segment_clear(origin, target_center, 0.8) {
+		// LOS check (optional for Lightning soft-target acquisition)
+		if require_los && !world_segment_clear(origin, target_center, 0.8) {
 			continue
 		}
 
