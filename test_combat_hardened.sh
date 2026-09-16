@@ -71,13 +71,13 @@ echo ""
 # Count spell casts
 ARCANE_MISSILE=$(grep -c "Arcane Missile" /tmp/combat_server.log 2>/dev/null || echo "0")
 ARCANE_ORB=$(grep -c "Arcane Orb" /tmp/combat_server.log 2>/dev/null || echo "0")
-FROST_SHARD=$(grep -c "Frost Shard" /tmp/combat_server.log 2>/dev/null || echo "0")
+FROST_LANCE=$(grep -c "Frost Lance" /tmp/combat_server.log 2>/dev/null || echo "0")
 BLINK=$(grep -c "Blink" /tmp/combat_server.log 2>/dev/null || echo "0")
 
 echo "Spells cast:"
 echo "  Arcane Missile: $ARCANE_MISSILE"
 echo "  Arcane Orb: $ARCANE_ORB"
-echo "  Frost Shard: $FROST_SHARD"
+echo "  Frost Lance: $FROST_LANCE"
 echo "  Blink: $BLINK"
 
 # Count hits
@@ -94,7 +94,7 @@ echo "Full server log: /tmp/combat_server.log"
 echo ""
 
 # Verification
-TOTAL_CASTS=$((ARCANE_MISSILE + ARCANE_ORB + FROST_SHARD + BLINK))
+TOTAL_CASTS=$((ARCANE_MISSILE + ARCANE_ORB + FROST_LANCE + BLINK))
 
 echo "=== Verification Summary ==="
 if [ "$TOTAL_CASTS" -ge "3" ]; then

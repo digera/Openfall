@@ -412,9 +412,12 @@ client_world_apply_projectiles :: proc(world: ^Client_World, snapshot: ^Server_S
 	}
 }
 
+// Extrapolate between snapshots along the same ballistic arc the server uses.
 client_projectile_pos :: proc(cp: ^Client_Projectile, now: f64) -> vec3 {
 	dt := f32(clamp(now - cp.recv_time, 0, 0.25))
-	return cp.snap.pos + cp.snap.vel * dt
+	pos := cp.snap.pos + cp.snap.vel * dt
+	pos.z += 0.5 * PROJECTILE_GRAVITY_Z * SPELL_DEFS[cp.snap.spell_id].proj_gravity * dt * dt
+	return pos
 }
 
 client_world_add_impact :: proc(world: ^Client_World, pos: vec3, spell: Spell_ID) {
@@ -454,7 +457,12 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 		if !im.live {
 			continue
 		}
-		speed: f32 = im.spell == .Arcane_Orb ? 1.4 : 2.6
+		// Bigger blasts linger longer.
+		speed: f32 = 2.6
+		#partial switch im.spell {
+		case .Arcane_Orb:     speed = 1.2
+		case .Arcane_Missile: speed = 1.9
+		}
 		im.age -= dt * speed
 		if im.age <= 0 {
 			im.live = false

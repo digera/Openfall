@@ -46,6 +46,7 @@ Bot :: struct {
 	stuck_timer:     f32,
 
 	cast_timer:      f32,
+	next_spell:      Spell_ID, // chosen ahead of the shot so the aim can lead it
 	jump_timer:      f32,
 	think_offset:    int,
 }
@@ -315,13 +316,29 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 		chest := b.target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
 		dist := len_vec3(chest - eye)
-		lead := chest + b.target_vel * (dist / SPELL_DEFS[.Arcane_Missile].proj_speed) * 0.8
+
+		// Aim for the spell that is actually about to be cast: they differ
+		// enough in speed and drop that one shared lead misses with all of them.
+		if b.next_spell == .None {
+			b.next_spell = bot_pick_spell(server, b, char, dist)
+		}
+		aim_def := &SPELL_DEFS[.Arcane_Missile]
+		if b.next_spell != .None && SPELL_DEFS[b.next_spell].payload == .Projectile {
+			aim_def = &SPELL_DEFS[b.next_spell]
+		}
+		flight := dist / max(aim_def.proj_speed, 1)
+		lead := chest + b.target_vel * flight * 0.8
+		lead.z -= 0.5 * PROJECTILE_GRAVITY_Z * aim_def.proj_gravity * flight * flight
+
 		d := lead - eye
 		hd := math.sqrt(d.x * d.x + d.y * d.y)
 		desired_yaw = math.atan2(d.y, d.x) + b.aim_err_yaw
 		desired_pitch = math.atan2(d.z, hd) + b.aim_err_pitch
-	} else if len2_vec3(move_dir) > 0.01 {
-		desired_yaw = math.atan2(move_dir.y, move_dir.x)
+	} else {
+		b.next_spell = .None
+		if len2_vec3(move_dir) > 0.01 {
+			desired_yaw = math.atan2(move_dir.y, move_dir.x)
+		}
 	}
 
 	// Smooth turn
@@ -374,7 +391,11 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	// --- Cast ------------------------------------------------------------
 	b.cast_timer -= dt
 	if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
-		spell := bot_pick_spell(server, b, char, len_vec3(b.target_pos - char.pos))
+		spell := b.next_spell
+		if spell == .None {
+			spell = bot_pick_spell(server, b, char, len_vec3(b.target_pos - char.pos))
+		}
+		b.next_spell = .None
 		if spell != .None {
 			// The cast reads the entity's yaw/pitch, which the sim sets from
 			// input next tick; apply our aim now so the shot goes where we look.
@@ -501,11 +522,13 @@ bot_find_target :: proc(server: ^Server, b: ^Bot, eye: vec3) -> Entity_ID {
 bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f32) -> Spell_ID {
 	cds := &server.world.spell_states[b.id].cooldowns
 	r := rand.float32()
-	if dist < 14 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.45 {
+	// The orb only lands at short range now that it lobs, and the lance is too
+	// slow to connect across the map.
+	if dist < 13 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.4 {
 		return .Arcane_Orb
 	}
-	if cds[.Frost_Shard] <= 0 && char.mana >= SPELL_DEFS[.Frost_Shard].mana_cost && r < 0.7 {
-		return .Frost_Shard
+	if dist < 24 && cds[.Frost_Lance] <= 0 && char.mana >= SPELL_DEFS[.Frost_Lance].mana_cost && r < 0.6 {
+		return .Frost_Lance
 	}
 	if cds[.Arcane_Missile] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Missile].mana_cost {
 		return .Arcane_Missile

@@ -105,6 +105,13 @@ box_local :: proc(b: ^World_Box, p: vec3) -> vec3 {
 	return {c * d.x + s * d.y, -s * d.x + c * d.y, d.z}
 }
 
+// Transform a direction out of a box's local frame back into world space.
+box_unrot :: proc(b: ^World_Box, v: vec3) -> vec3 {
+	s := math.sin(b.yaw)
+	c := math.cos(b.yaw)
+	return {c * v.x - s * v.y, s * v.x + c * v.y, v.z}
+}
+
 // grow > 0 expands the box (solids), grow < 0 shrinks it (floors).
 // Z is tested loosely so a foot resting exactly on the floor counts as inside.
 box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
@@ -134,6 +141,87 @@ world_point_free :: proc(p: vec3, pad: f32) -> bool {
 		}
 	}
 	return true
+}
+
+// Per-axis distance by which `p` sticks out of a floor box's walkable slab
+// (negative = still inside). Mirrors box_contains(b, p, -pad), including its
+// loose lower Z bound.
+@(private = "file")
+box_exit_depth :: proc(b: ^World_Box, p: vec3, pad: f32) -> vec3 {
+	l := box_local(b, p)
+	return {
+		abs(l.x) - (b.half.x - pad),
+		abs(l.y) - (b.half.y - pad),
+		max(l.z - (b.half.z - pad), (-b.half.z - 0.05) - l.z),
+	}
+}
+
+// Outward normal of the surface something just ran into: `from` is the last
+// point that passed world_point_free, `blocked` the first one that didn't.
+world_surface_normal :: proc(from, blocked: vec3, pad: f32) -> vec3 {
+	// Solid cover: leave through the face we are least deep into.
+	for i in 0..<NUM_SOLID_BOXES {
+		b := &world_solid_boxes[i]
+		if !box_contains(b, blocked, pad) {
+			continue
+		}
+		l := box_local(b, blocked)
+		depth := vec3{
+			(b.half.x + pad) - abs(l.x),
+			(b.half.y + pad) - abs(l.y),
+			(b.half.z + pad) - abs(l.z),
+		}
+		axis := 0
+		for k in 1..<3 {
+			if depth[k] < depth[axis] {
+				axis = k
+			}
+		}
+		n := vec3{}
+		n[axis] = l[axis] >= 0 ? 1 : -1
+		return box_unrot(b, n)
+	}
+
+	// Otherwise we left the walkable union. Of the boxes we were still inside,
+	// use the one `blocked` only just escaped: in an overlap region (a lane
+	// mouth, say) that is the corridor whose wall we actually hit.
+	best := -1
+	best_axis := 0
+	best_exit := f32(1e9)
+	for i in 0..<NUM_FLOOR_BOXES {
+		b := &world_floor_boxes[i]
+		if !box_contains(b, from, -pad) {
+			continue
+		}
+		exit := box_exit_depth(b, blocked, pad)
+		axis := 0
+		for k in 1..<3 {
+			if exit[k] > exit[axis] {
+				axis = k
+			}
+		}
+		if exit[axis] < best_exit {
+			best_exit = exit[axis]
+			best_axis = axis
+			best = i
+		}
+	}
+	if best >= 0 {
+		b := &world_floor_boxes[best]
+		l := box_local(b, blocked)
+		n := vec3{}
+		// Point back inside: for Z that means down off the ceiling or up off
+		// the floor, for X/Y in from the wall we crossed.
+		n[best_axis] = l[best_axis] >= 0 ? -1 : 1
+		return box_unrot(b, n)
+	}
+
+	// Degenerate (started inside geometry): send it back the way it came.
+	d := from - blocked
+	if len2_vec3(d) < 1e-8 {
+		return {0, 0, 1}
+	}
+	return norm_vec3(d)
 }
 
 // Segment visibility test by sampling. Good enough for bot line-of-sight.

@@ -63,7 +63,7 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | WASD | Walk |
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
-| 1–4 | Select spell (Missile / Orb / Blink / Frost Shard) |
+| 1–4 | Select spell (Missile / Orb / Blink / Lance) |
 | Hold LMB | Cast selected spell |
 | Esc | Unlock mouse |
 

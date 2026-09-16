@@ -67,7 +67,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	#partial switch spell {
 	case .Arcane_Missile: fx.cast_kick += 0.010
 	case .Arcane_Orb:     fx.cast_kick += 0.028; fx.fov_kick = max(fx.fov_kick, 0.35)
-	case .Frost_Shard:    fx.cast_kick += 0.014
+	case .Frost_Lance:    fx.cast_kick += 0.020
 	case .Blink:          // handled when the teleport lands
 	}
 }
@@ -166,7 +166,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Arcane_Missile: return 1
 	case .Arcane_Orb:     return 2
 	case .Blink:          return 3
-	case .Frost_Shard:    return 4
+	case .Frost_Lance:    return 4
 	}
 	return 1
 }

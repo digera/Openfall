@@ -431,6 +431,19 @@ bool projectile_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out
             if (intersect_sphere(ro, rd, p.xyz, radius, 0.04, t, pt, pn)) {
                 t = pt; n = pn; type = ptype; hit = true;
             }
+        } else if (ptype > 3.5) {
+            // Frost lance: spear head with a tapering shaft behind it.
+            vec3 dir = normalize(proj_vel[i].xyz + vec3(1e-4));
+            if (!bounds_hit(ro, rd, p.xyz - dir * 0.6, 1.1, t)) continue;
+            if (intersect_sphere(ro, rd, p.xyz, radius, 0.04, t, pt, pn)) {
+                t = pt; n = pn; type = ptype; hit = true;
+            }
+            for (int k = 1; k < 4; k++) {
+                vec3 c = p.xyz - dir * (radius * 1.5 * float(k));
+                if (intersect_sphere(ro, rd, c, radius * (0.78 - 0.16 * float(k)), 0.04, t, pt, pn)) {
+                    t = pt; n = pn; type = ptype; hit = true;
+                }
+            }
         } else {
             // Streaks elongated along velocity: approximate with sphere + small trailing sphere
             vec3 v = proj_vel[i].xyz;
@@ -579,7 +592,7 @@ void main() {
         vec3 tint = spell_tint(ptype);
         aura += tint * corona(ro, rd, glow_tmax, p.xyz, radius * 3.0) * 0.9;
         vec3 v = proj_vel[i].xyz;
-        float trail_len = (ptype > 1.5 && ptype < 2.5) ? 0.5 : 1.8;
+        float trail_len = (ptype > 1.5 && ptype < 2.5) ? 0.5 : ((ptype > 3.5) ? 2.6 : 1.8);
         vec3 tail = p.xyz - normalize(v + vec3(1e-4)) * trail_len;
         aura += tint * segment_glow(ro, rd, glow_tmax, tail, p.xyz, radius * 1.6) * 0.55;
     }
@@ -589,7 +602,10 @@ void main() {
         float itype = floor(im.w);
         float age = fract(im.w);
         float grow = 1.0 - age;
-        float rad = (itype > 1.5 && itype < 2.5) ? 0.6 + 3.2 * grow : 0.25 + 1.3 * grow;
+        // Blast size tracks the spell's splash radius.
+        float rad = 0.25 + 0.9 * grow;
+        if (itype > 1.5 && itype < 2.5)      rad = 0.8 + 5.4 * grow;   // orb
+        else if (itype < 1.5)                rad = 0.35 + 2.0 * grow;  // missile pop
         vec3 tint = spell_tint(itype);
         float g = corona(ro, rd, glow_tmax, im.xyz, rad) * age * age;
         aura += tint * g * 1.6;

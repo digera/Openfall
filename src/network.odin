@@ -518,6 +518,10 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		p := &packet.projectiles[i]
 		p.id = br_u32(&r)
 		p.spell_id = Spell_ID(br_u8(&r))
+		if !spell_valid(p.spell_id) {
+			// Never let a wire byte index the spell table out of range.
+			p.spell_id = .None
+		}
 		p.owner_id = Entity_ID(br_u8(&r))
 		p.pos = br_vec3(&r)
 		p.vel = br_vec3(&r)

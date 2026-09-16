@@ -11,14 +11,14 @@ MANA_REGEN_PER_SEC    :: f32(12)
 Spell_ID :: enum u8 {
 	None = 0,
 
-	Arcane_Missile = 1,    // fast projectile
-	Arcane_Orb     = 2,    // slow heavy AoE with knockback
+	Arcane_Missile = 1,    // bouncing bolt, pops after its ricochets run out
+	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
-	Frost_Shard    = 4,    // projectile + slow
+	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
 }
 
 // Spells bound to hotbar slots 1..4
-HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Shard}
+HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Lance}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -32,12 +32,16 @@ Spell_Def :: struct {
 	proj_speed:    f32,
 	proj_lifetime: f32,
 	proj_radius:   f32,
-	proj_gravity:  bool,
+	proj_gravity:  f32,   // fraction of PROJECTILE_GRAVITY_Z applied in flight
+	proj_bounces:  int,   // ricochets off walls and floor before the projectile pops
+	proj_restitution: f32, // speed kept per ricochet
+	proj_pierce:   int,    // enemies speared before the projectile stops
 
-	damage:        f32,
-	aoe_radius:    f32,
-	knockback:     f32,
-	slow_ticks:    int,
+	damage:          f32,
+	aoe_radius:      f32,
+	aoe_damage_frac: f32,   // splash damage as a fraction of `damage`
+	knockback:       f32,
+	slow_ticks:      int,
 
 	range:         f32,   // blink distance
 }
@@ -51,32 +55,41 @@ Spell_Payload_Type :: enum u8 {
 SPELL_DEFS := [Spell_ID]Spell_Def{
 	.None = {},
 
+	// Ricochets down lanes and around cover; the pop is what does the work.
 	.Arcane_Missile = {
-		id            = .Arcane_Missile,
-		name          = "Arcane Missile",
-		short_name    = "MISSILE",
-		mana_cost     = 10,
-		cooldown_sec  = 0.55,
-		payload       = .Projectile,
-		proj_speed    = 48,
-		proj_lifetime = 2.5,
-		proj_radius   = 0.16,
-		damage        = 18,
+		id               = .Arcane_Missile,
+		name             = "Arcane Missile",
+		short_name       = "MISSILE",
+		mana_cost        = 12,
+		cooldown_sec     = 0.8,
+		payload          = .Projectile,
+		proj_speed       = 30,
+		proj_lifetime    = 3.2,
+		proj_radius      = 0.16,
+		proj_gravity     = 0.45,
+		proj_bounces     = 3,
+		proj_restitution = 0.72,
+		damage           = 18,
+		aoe_radius       = 2.2,
+		aoe_damage_frac  = 0.5,
 	},
 
+	// Lobbed: detonates on the first thing it touches, wide splash.
 	.Arcane_Orb = {
-		id            = .Arcane_Orb,
-		name          = "Arcane Orb",
-		short_name    = "ORB",
-		mana_cost     = 35,
-		cooldown_sec  = 4.0,
-		payload       = .Projectile,
-		proj_speed    = 16,
-		proj_lifetime = 5.0,
-		proj_radius   = 0.45,
-		damage        = 55,
-		aoe_radius    = 3.5,
-		knockback     = 9.0,
+		id              = .Arcane_Orb,
+		name            = "Arcane Orb",
+		short_name      = "ORB",
+		mana_cost       = 40,
+		cooldown_sec    = 5.0,
+		payload         = .Projectile,
+		proj_speed      = 12,
+		proj_lifetime   = 4.0,
+		proj_radius     = 0.45,
+		proj_gravity    = 0.6,
+		damage          = 55,
+		aoe_radius      = 6.5,
+		aoe_damage_frac = 0.75,
+		knockback       = 12.0,
 	},
 
 	.Blink = {
@@ -89,18 +102,21 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		range         = 11,
 	},
 
-	.Frost_Shard = {
-		id            = .Frost_Shard,
-		name          = "Frost Shard",
-		short_name    = "FROST",
-		mana_cost     = 18,
-		cooldown_sec  = 1.8,
+	// Drifts in slowly and spears everyone lined up behind the first target.
+	.Frost_Lance = {
+		id            = .Frost_Lance,
+		name          = "Frost Lance",
+		short_name    = "LANCE",
+		mana_cost     = 32,
+		cooldown_sec  = 3.4,
 		payload       = .Projectile,
-		proj_speed    = 32,
-		proj_lifetime = 3.5,
-		proj_radius   = 0.22,
-		damage        = 26,
-		slow_ticks    = 150, // 2.5 s
+		proj_speed    = 15,
+		proj_lifetime = 5.0,
+		proj_radius   = 0.28,
+		proj_gravity  = 0.1,
+		proj_pierce   = 4,
+		damage        = 68,
+		slow_ticks    = 180, // 3 s
 	},
 }
 
