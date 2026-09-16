@@ -26,6 +26,26 @@ Character_State :: struct {
 	respawn_timer:  f32,
 }
 
+// Display name for entities (players and bots)
+Entity_Name :: struct {
+	text: [32]u8,
+	len:  int,
+}
+
+entity_name_from_string :: proc(s: string) -> Entity_Name {
+	name := Entity_Name{}
+	n := min(len(s), 31)
+	for i in 0..<n {
+		name.text[i] = s[i]
+	}
+	name.len = n
+	return name
+}
+
+entity_name_to_string :: proc(name: ^Entity_Name) -> string {
+	return string(name.text[:name.len])
+}
+
 // Input for one entity for one tick. Look angles are absolute so a dropped
 // packet can never desync the server's aim from the client's view.
 Input_State :: struct {
@@ -43,6 +63,7 @@ Entity_World :: struct {
 	inputs:       [MAX_ENTITIES]Input_State,
 	spell_states: [MAX_ENTITIES]Entity_Spell_State,
 	teams:        [MAX_ENTITIES]Team_ID,
+	names:        [MAX_ENTITIES]Entity_Name,
 	next_id:      Entity_ID,
 	count:        int,
 }

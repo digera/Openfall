@@ -46,6 +46,7 @@ Client_Prediction :: struct {
 Remote_Entity :: struct {
 	id:        Entity_ID,
 	team:      Team_ID,
+	name:      Entity_Name,
 	states:    [INTERP_BUFFER_SIZE]Character_State, // newest first
 	ticks:     [INTERP_BUFFER_SIZE]u32,
 	count:     int,
@@ -90,6 +91,10 @@ Client_World :: struct {
 
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
+
+	// Sticky target system
+	sticky_target_id:   Entity_ID,
+	sticky_target_name: Entity_Name,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +292,8 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.impacts = {}
 	world.have_server_tick = false
 	world.have_game_state = false
+	world.sticky_target_id = INVALID_ENTITY
+	world.sticky_target_name = {}
 }
 
 // Estimated server tick at which remote entities should be displayed.
@@ -349,6 +356,10 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 			remote.active = true
 		}
 		remote.team = entity.team
+		remote.name.len = int(entity.name_len)
+		for j in 0..<int(entity.name_len) {
+			remote.name.text[j] = entity.name[j]
+		}
 		remote.last_seen = world.local_time
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 	}
@@ -471,4 +482,91 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	world.hit_marker = max(world.hit_marker - dt * 4.0, 0)
 	client_prediction_decay_offset(&world.prediction, dt)
+
+	// Clear sticky target if it's no longer valid
+	if world.sticky_target_id != INVALID_ENTITY {
+		if !client_world_is_valid_target(world, world.sticky_target_id) {
+			world.sticky_target_id = INVALID_ENTITY
+			world.sticky_target_name = {}
+		}
+	}
+}
+
+// Check if an entity is a valid sticky target (alive and active)
+client_world_is_valid_target :: proc(world: ^Client_World, id: Entity_ID) -> bool {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return false
+	}
+	remote := &world.remote_entities[id]
+	if !remote.active {
+		return false
+	}
+	if remote.display_state.dead {
+		return false
+	}
+	return true
+}
+
+// Update sticky target by raycasting from camera through crosshair
+// Call this each frame while aiming (e.g., mouse is locked)
+client_world_update_sticky_target :: proc(world: ^Client_World, eye_pos: vec3, look_dir: vec3) {
+	MAX_TARGET_RANGE :: f32(100.0)
+	
+	closest_t := MAX_TARGET_RANGE
+	hit_id := INVALID_ENTITY
+	
+	// Cast ray against all remote entity cylinders
+	for i in 0..<MAX_ENTITIES {
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead {
+			continue
+		}
+		
+		// Ray vs cylinder intersection
+		entity_pos := remote.display_state.pos
+		
+		// 2D distance check (horizontal plane)
+		ray_start_2d := vec3{eye_pos.x, eye_pos.y, 0}
+		ray_dir_2d := vec3{look_dir.x, look_dir.y, 0}
+		ray_dir_2d_len := len_vec3(ray_dir_2d)
+		if ray_dir_2d_len < 0.001 {
+			continue
+		}
+		ray_dir_2d = ray_dir_2d * (1.0 / ray_dir_2d_len)
+		
+		cyl_center_2d := vec3{entity_pos.x, entity_pos.y, 0}
+		
+		to_cyl := cyl_center_2d - ray_start_2d
+		proj_len := dot_vec3(to_cyl, ray_dir_2d)
+		
+		if proj_len < 0 || proj_len > MAX_TARGET_RANGE {
+			continue
+		}
+		
+		closest_point_2d := ray_start_2d + ray_dir_2d * proj_len
+		dist_to_axis := len_vec3(closest_point_2d - cyl_center_2d)
+		
+		if dist_to_axis > CHARACTER_RADIUS_M {
+			continue
+		}
+		
+		// Check vertical bounds
+		hit_z := eye_pos.z + look_dir.z * proj_len / ray_dir_2d_len
+		if hit_z < entity_pos.z || hit_z > entity_pos.z + CHARACTER_HEIGHT_M {
+			continue
+		}
+		
+		// Hit! Check if closest
+		actual_dist := proj_len / ray_dir_2d_len
+		if actual_dist < closest_t {
+			closest_t = actual_dist
+			hit_id = Entity_ID(i)
+		}
+	}
+	
+	// Update sticky target if we hit something new
+	if hit_id != INVALID_ENTITY {
+		world.sticky_target_id = hit_id
+		world.sticky_target_name = world.remote_entities[hit_id].name
+	}
 }

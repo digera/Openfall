@@ -81,6 +81,8 @@ Snapshot_Entity :: struct {
 	stamina:    f32,
 	team:       Team_ID,
 	slow_ticks: int,
+	name_len:   u8,
+	name:       [32]u8,
 }
 
 Snapshot_Projectile :: struct {
@@ -438,10 +440,10 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1, hp 1, mana 1, stamina 4, team 1, slow 1 = 42
+// Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1, hp 1, mana 1, stamina 4, team 1, slow 1, name_len 1, name ~16 avg = ~58 avg
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Header 2 + tick 4 + ack 4 + counts 2 = 12
-// 12 + 22*42 + 12*32 = 1320 bytes worst case.
+// 12 + 22*58 + 12*32 = ~1676 bytes worst case (still under MTU).
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	w := bw_init(buffer)
 	write_header(&w, .Server_Snapshot)
@@ -466,6 +468,10 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_f32(&w, e.stamina)
 		bw_u8(&w, u8(e.team))
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
+		bw_u8(&w, e.name_len)
+		for j in 0..<int(e.name_len) {
+			bw_u8(&w, e.name[j])
+		}
 	}
 
 	pcount := min(int(packet.projectile_count), MAX_SNAPSHOT_PROJECTILES)
@@ -507,6 +513,10 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.stamina = br_f32(&r)
 		e.team = Team_ID(br_u8(&r))
 		e.slow_ticks = int(br_u8(&r))
+		e.name_len = br_u8(&r)
+		for j in 0..<int(e.name_len) {
+			e.name[j] = br_u8(&r)
+		}
 		if !r.ok {
 			return {}, false
 		}

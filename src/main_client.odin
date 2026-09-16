@@ -143,6 +143,7 @@ client_frame :: proc "c" () {
 			break
 		}
 		client_handle_input(gc, dt)
+		client_update_sticky_target(gc)
 		client_step_simulation(gc, dt)
 	}
 
@@ -293,6 +294,21 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 			gc.selected_slot = slot - 1
 		}
 	}
+}
+
+// Update sticky target by raycasting from the camera
+client_update_sticky_target :: proc(gc: ^Game_Client) {
+	if !sapp.mouse_locked() {
+		return
+	}
+	pred := &gc.client_world.prediction
+	if !pred.initialized || pred.predicted_char.dead {
+		return
+	}
+	
+	eye_pos := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
+	look_dir := camera_forward(gc.view_yaw, gc.view_pitch)
+	client_world_update_sticky_target(&gc.client_world, eye_pos, look_dir)
 }
 
 // Run as many 60Hz ticks as the accumulator allows, predicting locally and

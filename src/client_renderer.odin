@@ -619,6 +619,14 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.color3f(0.85, 0.83, 0.78)
 		sdtx.pos(cx, cy)
 		sdtx.puts("+")
+		
+		// Sticky target HUD (below crosshair)
+		if world.sticky_target_id != INVALID_ENTITY {
+			remote := &world.remote_entities[world.sticky_target_id]
+			if remote.active && !remote.display_state.dead {
+				hud_draw_target_modal(world, cols, cy + 2.5, remote)
+			}
+		}
 	}
 
 	if !sapp.mouse_locked() {
@@ -643,4 +651,38 @@ draw_bar :: proc(value: f32, max_value: f32, width: int) {
 		sdtx.putc(' ')
 	}
 	sdtx.putc(']')
+}
+
+// Draw target modal showing name and HP
+hud_draw_target_modal :: proc(world: ^Client_World, cols: f32, row: f32, remote: ^Remote_Entity) {
+	name_str := entity_name_to_string(&remote.name)
+	if len(name_str) == 0 {
+		name_str = fmt.tprintf("Entity-%d", remote.id)
+	}
+	
+	hp := remote.display_state.health
+	hp_pct := clampf(hp / HEALTH_MAX * 100.0, 0, 100)
+	
+	// Team color for the name
+	col := team_color(remote.team)
+	sdtx_color(col)
+	
+	// Center the name
+	name_col := cols * 0.5 - f32(len(name_str)) * 0.5
+	sdtx.pos(max(name_col, 0), row)
+	sdtx_str(name_str)
+	
+	// HP bar below name
+	sdtx.pos(cols * 0.5 - 7, row + 1)
+	hp_color: vec3
+	if hp_pct > 60 {
+		hp_color = {0.5, 0.9, 0.5}
+	} else if hp_pct > 30 {
+		hp_color = {1.0, 0.8, 0.3}
+	} else {
+		hp_color = {1.0, 0.4, 0.3}
+	}
+	sdtx_color(hp_color)
+	draw_bar(hp, HEALTH_MAX, 14)
+	sdtx.printf(" %3.0f", hp)
 }

@@ -384,6 +384,10 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 		fmt.eprintln("[Server] Failed to spawn player entity")
 		return -1
 	}
+	
+	// Assign player name
+	player_name := fmt.tprintf("Player-%d", server.client_count + 1)
+	server.world.names[player_id] = entity_name_from_string(player_name)
 
 	idx := server.client_count
 	server.clients[idx] = Client_Slot{
@@ -469,6 +473,7 @@ server_send_snapshots :: proc(server: ^Server) {
 			}
 			id := cand_ids[k]
 			char := server.world.characters[id]
+			name := server.world.names[id]
 			snapshot.entities[k] = Snapshot_Entity{
 				id         = id,
 				pos        = char.pos,
@@ -482,6 +487,11 @@ server_send_snapshots :: proc(server: ^Server) {
 				stamina    = char.stamina,
 				team       = server.world.teams[id],
 				slow_ticks = char.slow_ticks,
+				name_len   = u8(name.len),
+			}
+			// Copy name bytes
+			for j in 0..<name.len {
+				snapshot.entities[k].name[j] = name.text[j]
 			}
 		}
 		snapshot.entity_count = u8(take)

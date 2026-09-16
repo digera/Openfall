@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:math"
 import "core:math/rand"
 
@@ -119,6 +120,10 @@ bots_rebalance :: proc(server: ^Server) {
 			if id == INVALID_ENTITY {
 				break
 			}
+			// Assign bot name
+			bot_name := fmt.tprintf("Wisp-%02d", slot + 1)
+			server.world.names[id] = entity_name_from_string(bot_name)
+			
 			b := &server.bots[slot]
 			b^ = Bot{active = true, id = id, team = team, think_offset = slot}
 			bot_reset_ai(b)
