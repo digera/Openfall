@@ -79,23 +79,24 @@ function Build-OdinPackage {
     }
 }
 
+# Sokol-dependent files: input.odin, scene.odin, main_client.odin, client_renderer.odin
+# Server-only files:     server.odin, bots.odin, main_server.odin, camera_minimal.odin
 $serverExclude = @(
-    "render.odin", "input.odin", "scene.odin", "main.odin", "player.odin", "camera.odin",
+    "input.odin", "scene.odin",
     "main_client.odin", "client_renderer.odin", "main_test_client.odin", "main_combat_test.odin",
     "postgres.odin", "persistence.odin"
 )
 
 $clientExclude = @(
-    "main.odin", "main_server.odin", "server.odin",
+    "main_server.odin", "server.odin", "bots.odin",
     "main_test_client.odin", "main_combat_test.odin", "camera_minimal.odin",
-    "camera.odin", "player.odin", "render.odin",
     "postgres.odin", "persistence.odin"
 )
 
 $testClientExclude = @(
-    "render.odin", "input.odin", "scene.odin", "main.odin", "player.odin", "camera.odin",
-    "main_client.odin", "client_renderer.odin", "main_server.odin", "server.odin",
-    "camera_minimal.odin", "main_combat_test.odin",
+    "input.odin", "scene.odin",
+    "main_client.odin", "client_renderer.odin", "main_server.odin", "server.odin", "bots.odin",
+    "main_combat_test.odin",
     "postgres.odin", "persistence.odin"
 )
 

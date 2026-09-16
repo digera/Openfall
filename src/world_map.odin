@@ -1,0 +1,256 @@
+package main
+
+import "core:math"
+import "base:runtime"
+
+// Nexus Arena map: three team bases connected by straight lanes to an open
+// octagonal center. The walkable volume is the union of yaw-rotated boxes
+// ("floor boxes"); solid cover ("solid boxes") is subtracted from it.
+//
+// The same data drives server collision, bot navigation and the client's
+// analytic ray tracer, so everything here must stay deterministic and cheap.
+
+World_Box :: struct {
+	center: vec3,
+	half:   vec3,
+	yaw:    f32,
+}
+
+WORLD_FLOOR_Z         :: f32(0)
+WORLD_CEIL_Z          :: f32(14)      // top face of walkable volume = sky (wall height)
+WORLD_PLAZA_HALF      :: f32(16)
+WORLD_LANE_R0         :: f32(14)      // lane starts (overlaps plaza)
+WORLD_LANE_R1         :: f32(50)      // lane ends (overlaps base)
+WORLD_LANE_HALF_W     :: f32(4.5)
+WORLD_BASE_R          :: f32(60)
+WORLD_BASE_HALF       :: f32(11)
+WORLD_SPAWN_R         :: f32(64)
+WORLD_LANE_OBELISK_R  :: f32(24)
+WORLD_EXTENT          :: f32(75)      // rough outer radius (fog / culling)
+
+NUM_FLOOR_BOXES :: 11
+NUM_SOLID_BOXES :: 9
+
+world_floor_boxes: [NUM_FLOOR_BOXES]World_Box
+world_solid_boxes: [NUM_SOLID_BOXES]World_Box
+
+// Direction each team's lane leaves the center. Alpha north, then every 120°.
+team_angle :: proc(team: Team_ID) -> f32 {
+	idx := team_index(team)
+	if idx < 0 {
+		return 0
+	}
+	return f32(math.PI) * 0.5 + f32(idx) * (2.0 * f32(math.PI) / f32(TEAM_COUNT))
+}
+
+team_dir :: proc(team: Team_ID) -> vec3 {
+	a := team_angle(team)
+	return {math.cos(a), math.sin(a), 0}
+}
+
+@(init)
+world_map_init :: proc "contextless" () {
+	context = runtime.default_context()
+	half_z := (WORLD_CEIL_Z - WORLD_FLOOR_Z) * 0.5
+	cz := WORLD_FLOOR_Z + half_z
+	n := 0
+
+	// Center plaza: two squares rotated 45° = octagon.
+	world_floor_boxes[n] = {center = {0, 0, cz}, half = {WORLD_PLAZA_HALF, WORLD_PLAZA_HALF, half_z}, yaw = 0}; n += 1
+	world_floor_boxes[n] = {center = {0, 0, cz}, half = {WORLD_PLAZA_HALF, WORLD_PLAZA_HALF, half_z}, yaw = f32(math.PI) * 0.25}; n += 1
+
+	for team in TEAMS {
+		a := team_angle(team)
+		d := team_dir(team)
+
+		// Lane
+		lane_mid := (WORLD_LANE_R0 + WORLD_LANE_R1) * 0.5
+		lane_half := (WORLD_LANE_R1 - WORLD_LANE_R0) * 0.5
+		world_floor_boxes[n] = {
+			center = d * lane_mid + vec3{0, 0, cz},
+			half   = {lane_half, WORLD_LANE_HALF_W, half_z},
+			yaw    = a,
+		}; n += 1
+
+		// Base octagon
+		bc := d * WORLD_BASE_R + vec3{0, 0, cz}
+		world_floor_boxes[n] = {center = bc, half = {WORLD_BASE_HALF, WORLD_BASE_HALF, half_z}, yaw = a}; n += 1
+		world_floor_boxes[n] = {center = bc, half = {WORLD_BASE_HALF, WORLD_BASE_HALF, half_z}, yaw = a + f32(math.PI) * 0.25}; n += 1
+	}
+	// n == NUM_FLOOR_BOXES (2 plaza + 3 * (1 lane + 2 base))
+
+	s := 0
+	// Plaza pillars, sitting between lanes.
+	for team in TEAMS {
+		a := team_angle(team) + f32(math.PI) / 3.0
+		p := vec3{math.cos(a), math.sin(a), 0} * 9.0
+		world_solid_boxes[s] = {center = p + vec3{0, 0, 2.6}, half = {1.1, 1.1, 2.6}, yaw = a}; s += 1
+	}
+	// Lane cover: two staggered crates per lane.
+	for team in TEAMS {
+		a := team_angle(team)
+		d := team_dir(team)
+		side := vec3{-d.y, d.x, 0}
+		world_solid_boxes[s] = {center = d * 35.0 + side * 2.0 + vec3{0, 0, 1.15}, half = {1.0, 0.9, 1.15}, yaw = a}; s += 1
+		world_solid_boxes[s] = {center = d * 43.0 - side * 2.0 + vec3{0, 0, 1.15}, half = {1.0, 0.9, 1.15}, yaw = a}; s += 1
+	}
+	// s == NUM_SOLID_BOXES (3 pillars + 3 * 2 crates)
+}
+
+// Transform a world point into a box's local frame.
+box_local :: proc(b: ^World_Box, p: vec3) -> vec3 {
+	d := p - b.center
+	s := math.sin(b.yaw)
+	c := math.cos(b.yaw)
+	return {c * d.x + s * d.y, -s * d.x + c * d.y, d.z}
+}
+
+// grow > 0 expands the box (solids), grow < 0 shrinks it (floors).
+// Z is tested loosely so a foot resting exactly on the floor counts as inside.
+box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
+	l := box_local(b, p)
+	if abs(l.x) > b.half.x + grow || abs(l.y) > b.half.y + grow {
+		return false
+	}
+	return l.z >= -b.half.z - 0.05 && l.z <= b.half.z + grow
+}
+
+// A point is free if it lies inside the walkable union (shrunk by pad)
+// and outside every solid box (grown by pad).
+world_point_free :: proc(p: vec3, pad: f32) -> bool {
+	in_floor := false
+	for i in 0..<NUM_FLOOR_BOXES {
+		if box_contains(&world_floor_boxes[i], p, -pad) {
+			in_floor = true
+			break
+		}
+	}
+	if !in_floor {
+		return false
+	}
+	for i in 0..<NUM_SOLID_BOXES {
+		if box_contains(&world_solid_boxes[i], p, pad) {
+			return false
+		}
+	}
+	return true
+}
+
+// Segment visibility test by sampling. Good enough for bot line-of-sight.
+world_segment_clear :: proc(a, b: vec3, step: f32 = 0.6) -> bool {
+	d := b - a
+	l := len_vec3(d)
+	if l < 1e-4 {
+		return true
+	}
+	n := int(l / step) + 1
+	for i in 1..<n {
+		t := f32(i) / f32(n)
+		if !world_point_free(a + d * t, 0.05) {
+			return false
+		}
+	}
+	return true
+}
+
+// Spawn point inside a team base. Slots fan out laterally then backwards.
+team_spawn_position :: proc(team: Team_ID, slot: int) -> vec3 {
+	if team == .None {
+		return {0, 0, WORLD_FLOOR_Z}
+	}
+	d := team_dir(team)
+	side := vec3{-d.y, d.x, 0}
+	lateral := f32((slot % 5) - 2) * 2.2
+	back := f32((slot / 5) % 3) * 2.2
+	p := d * (WORLD_SPAWN_R + back) + side * lateral
+	p.z = WORLD_FLOOR_Z
+	return p
+}
+
+// Obelisk placement: one in the center, one at each lane mouth.
+obelisk_position :: proc(index: int) -> vec3 {
+	if index == 0 {
+		return {0, 0, WORLD_FLOOR_Z}
+	}
+	team := team_from_index(index - 1)
+	p := team_dir(team) * WORLD_LANE_OBELISK_R
+	p.z = WORLD_FLOOR_Z
+	return p
+}
+
+// ---- Navigation helpers -------------------------------------------------
+
+World_Region_Kind :: enum u8 {
+	Plaza,
+	Lane,
+	Base,
+}
+
+World_Region :: struct {
+	kind: World_Region_Kind,
+	team: Team_ID, // corridor owner for Lane/Base
+}
+
+// Which corridor a point belongs to (by angle) and how far out it is.
+world_region :: proc(p: vec3) -> World_Region {
+	r := math.sqrt(p.x * p.x + p.y * p.y)
+	if r < WORLD_LANE_R0 + 1.0 {
+		return {kind = .Plaza, team = .None}
+	}
+	ang := math.atan2(p.y, p.x)
+	best := Team_ID.Alpha
+	best_diff := f32(99)
+	for team in TEAMS {
+		diff := abs(wrap_angle(ang - team_angle(team)))
+		if diff < best_diff {
+			best_diff = diff
+			best = team
+		}
+	}
+	if r < WORLD_LANE_R1 - 1.0 {
+		return {kind = .Lane, team = best}
+	}
+	return {kind = .Base, team = best}
+}
+
+// Next waypoint to walk toward to reach `to` from `from` through the lane graph.
+nav_next_waypoint :: proc(from, to: vec3) -> vec3 {
+	rf := world_region(from)
+	rt := world_region(to)
+
+	// Same corridor (or both in the plaza): the map is convex there, walk straight.
+	if rf.kind == .Plaza && rt.kind == .Plaza {
+		return to
+	}
+	if rf.kind != .Plaza && rt.kind != .Plaza && rf.team == rt.team {
+		return to
+	}
+	if rf.kind == .Plaza {
+		// Head for the mouth of the target lane.
+		mouth := team_dir(rt.team) * (WORLD_LANE_R0 + 5.0)
+		mouth.z = to.z
+		// If already lined up with the lane, go direct.
+		d := to - from
+		dist := len_vec3(d)
+		if dist > 0.01 {
+			mdir := norm_vec3(mouth - from)
+			if dot_vec3(norm_vec3(d), mdir) > 0.985 {
+				return to
+			}
+		}
+		return mouth
+	}
+	// In someone's lane or base, target elsewhere: go to the plaza first.
+	return {0, 0, to.z}
+}
+
+wrap_angle :: proc(a: f32) -> f32 {
+	x := a
+	for x > f32(math.PI) {
+		x -= 2.0 * f32(math.PI)
+	}
+	for x < -f32(math.PI) {
+		x += 2.0 * f32(math.PI)
+	}
+	return x
+}

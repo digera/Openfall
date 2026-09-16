@@ -2,34 +2,33 @@ package main
 
 import "core:fmt"
 
-// Nexus Obelisk capture point system for Phase 4: Nexus Dominion
+// Nexus Obelisk capture points.
 //
-// Three Obelisks positioned symmetrically in the arena.
-// Holding Obelisks generates essence for your team.
-// First team to 1000 essence triggers Nexus Collapse (match end).
+// Four Obelisks: one in the center plaza (double essence) and one at the mouth
+// of each team's lane. Standing alone in a capture volume captures it; two or
+// more teams present contest it. Held Obelisks generate essence for the owner.
 
 Obelisk_ID :: u8
-MAX_OBELISKS :: 3
+MAX_OBELISKS :: 4
 
 Obelisk_State :: enum u8 {
-	Neutral,      // No team controls
-	Contested,    // Multiple teams in capture volume
-	Capturing,    // One team is capturing (progress bar)
-	Held,         // Fully captured by a team
+	Neutral,
+	Contested,
+	Capturing,
+	Held,
 }
 
 Obelisk :: struct {
-	id:              Obelisk_ID,
-	pos:             vec3,           // World position
-	radius:          f32,            // Capture volume radius
-	state:           Obelisk_State,
-	owner:           Team_ID,        // Current owner (None if neutral/contested)
-	capturing_team:  Team_ID,        // Team currently capturing
-	capture_progress: f32,           // 0.0 to 1.0 (seconds to capture)
-	
-	// Presence tracking
-	alpha_count:     int,            // Number of Team Alpha players in volume
-	beta_count:      int,            // Number of Team Beta players in volume
+	id:               Obelisk_ID,
+	pos:              vec3,
+	radius:           f32,
+	essence_mult:     f32,
+	state:            Obelisk_State,
+	owner:            Team_ID,
+	capturing_team:   Team_ID,
+	capture_progress: f32,          // 0..1
+
+	counts:           [TEAM_COUNT]int, // living players per team inside the volume
 }
 
 Obelisk_World :: struct {
@@ -37,167 +36,127 @@ Obelisk_World :: struct {
 	count:    int,
 }
 
-// Configuration
-CAPTURE_TIME :: f32(5.0)          // Seconds to fully capture from neutral
-ESSENCE_PER_SEC :: f32(10.0)      // Essence generated per second per held Obelisk
-OBELISK_RADIUS :: f32(3.0)        // Capture volume radius in meters
-OBELISK_HEIGHT :: f32(4.0)        // Visual height (for rendering)
+CAPTURE_TIME    :: f32(6.0)
+// Per owned obelisk (center counts double). Total map output is 5 units/s, so a
+// team holding two lanes reaches the 1500 threshold in ~6-7 minutes; full map
+// control ends it in ~3.5. Fits the 12 minute match limit.
+ESSENCE_PER_SEC :: f32(3.6)
+OBELISK_RADIUS  :: f32(3.6)
+OBELISK_HEIGHT  :: f32(4.0)
 
 obelisk_world_init :: proc() -> Obelisk_World {
 	world := Obelisk_World{}
-	
-	// Position three Obelisks symmetrically in arena
-	// Arena is 16x16 meters, center at (8, 8)
-	// Place in triangle formation
-	
-	center := (ROOM_MIN + ROOM_MAX) * 0.5
-	
-	// Center Obelisk (neutral spawn)
-	world.obelisks[0] = Obelisk{
-		id = 0,
-		pos = vec3{center.x, center.y, ROOM_MIN.z},  // Floor level
-		radius = OBELISK_RADIUS,
-		state = .Neutral,
-		owner = .None,
+	for i in 0..<MAX_OBELISKS {
+		world.obelisks[i] = Obelisk{
+			id           = Obelisk_ID(i),
+			pos          = obelisk_position(i),
+			radius       = OBELISK_RADIUS,
+			essence_mult = i == 0 ? 2.0 : 1.0,
+			state        = .Neutral,
+			owner        = .None,
+		}
 	}
-	
-	// Alpha-side Obelisk (south)
-	world.obelisks[1] = Obelisk{
-		id = 1,
-		pos = vec3{center.x - 4.5, center.y - 4.5, ROOM_MIN.z},
-		radius = OBELISK_RADIUS,
-		state = .Neutral,
-		owner = .None,
-	}
-	
-	// Beta-side Obelisk (north)
-	world.obelisks[2] = Obelisk{
-		id = 2,
-		pos = vec3{center.x + 4.5, center.y + 4.5, ROOM_MIN.z},
-		radius = OBELISK_RADIUS,
-		state = .Neutral,
-		owner = .None,
-	}
-	
 	world.count = MAX_OBELISKS
-	
-	fmt.println("[Obelisk] Initialized 3 capture points")
+	fmt.println("[Obelisk] Initialized 4 capture points (center + 3 lanes)")
 	return world
 }
 
-// Check if position is within Obelisk capture volume
+obelisk_world_reset :: proc(world: ^Obelisk_World) {
+	for i in 0..<world.count {
+		o := &world.obelisks[i]
+		o.state = .Neutral
+		o.owner = .None
+		o.capturing_team = .None
+		o.capture_progress = 0
+	}
+}
+
 obelisk_contains :: proc(obelisk: ^Obelisk, pos: vec3) -> bool {
 	dx := pos.x - obelisk.pos.x
 	dy := pos.y - obelisk.pos.y
 	dz := pos.z - obelisk.pos.z
-	dist_sq := dx*dx + dy*dy
-	
-	// Capture volume is cylinder (ignore Z for simplicity)
-	return dist_sq <= obelisk.radius * obelisk.radius && dz >= 0 && dz <= OBELISK_HEIGHT
+	return dx * dx + dy * dy <= obelisk.radius * obelisk.radius && dz >= -0.1 && dz <= OBELISK_HEIGHT
 }
 
-// Update Obelisk state for one tick (dt = 1/60 second)
 obelisk_tick :: proc(world: ^Obelisk_World, entity_world: ^Entity_World, dt: f32) {
-	// For each Obelisk, count players in capture volume
 	for i in 0..<world.count {
 		obelisk := &world.obelisks[i]
-		
-		// Reset presence counters
-		obelisk.alpha_count = 0
-		obelisk.beta_count = 0
-		
-		// Count players in volume (check all active entities with teams)
+		obelisk.counts = {}
+
 		for eid in 1..<MAX_ENTITIES {
-			if !entity_world.characters[eid].active {
+			if !entity_alive(entity_world, Entity_ID(eid)) {
 				continue
 			}
-			
-			char := entity_world.characters[eid]
-			
-			// Ignore dead players (no capture contribution)
-			if char.dead {
+			idx := team_index(entity_world.teams[eid])
+			if idx < 0 {
 				continue
 			}
-			
-			team := entity_get_team(entity_world, Entity_ID(eid))
-			
-			if obelisk_contains(obelisk, char.pos) {
-				switch team {
-				case .Alpha:
-					obelisk.alpha_count += 1
-				case .Beta:
-					obelisk.beta_count += 1
-				case .None:
-					// Neutral entities don't affect capture
-				}
+			if obelisk_contains(obelisk, entity_world.characters[eid].pos) {
+				obelisk.counts[idx] += 1
 			}
 		}
-		
-		// Update state based on presence
+
 		obelisk_update_state(obelisk, dt)
 	}
 }
 
-// Update single Obelisk state machine
 obelisk_update_state :: proc(obelisk: ^Obelisk, dt: f32) {
-	alpha_present := obelisk.alpha_count > 0
-	beta_present := obelisk.beta_count > 0
-	
-	// Both teams present = contested
-	if alpha_present && beta_present {
+	present_teams := 0
+	present := Team_ID.None
+	for i in 0..<TEAM_COUNT {
+		if obelisk.counts[i] > 0 {
+			present_teams += 1
+			present = team_from_index(i)
+		}
+	}
+
+	if present_teams >= 2 {
 		if obelisk.state != .Contested {
 			obelisk.state = .Contested
-			obelisk.capturing_team = .None
-			obelisk.capture_progress = 0
 		}
 		return
 	}
-	
-	// No one present
-	if !alpha_present && !beta_present {
-		// If capturing, decay progress
-		if obelisk.state == .Capturing {
-			obelisk.capture_progress -= dt / CAPTURE_TIME * 0.5  // Decay at half speed
+
+	if present_teams == 0 {
+		// Nobody here: partial captures decay back toward the previous state.
+		if obelisk.state == .Capturing || obelisk.state == .Contested {
+			obelisk.capture_progress -= dt / CAPTURE_TIME * 0.5
 			if obelisk.capture_progress <= 0 {
 				obelisk.capture_progress = 0
 				obelisk.state = obelisk.owner == .None ? .Neutral : .Held
 				obelisk.capturing_team = .None
+			} else if obelisk.state == .Contested {
+				obelisk.state = .Capturing
 			}
 		}
 		return
 	}
-	
-	// One team present
-	capturing_team := alpha_present ? Team_ID.Alpha : Team_ID.Beta
-	
-	// If already held by this team, stay held
-	if obelisk.state == .Held && obelisk.owner == capturing_team {
+
+	// Exactly one team present.
+	if obelisk.state == .Held && obelisk.owner == present {
 		return
 	}
-	
-	// Start or continue capturing
-	if obelisk.state != .Capturing || obelisk.capturing_team != capturing_team {
-		// Start new capture
+
+	if obelisk.state != .Capturing || obelisk.capturing_team != present {
 		obelisk.state = .Capturing
-		obelisk.capturing_team = capturing_team
+		obelisk.capturing_team = present
 		obelisk.capture_progress = 0
 	}
-	
-	// Advance capture progress
-	obelisk.capture_progress += dt / CAPTURE_TIME
-	
-	// Capture complete
+
+	// More players capture faster, with diminishing returns.
+	n := obelisk.counts[team_index(present)]
+	rate := 1.0 + 0.35 * f32(min(n, 3) - 1)
+	obelisk.capture_progress += dt / CAPTURE_TIME * rate
+
 	if obelisk.capture_progress >= 1.0 {
 		obelisk.state = .Held
-		obelisk.owner = capturing_team
+		obelisk.owner = present
 		obelisk.capturing_team = .None
 		obelisk.capture_progress = 1.0
-		
-		fmt.printf("[Obelisk %d] Captured by Team %s\n", obelisk.id, team_name(capturing_team))
+		fmt.printf("[Obelisk %d] Captured by %s\n", obelisk.id, team_name(present))
 	}
 }
 
-// Get Obelisk by ID
 obelisk_get :: proc(world: ^Obelisk_World, id: Obelisk_ID) -> ^Obelisk {
 	if int(id) >= world.count {
 		return nil

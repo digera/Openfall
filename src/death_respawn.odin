@@ -1,62 +1,66 @@
-// Death and respawn system (minimal for playtesting)
+// Death and respawn
 package main
 
 import "core:fmt"
-import "core:time"
 
-RESPAWN_DELAY_SEC :: f32(3.0)  // Respawn after 3 seconds
+RESPAWN_DELAY_SEC :: f32(4.0)
 
-// Check for death and handle respawn
 entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
-	for i in 0..<MAX_ENTITIES {
-		char := &entity_world.characters[i]
-		if !char.active {
+	for i in 1..<MAX_ENTITIES {
+		if !entity_world.characters[i].active {
 			continue
 		}
-		
-		// Check for death
+		char := entity_world.characters[i]
+
 		if char.health <= 0 && !char.dead {
-			// Mark as dead
 			char.dead = true
+			char.health = 0
+			char.vel = {}
 			char.respawn_timer = RESPAWN_DELAY_SEC
-			fmt.printf("[Death] Entity %d died, respawning in %.1fs\n", i, RESPAWN_DELAY_SEC)
-		}
-		
-		// Handle respawn timer
-		if char.dead {
-			char.respawn_timer -= dt
-			
-			if char.respawn_timer <= 0 {
-				// Respawn at team spawn
-				team := entity_world.teams[i]
-				spawn_pos := get_team_spawn_position(team)
-				
-				char.pos = spawn_pos
-				char.vel_z = 0
-				char.health = HEALTH_MAX
-				char.mana = MANA_MAX
-				char.stamina = STAMINA_MAX
-				char.dead = false
-				char.respawn_timer = 0
-				
-				fmt.printf("[Respawn] Entity %d respawned at team spawn\n", i)
+			if SERVER_VERBOSE {
+				fmt.printf("[Death] Entity %d died\n", i)
 			}
 		}
+
+		if char.dead {
+			char.respawn_timer -= dt
+			if char.respawn_timer <= 0 {
+				entity_respawn(&char, entity_world.teams[i], i)
+			}
+		}
+
+		entity_world.characters[i] = char
 	}
 }
 
-// Get team spawn position (reuse from server init)
-get_team_spawn_position :: proc(team: Team_ID) -> vec3 {
-	center := (ROOM_MIN + ROOM_MAX) * 0.5
-	
-	if team == .Alpha {
-		// Alpha spawns south
-		return vec3{center.x, center.y - 4.5, ROOM_MIN.z}
-	} else if team == .Beta {
-		// Beta spawns north
-		return vec3{center.x, center.y + 4.5, ROOM_MIN.z}
-	} else {
-		// Neutral/fallback: center
-		return vec3{center.x, center.y, ROOM_MIN.z}
+// Reset a character at its team's spawn with full resources.
+entity_respawn :: proc(char: ^Character_State, team: Team_ID, slot: int) {
+	char.pos = team_spawn_position(team, slot)
+	char.vel = {}
+	char.on_ground = true
+	char.health = HEALTH_MAX
+	char.mana = MANA_MAX
+	char.stamina = STAMINA_MAX
+	char.slow_ticks = 0
+	char.dead = false
+	char.respawn_timer = 0
+	// Face the center (look is client-authoritative, so this only sticks for bots)
+	if team != .None {
+		char.yaw = wrap_angle(team_angle(team) + 3.14159265)
+	}
+}
+
+// Respawn every active entity (round reset).
+entity_respawn_all :: proc(entity_world: ^Entity_World) {
+	for i in 1..<MAX_ENTITIES {
+		if !entity_world.characters[i].active {
+			continue
+		}
+		char := entity_world.characters[i]
+		entity_respawn(&char, entity_world.teams[i], i)
+		entity_world.characters[i] = char
+		entity_world.spell_states[i] = {}
+		// Keep the yaw in the input so the next tick doesn't snap it back.
+		entity_world.inputs[i].yaw = char.yaw
 	}
 }
