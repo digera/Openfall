@@ -68,16 +68,14 @@ server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 
 	// Test knobs: NEXUS_TEST_ESSENCE=50 (win threshold), NEXUS_TEST_FAST=10 (essence multiplier)
 	{
-		buf: [64]u8
-		if v := os.get_env_buf(buf[:], "NEXUS_TEST_ESSENCE"); v != "" {
+		if v, ok := os.lookup_env("NEXUS_TEST_ESSENCE"); ok {
 			if threshold, pok := strconv.parse_f32(v); pok && threshold > 0 {
 				match_configure_test_mode(threshold, test_essence_multiplier)
 			}
 		}
 	}
 	{
-		buf: [64]u8
-		if v := os.get_env_buf(buf[:], "NEXUS_TEST_FAST"); v != "" {
+		if v, ok := os.lookup_env("NEXUS_TEST_FAST"); ok {
 			if mult, pok := strconv.parse_f32(v); pok && mult > 0 {
 				match_configure_test_mode(test_essence_threshold, mult)
 			}

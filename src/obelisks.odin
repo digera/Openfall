@@ -4,12 +4,13 @@ import "core:fmt"
 
 // Nexus Obelisk capture points.
 //
-// Four Obelisks: one in the center plaza (double essence) and one at the mouth
-// of each team's lane. Standing alone in a capture volume captures it; two or
-// more teams present contest it. Held Obelisks generate essence for the owner.
+// Seven Obelisks: one in the center plaza (double essence), one near each lane
+// mouth, and one far down each lane. Standing alone in a capture volume captures
+// it; two or more teams present contest it. Held Obelisks generate essence for
+// the owner.
 
 Obelisk_ID :: u8
-MAX_OBELISKS :: 4
+MAX_OBELISKS :: 7
 
 Obelisk_State :: enum u8 {
 	Neutral,
@@ -37,9 +38,9 @@ Obelisk_World :: struct {
 }
 
 CAPTURE_TIME    :: f32(6.0)
-// Per owned obelisk (center counts double). Total map output is 5 units/s, so a
-// team holding two lanes reaches the 1500 threshold in ~6-7 minutes; full map
-// control ends it in ~3.5. Fits the 12 minute match limit.
+// Per owned obelisk (center counts double). Total map output with 7 obelisks is
+// 8 essence/s (center=2, 6 lanes=6). Full map control reaches 1500 threshold in
+// ~3 minutes; holding 4-5 objectives takes ~5-7 minutes. Fits 12 minute match limit.
 ESSENCE_PER_SEC :: f32(3.6)
 OBELISK_RADIUS  :: f32(3.6)
 OBELISK_HEIGHT  :: f32(4.0)
@@ -57,7 +58,7 @@ obelisk_world_init :: proc() -> Obelisk_World {
 		}
 	}
 	world.count = MAX_OBELISKS
-	fmt.println("[Obelisk] Initialized 4 capture points (center + 3 lanes)")
+	fmt.println("[Obelisk] Initialized 7 capture points (center + 6 lane objectives)")
 	return world
 }
 

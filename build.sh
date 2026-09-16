@@ -72,7 +72,8 @@ if [ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ]; then
         if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
               "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
               "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && \
-              "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" && \
+              "$base" != "main_server.odin" && "$base" != "server.odin" && \
+              "$base" != "bots.odin" && \
               "$base" != "main_combat_test.odin" ]]; then
             cp "$f" "$TMP_SRC/"
         fi
