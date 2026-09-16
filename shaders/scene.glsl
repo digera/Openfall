@@ -43,6 +43,8 @@ layout(binding=1) uniform fs_params {
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
+    vec4 beams[8];          // xyz origin, w = owner entity id
+    vec4 beam_targets[8];   // xyz primary target pos, w = chain count
 };
 
 in vec3 ray_origin;
@@ -625,6 +627,40 @@ void main() {
             // Capturing: pulse in the capturing team's color
             aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
         }
+    }
+
+    // --- Thunderbolt beams -------------------------------------------------
+    // Crackling continuous lightning beams with bright cores
+    for (int i = 0; i < 8; i++) {
+        vec4 b = beams[i];
+        vec4 bt = beam_targets[i];
+        if (b.w < 0.5) continue;  // no beam
+
+        vec3 beam_start = b.xyz;
+        vec3 beam_end = bt.xyz;
+        
+        // Lightning color: electric blue-white with cyan tint
+        vec3 lightning_core = vec3(0.95, 0.98, 1.0);
+        vec3 lightning_tint = vec3(0.4, 0.75, 1.0);
+        
+        // Main beam: thick crackling center
+        float beam_glow = segment_glow(ro, rd, glow_tmax, beam_start, beam_end, 0.15);
+        aura += lightning_core * beam_glow * 2.5;
+        aura += lightning_tint * beam_glow * 1.8;
+        
+        // Animated noise to simulate crackling arcs
+        float crackle = sin(WORLD_T * 28.0 + float(i) * 7.3 + length(beam_start) * 0.5);
+        crackle = crackle * 0.5 + 0.5;
+        crackle = pow(crackle, 3.0);
+        
+        // Secondary arcing glow
+        vec3 beam_mid = (beam_start + beam_end) * 0.5;
+        float arc_glow = corona(ro, rd, glow_tmax, beam_mid, 0.8);
+        aura += lightning_core * arc_glow * crackle * 1.2;
+        
+        // Pulsing intensity
+        float pulse = 0.7 + 0.3 * sin(WORLD_T * 12.0 + float(i) * 3.1);
+        aura *= (0.85 + pulse * 0.15);
     }
 
     // --- Sky ---------------------------------------------------------------

@@ -308,6 +308,7 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 		input.yaw = gc.view_yaw
 		input.pitch = gc.view_pitch
 		input.cast_spell = client_decide_cast(gc)
+		input.cast_held = input.held_left && sapp.mouse_locked()
 
 		qinput := input_quantize(input)
 		gc.client_world.client_tick += 1
@@ -351,6 +352,15 @@ client_decide_cast :: proc(gc: ^Game_Client) -> Spell_ID {
 	}
 	spell := HOTBAR[gc.selected_slot]
 	def := &SPELL_DEFS[spell]
+
+	// Beam channels: always send while held (mana check is per-tick on server)
+	if def.payload == .Beam_Channel {
+		gc.cast_pulse = 1
+		gc.last_cast = spell
+		return spell
+	}
+
+	// Regular spells: check cooldown and upfront mana cost
 	if gc.cooldowns[spell] > 0 || pred.predicted_char.mana < def.mana_cost {
 		return .None
 	}

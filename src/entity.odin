@@ -36,6 +36,7 @@ Input_State :: struct {
 	yaw:        f32,  // absolute, wrapped to [-pi, pi]
 	pitch:      f32,  // absolute, clamped
 	cast_spell: Spell_ID,
+	cast_held:  bool, // true when cast button is held (for channels)
 }
 
 Entity_World :: struct {

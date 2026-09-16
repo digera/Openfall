@@ -85,6 +85,9 @@ Client_World :: struct {
 	projectiles:      [MAX_SNAPSHOT_PROJECTILES]Client_Projectile,
 	projectile_count: int,
 
+	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
+	beam_count:       int,
+
 	impacts:          [MAX_CLIENT_IMPACTS]Client_Impact,
 	hit_marker:       f32,
 
@@ -354,6 +357,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	}
 
 	client_world_apply_projectiles(world, snapshot)
+	client_world_apply_beams(world, snapshot)
 }
 
 @(private = "file")
@@ -409,6 +413,15 @@ client_world_apply_projectiles :: proc(world: ^Client_World, snapshot: ^Server_S
 			world.projectiles[i] = world.projectiles[last]
 		}
 		world.projectile_count -= 1
+	}
+}
+
+@(private = "file")
+client_world_apply_beams :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	// Beams are instantaneous state, just copy them
+	world.beam_count = int(snapshot.beam_count)
+	for i in 0..<world.beam_count {
+		world.beams[i] = snapshot.beams[i]
 	}
 }
 

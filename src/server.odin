@@ -49,6 +49,7 @@ Server :: struct {
 	bots:          [MAX_BOTS]Bot,
 
 	projectiles:   Projectile_World,
+	beams:         Beam_World,
 	lag_comp:      Lag_Comp_State,
 
 	obelisks:      Obelisk_World,
@@ -62,6 +63,7 @@ server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 	server.world = entity_world_init()
 	server.start_time = time.tick_now()
 	server.projectiles = projectile_world_init()
+	server.beams = beam_world_init()
 	server.lag_comp = lag_comp_init()
 	server.obelisks = obelisk_world_init()
 	server.match = match_init()
@@ -114,6 +116,7 @@ server_tick :: proc(server: ^Server) {
 
 	simulate_world_step(&server.world)
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
+	server_tick_beam_channels(server, SIMULATION_DT)
 
 	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
 	if match_tick(&server.match, &server.obelisks, SIMULATION_DT) {
@@ -144,6 +147,7 @@ server_tick :: proc(server: ^Server) {
 server_round_reset :: proc(server: ^Server) {
 	obelisk_world_reset(&server.obelisks)
 	projectile_clear_all(&server.projectiles)
+	beam_clear_all(&server.beams)
 	entity_respawn_all(&server.world)
 	for i in 0..<MAX_BOTS {
 		if server.bots[i].active {
@@ -298,7 +302,7 @@ server_apply_client_inputs :: proc(server: ^Server) {
 		server.world.inputs[id] = input
 
 		if input.cast_spell != .None {
-			server_handle_spell_cast(server, id, input.cast_spell, server.tick_id)
+			server_handle_spell_cast(server, id, input.cast_spell, input.cast_held, server.tick_id)
 		}
 	}
 }
@@ -523,6 +527,34 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 		snapshot.projectile_count = u8(ptake)
 
+		// Active beams
+		bidx: [MAX_BEAMS]int
+		bn := 0
+		for i in 0..<MAX_BEAMS {
+			if !server.beams.beams[i].active {
+				continue
+			}
+			bidx[bn] = i
+			bn += 1
+		}
+		btake := min(bn, MAX_SNAPSHOT_BEAMS)
+		for k in 0..<btake {
+			beam := server.beams.beams[bidx[k]]
+			snapshot.beams[k] = Snapshot_Beam{
+				id             = beam.id,
+				spell_id       = beam.spell_id,
+				owner_id       = beam.owner_id,
+				primary_hit    = beam.primary_hit,
+				primary_pos    = beam.primary_pos,
+				primary_target = beam.primary_target,
+				chain_count    = u8(min(beam.chain_count, 4)),
+			}
+			for j in 0..<min(beam.chain_count, 4) {
+				snapshot.beams[k].chain_targets[j] = beam.chain_targets[j]
+			}
+		}
+		snapshot.beam_count = u8(btake)
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
@@ -601,7 +633,7 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 }
 
 // Validate and execute a spell cast. Returns true if the cast happened.
-server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, tick: u32) -> bool {
+server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, cast_held: bool, tick: u32) -> bool {
 	if !entity_alive(&server.world, caster_id) {
 		return false
 	}
@@ -614,6 +646,13 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 
 	def := &SPELL_DEFS[spell_id]
 	spell_state := &server.world.spell_states[caster_id]
+
+	// Beam channels: special handling for hold-to-fire
+	if def.payload == .Beam_Channel {
+		return server_handle_beam_channel(server, caster_id, spell_id, cast_held)
+	}
+
+	// Regular spells: check cooldown and mana
 	if spell_state.cooldowns[spell_id] > 0 {
 		return false
 	}
@@ -685,6 +724,92 @@ blink_spot_free :: proc(pos: vec3) -> bool {
 		}
 	}
 	return true
+}
+
+// Handle beam channel spell (hold-to-fire continuous beam)
+server_handle_beam_channel :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, cast_held: bool) -> bool {
+	def := &SPELL_DEFS[spell_id]
+	spell_state := &server.world.spell_states[caster_id]
+	char := server.world.characters[caster_id]
+
+	if cast_held {
+		// Start or continue channeling
+		if !spell_state.channeling || spell_state.channel_spell != spell_id {
+			// Start new channel
+			spell_state.channeling = true
+			spell_state.channel_spell = spell_id
+			spell_state.channel_tick_accum = 0
+
+			// Spawn beam if it doesn't exist
+			if slot, found := beam_find_by_owner(&server.beams, caster_id); !found {
+				beam_spawn(&server.beams, caster_id, spell_id, entity_get_team(&server.world, caster_id))
+			}
+
+			if SERVER_VERBOSE {
+				server_log("[Beam] Entity %d started channeling %s", caster_id, def.name)
+			}
+		}
+		// Mana check happens per-tick in server_tick_beam_channels
+		return true
+	} else {
+		// Stop channeling
+		if spell_state.channeling && spell_state.channel_spell == spell_id {
+			spell_state.channeling = false
+			spell_state.channel_spell = .None
+
+			// Destroy beam
+			if slot, found := beam_find_by_owner(&server.beams, caster_id); found {
+				beam_destroy(&server.beams, slot)
+			}
+
+			if SERVER_VERBOSE {
+				server_log("[Beam] Entity %d stopped channeling %s", caster_id, def.name)
+			}
+		}
+		return false
+	}
+}
+
+// Tick all active beam channels: drain mana, apply damage
+server_tick_beam_channels :: proc(server: ^Server, dt: f32) {
+	BEAM_TICK_RATE :: f32(1.0 / 15.0)  // apply damage 15 times per second
+
+	for i in 0..<MAX_BEAMS {
+		if !server.beams.beams[i].active {
+			continue
+		}
+
+		beam := &server.beams.beams[i]
+		owner_id := beam.owner_id
+		spell_state := &server.world.spell_states[owner_id]
+		char := &server.world.characters[owner_id]
+
+		if !spell_state.channeling || spell_state.channel_spell != beam.spell_id {
+			// Owner stopped channeling, destroy beam
+			beam_destroy(&server.beams, i)
+			continue
+		}
+
+		def := &SPELL_DEFS[beam.spell_id]
+
+		// Drain mana
+		mana_drain := def.beam_mana_per_sec * dt
+		if char.mana < mana_drain {
+			// Out of mana, stop channeling
+			spell_state.channeling = false
+			spell_state.channel_spell = .None
+			beam_destroy(&server.beams, i)
+			continue
+		}
+		char.mana -= mana_drain
+
+		// Accumulate tick timer
+		spell_state.channel_tick_accum += dt
+		if spell_state.channel_tick_accum >= BEAM_TICK_RATE {
+			spell_state.channel_tick_accum -= BEAM_TICK_RATE
+			beam_tick(&server.beams, &server.world, i, BEAM_TICK_RATE)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

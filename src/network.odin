@@ -35,6 +35,7 @@ INPUT_REDUNDANCY :: 3
 
 MAX_SNAPSHOT_ENTITIES    :: 22
 MAX_SNAPSHOT_PROJECTILES :: 12
+MAX_SNAPSHOT_BEAMS       :: 8
 
 // ---------------------------------------------------------------------------
 // Packet structs (host representation)
@@ -93,6 +94,17 @@ Snapshot_Projectile :: struct {
 	radius:   f32,
 }
 
+Snapshot_Beam :: struct {
+	id:             Beam_ID,
+	spell_id:       Spell_ID,
+	owner_id:       Entity_ID,
+	primary_hit:    bool,
+	primary_pos:    vec3,
+	primary_target: Entity_ID,
+	chain_count:    u8,
+	chain_targets:  [4]Entity_ID,  // subset of chains for bandwidth
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -100,6 +112,8 @@ Server_Snapshot_Packet :: struct {
 	entities:         [MAX_SNAPSHOT_ENTITIES]Snapshot_Entity,
 	projectile_count: u8,
 	projectiles:      [MAX_SNAPSHOT_PROJECTILES]Snapshot_Projectile,
+	beam_count:       u8,
+	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
 }
 
 Snapshot_Obelisk :: struct {
@@ -349,8 +363,9 @@ deserialize_client_join :: proc(buffer: []u8) -> (packet: Client_Join_Packet, ok
 @(private = "file")
 input_flags :: proc(input: Input_State) -> u8 {
 	f: u8 = 0
-	if input.jump   { f |= 1 }
-	if input.sprint { f |= 2 }
+	if input.jump      { f |= 1 }
+	if input.sprint    { f |= 2 }
+	if input.cast_held { f |= 4 }
 	return f
 }
 
@@ -387,6 +402,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		flags := br_u8(&r)
 		in_.jump = flags & 1 != 0
 		in_.sprint = flags & 2 != 0
+		in_.cast_held = flags & 4 != 0
 		in_.yaw = dequant_angle(br_i16(&r))
 		in_.pitch = dequant_angle(br_i16(&r))
 		in_.cast_spell = Spell_ID(br_u8(&r))
@@ -480,6 +496,22 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, quant_u8(p.lifetime, 20))   // 0.05 s resolution, max 12.75 s
 		bw_u8(&w, quant_u8(p.radius, 100))    // cm
 	}
+
+	bcount := min(int(packet.beam_count), MAX_SNAPSHOT_BEAMS)
+	bw_u8(&w, u8(bcount))
+	for i in 0..<bcount {
+		b := &packet.beams[i]
+		bw_u32(&w, b.id)
+		bw_u8(&w, u8(b.spell_id))
+		bw_u8(&w, u8(b.owner_id))
+		bw_u8(&w, b.primary_hit ? 1 : 0)
+		bw_vec3(&w, b.primary_pos)
+		bw_u8(&w, u8(b.primary_target))
+		bw_u8(&w, b.chain_count)
+		for j in 0..<min(int(b.chain_count), 4) {
+			bw_u8(&w, u8(b.chain_targets[j]))
+		}
+	}
 	return w.ok ? w.pos : 0
 }
 
@@ -532,6 +564,28 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.projectile_count = u8(pcount)
+
+	bcount := min(int(br_u8(&r)), MAX_SNAPSHOT_BEAMS)
+	for i in 0..<bcount {
+		b := &packet.beams[i]
+		b.id = br_u32(&r)
+		b.spell_id = Spell_ID(br_u8(&r))
+		if !spell_valid(b.spell_id) {
+			b.spell_id = .None
+		}
+		b.owner_id = Entity_ID(br_u8(&r))
+		b.primary_hit = br_u8(&r) != 0
+		b.primary_pos = br_vec3(&r)
+		b.primary_target = Entity_ID(br_u8(&r))
+		b.chain_count = br_u8(&r)
+		for j in 0..<min(int(b.chain_count), 4) {
+			b.chain_targets[j] = Entity_ID(br_u8(&r))
+		}
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.beam_count = u8(bcount)
 	return packet, r.ok
 }
 

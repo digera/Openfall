@@ -68,6 +68,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Arcane_Missile: fx.cast_kick += 0.010
 	case .Arcane_Orb:     fx.cast_kick += 0.028; fx.fov_kick = max(fx.fov_kick, 0.35)
 	case .Frost_Lance:    fx.cast_kick += 0.020
+	case .Thunderbolt:    // continuous, no kick per cast
 	case .Blink:          // handled when the teleport lands
 	}
 }
@@ -167,6 +168,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Arcane_Orb:     return 2
 	case .Blink:          return 3
 	case .Frost_Lance:    return 4
+	case .Thunderbolt:    return 5
 	}
 	return 1
 }
@@ -328,6 +330,27 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			continue
 		}
 		fs_params.impacts[i] = {im.pos.x, im.pos.y, im.pos.z, spell_type_code(im.spell) + clampf(im.age, 0.01, 0.99)}
+	}
+
+	// Beams: continuous lightning
+	for i in 0..<world.beam_count {
+		beam := &world.beams[i]
+		
+		// Get owner position (either local player or remote entity)
+		owner_pos := vec3{}
+		if beam.owner_id == world.local_entity_id {
+			owner_pos = pred.predicted_char.pos
+		} else if beam.owner_id > 0 && beam.owner_id < MAX_ENTITIES {
+			remote := &world.remote_entities[beam.owner_id]
+			if remote.active {
+				owner_pos = remote.display_state.pos
+			}
+		}
+		
+		// Beam origin at owner's eye
+		origin := owner_pos + vec3{0, 0, PLAYER_EYE_M}
+		fs_params.beams[i] = {origin.x, origin.y, origin.z, f32(beam.owner_id)}
+		fs_params.beam_targets[i] = {beam.primary_pos.x, beam.primary_pos.y, beam.primary_pos.z, f32(beam.chain_count)}
 	}
 
 	// --- Draw -----------------------------------------------------------------

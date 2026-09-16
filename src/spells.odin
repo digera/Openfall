@@ -15,10 +15,11 @@ Spell_ID :: enum u8 {
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
+	Thunderbolt    = 5,    // hold-to-channel lightning beam with chaining
 }
 
 // Spells bound to hotbar slots 1..4
-HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Lance}
+HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Thunderbolt, .Frost_Lance}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -43,13 +44,20 @@ Spell_Def :: struct {
 	knockback:       f32,
 	slow_ticks:      int,
 
-	range:         f32,   // blink distance
+	range:         f32,   // blink distance, beam range
+
+	// Beam channel parameters
+	beam_dps:         f32,  // damage per second for continuous beam
+	beam_mana_per_sec: f32, // mana drain rate while channeling
+	beam_chain_range:  f32, // chain lightning jump distance
+	beam_chain_count:  int, // max number of chain jumps
 }
 
 Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
+	Beam_Channel,
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -118,6 +126,21 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		damage        = 68,
 		slow_ticks    = 180, // 3 s
 	},
+
+	// Quake-style continuous lightning beam with chaining.
+	.Thunderbolt = {
+		id                = .Thunderbolt,
+		name              = "Thunderbolt",
+		short_name        = "THUNDER",
+		mana_cost         = 0,      // no upfront cost, drains while held
+		cooldown_sec      = 0,      // no cooldown between uses
+		payload           = .Beam_Channel,
+		range             = 28,     // beam max range
+		beam_dps          = 95,     // damage per second
+		beam_mana_per_sec = 22,     // mana drain rate
+		beam_chain_range  = 8,      // chain lightning jump distance
+		beam_chain_count  = 3,      // max chain jumps
+	},
 }
 
 spell_valid :: proc(id: Spell_ID) -> bool {
@@ -126,6 +149,11 @@ spell_valid :: proc(id: Spell_ID) -> bool {
 
 Entity_Spell_State :: struct {
 	cooldowns: [Spell_ID]f32,
+
+	// Beam channel state
+	channeling:         bool,
+	channel_spell:      Spell_ID,
+	channel_tick_accum: f32,  // accumulates to trigger beam tick damage
 }
 
 Spell_Cast :: struct {
