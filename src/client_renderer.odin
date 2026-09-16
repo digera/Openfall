@@ -309,7 +309,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			phase := f32(ids[k]) * 2.21
 			pos.x += 0.045 * math.sin(r.world_t * 1.37 + phase)
 			pos.y += 0.045 * math.cos(r.world_t * 1.11 + phase * 0.83)
-			pos.z += CHARACTER_HEIGHT_M * 0.52 + 0.10 * math.sin(r.world_t * 2.07 + phase)
+			pos.z += CHARACTER_HEIGHT_M * 0.50 + 0.06 * math.sin(r.world_t * 2.07 + phase)
 			fs_params.wisps[k] = {pos.x, pos.y, pos.z, f32(u8(remote.team)) + hp}
 		}
 	}

@@ -359,30 +359,31 @@ bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax
     part = 0.0;
     float scale = 0.82 + 0.18 * life;
 
-    // Cheap reject: bounding sphere
-    if (!bounds_hit(ro, rd, c, 0.55 * scale, tmax)) return false;
+    // Sized to the 1.72 m character capsule (eye 1.56 m) so other players
+    // read as the same height instead of chest-high orbs.
+    if (!bounds_hit(ro, rd, c, 1.05 * scale, tmax)) return false;
 
     bool hit = false;
     float best = tmax;
     float et;
     vec3 en;
-    vec3 mantle = vec3(0.17, 0.17, 0.40) * scale;
+    vec3 mantle = vec3(0.30, 0.30, 0.84) * scale;
     if (intersect_ellipsoid(ro, rd, c, mantle, tmin, best, et, en)) {
         best = et; n = en; part = 0.0; hit = true;
     }
-    vec3 core_c = c + vec3(0.0, 0.0, 0.06 * scale);
-    if (intersect_sphere(ro, rd, core_c, 0.07 * scale, tmin, best, et, en)) {
+    vec3 core_c = c + vec3(0.0, 0.0, 0.14 * scale);
+    if (intersect_sphere(ro, rd, core_c, 0.13 * scale, tmin, best, et, en)) {
         best = et; n = en; part = 1.0; hit = true;
     }
     float a1 = WORLD_T * 2.55 + c.x * 3.1;
     float a2 = WORLD_T * 1.85 + c.y * 2.4;
     float a3 = WORLD_T * 3.15 + c.z * 1.7;
-    vec3 m1 = c + vec3(cos(a1), sin(a1), 0.28 * sin(a1 * 1.35)) * (0.24 * scale);
-    vec3 m2 = c + vec3(cos(a2 + 2.094), sin(a2 + 2.094), 0.22 * cos(a2 * 1.2)) * (0.20 * scale);
-    vec3 m3 = c + vec3(cos(a3 + 4.188), sin(a3 + 4.188), 0.16 * sin(a3 * 0.9)) * (0.17 * scale);
-    if (intersect_sphere(ro, rd, m1, 0.042 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
-    if (intersect_sphere(ro, rd, m2, 0.032 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
-    if (intersect_sphere(ro, rd, m3, 0.024 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
+    vec3 m1 = c + vec3(cos(a1), sin(a1), 0.28 * sin(a1 * 1.35)) * (0.42 * scale);
+    vec3 m2 = c + vec3(cos(a2 + 2.094), sin(a2 + 2.094), 0.22 * cos(a2 * 1.2)) * (0.36 * scale);
+    vec3 m3 = c + vec3(cos(a3 + 4.188), sin(a3 + 4.188), 0.16 * sin(a3 * 0.9)) * (0.30 * scale);
+    if (intersect_sphere(ro, rd, m1, 0.070 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
+    if (intersect_sphere(ro, rd, m2, 0.055 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
+    if (intersect_sphere(ro, rd, m3, 0.042 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
     t = best;
     return hit;
 }
@@ -566,7 +567,7 @@ void main() {
         float team = floor(w.w);
         float hpv = fract(w.w);
         vec3 c = wisp_center(w, float(i) * 2.21);
-        float g = corona(ro, rd, glow_tmax, c, 0.40 + 0.10 * hpv) * (0.5 + 0.5 * hpv);
+        float g = corona(ro, rd, glow_tmax, c, 0.88 + 0.18 * hpv) * (0.5 + 0.5 * hpv);
         aura += team_tint(team) * g * (0.55 + 0.2 * sin(WORLD_T * 3.4 + float(i)));
         aura += team_core(team) * g * 0.18;
     }
