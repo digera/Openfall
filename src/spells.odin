@@ -15,10 +15,11 @@ Spell_ID :: enum u8 {
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
+	Call_Lightning = 5,    // targeted lightning strike from above
 }
 
-// Spells bound to hotbar slots 1..4
-HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Lance}
+// Spells bound to hotbar slots 1..5
+HOTBAR := [5]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Lance, .Call_Lightning}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -43,13 +44,15 @@ Spell_Def :: struct {
 	knockback:       f32,
 	slow_ticks:      int,
 
-	range:         f32,   // blink distance
+	range:           f32,   // blink distance / lightning max range
+	cast_time:       f32,   // channel duration before spell fires (0 = instant)
 }
 
 Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
+	Lightning,    // targeted strike from above
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -118,6 +121,22 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		damage        = 68,
 		slow_ticks    = 180, // 3 s
 	},
+
+	// Lightning strike from the sky: requires target, long cast, heavy hit.
+	// If target dies/out of range during cast, spell fails and refunds mana/cooldown.
+	.Call_Lightning = {
+		id           = .Call_Lightning,
+		name         = "Call Lightning",
+		short_name   = "LIGHTNING",
+		mana_cost    = 60,
+		cooldown_sec = 8.0,
+		payload      = .Lightning,
+		cast_time    = 1.8,    // long channel before strike
+		range        = 22,     // max target distance
+		damage       = 85,     // hard single-target hit
+		aoe_radius   = 2.5,    // small splash around impact
+		aoe_damage_frac = 0.4, // moderate splash damage
+	},
 }
 
 spell_valid :: proc(id: Spell_ID) -> bool {
@@ -125,13 +144,64 @@ spell_valid :: proc(id: Spell_ID) -> bool {
 }
 
 Entity_Spell_State :: struct {
-	cooldowns: [Spell_ID]f32,
+	cooldowns:       [Spell_ID]f32,
+	casting:         bool,
+	cast_spell:      Spell_ID,
+	cast_progress:   f32,      // time elapsed in cast
+	cast_target_id:  Entity_ID, // for targeted spells like Call Lightning
 }
 
 Spell_Cast :: struct {
-	caster_id: Entity_ID,
-	spell_id:  Spell_ID,
-	origin:    vec3,
-	direction: vec3,
-	tick:      u32,
+	caster_id:  Entity_ID,
+	spell_id:   Spell_ID,
+	origin:     vec3,
+	direction:  vec3,
+	tick:       u32,
+	target_id:  Entity_ID, // for targeted spells (Lightning)
+}
+
+// Lightning strikes for VFX (client-side rendering)
+MAX_LIGHTNING_STRIKES :: 8
+
+Lightning_Strike :: struct {
+	active:    bool,
+	pos:       vec3,      // impact position
+	age:       f32,       // 0..1, grows as strike fades
+	height:    f32,       // bolt extends from pos.z to pos.z + height
+}
+
+Lightning_Strikes :: struct {
+	strikes: [MAX_LIGHTNING_STRIKES]Lightning_Strike,
+}
+
+lightning_strikes_spawn :: proc(strikes: ^Lightning_Strikes, pos: vec3, height: f32) {
+	for i in 0..<MAX_LIGHTNING_STRIKES {
+		if !strikes.strikes[i].active {
+			strikes.strikes[i] = Lightning_Strike{
+				active = true,
+				pos    = pos,
+				age    = 0,
+				height = height,
+			}
+			return
+		}
+	}
+	// Replace oldest
+	strikes.strikes[0] = Lightning_Strike{
+		active = true,
+		pos    = pos,
+		age    = 0,
+		height = height,
+	}
+}
+
+lightning_strikes_update :: proc(strikes: ^Lightning_Strikes, dt: f32) {
+	for i in 0..<MAX_LIGHTNING_STRIKES {
+		if strikes.strikes[i].active {
+			strikes.strikes[i].age += dt * 4.0 // quick fade
+			if strikes.strikes[i].age >= 1.0 {
+				strikes.strikes[i].active = false
+			}
+		}
+	}
 }

@@ -68,6 +68,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Arcane_Missile: fx.cast_kick += 0.010
 	case .Arcane_Orb:     fx.cast_kick += 0.028; fx.fov_kick = max(fx.fov_kick, 0.35)
 	case .Frost_Lance:    fx.cast_kick += 0.020
+	case .Call_Lightning: fx.cast_kick += 0.032; fx.fov_kick = max(fx.fov_kick, 0.45)
 	case .Blink:          // handled when the teleport lands
 	}
 }
@@ -167,6 +168,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Arcane_Orb:     return 2
 	case .Blink:          return 3
 	case .Frost_Lance:    return 4
+	case .Call_Lightning: return 5
 	}
 	return 1
 }
@@ -328,6 +330,15 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			continue
 		}
 		fs_params.impacts[i] = {im.pos.x, im.pos.y, im.pos.z, spell_type_code(im.spell) + clampf(im.age, 0.01, 0.99)}
+	}
+
+	// Lightning strikes
+	for i in 0..<MAX_LIGHTNING_STRIKES {
+		strike := &world.lightning_strikes.strikes[i]
+		if !strike.active {
+			continue
+		}
+		fs_params.lightning[i] = {strike.pos.x, strike.pos.y, strike.pos.z, strike.age}
 	}
 
 	// --- Draw -----------------------------------------------------------------
@@ -566,8 +577,8 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	// --- Hotbar (bottom center) ------------------------------------------------
 	slot_w: f32 = 14
-	start := cols * 0.5 - slot_w * 2
-	for i in 0..<4 {
+	start := cols * 0.5 - slot_w * 2.5
+	for i in 0..<5 {
 		spell := HOTBAR[i]
 		def := &SPELL_DEFS[spell]
 		cd := gc.cooldowns[spell]

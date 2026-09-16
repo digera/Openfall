@@ -88,6 +88,8 @@ Client_World :: struct {
 	impacts:          [MAX_CLIENT_IMPACTS]Client_Impact,
 	hit_marker:       f32,
 
+	lightning_strikes: Lightning_Strikes,
+
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
 }
@@ -435,6 +437,13 @@ client_world_add_impact :: proc(world: ^Client_World, pos: vec3, spell: Spell_ID
 		}
 	}
 	world.impacts[slot] = Client_Impact{pos = pos, age = 1, spell = spell, live = true}
+
+	// Spawn lightning strike VFX for Call Lightning impacts
+	if spell == .Call_Lightning {
+		// Lightning bolt extends from high above to ground
+		strike_height: f32 = 45.0
+		lightning_strikes_spawn(&world.lightning_strikes, pos, strike_height)
+	}
 }
 
 // Per-frame bookkeeping: interpolation, impact aging, timeouts.
@@ -471,4 +480,6 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	world.hit_marker = max(world.hit_marker - dt * 4.0, 0)
 	client_prediction_decay_offset(&world.prediction, dt)
+
+	lightning_strikes_update(&world.lightning_strikes, dt)
 }

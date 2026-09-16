@@ -43,6 +43,7 @@ layout(binding=1) uniform fs_params {
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
+    vec4 lightning[8];      // xyz pos (ground), w = age (0 = none)
 };
 
 in vec3 ray_origin;
@@ -100,7 +101,8 @@ vec3 spell_tint(float type) {
     if (type < 1.5) return vec3(0.78, 0.46, 1.00);   // missile: violet
     if (type < 2.5) return vec3(0.52, 0.48, 1.00);   // orb: indigo
     if (type < 3.5) return vec3(1.00, 1.00, 1.00);   // blink
-    return vec3(0.50, 0.92, 1.00);                   // frost: cyan
+    if (type < 4.5) return vec3(0.50, 0.92, 1.00);   // frost: cyan
+    return vec3(0.92, 0.95, 1.00);                   // lightning: brilliant white-blue
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
@@ -625,6 +627,44 @@ void main() {
             // Capturing: pulse in the capturing team's color
             aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
         }
+    }
+
+    // Lightning strikes: thick brilliant bolts from sky to ground
+    for (int i = 0; i < 8; i++) {
+        vec4 strike = lightning[i];
+        if (strike.w < 0.001) continue;
+        
+        float age = strike.w;
+        float intensity = 1.0 - age;  // fade out quickly
+        intensity *= intensity;       // square for sharper fade
+        
+        // Lightning extends from ground up to high sky
+        vec3 ground_pos = strike.xyz;
+        float height = 45.0;
+        vec3 sky_pos = ground_pos + vec3(0.0, 0.0, height);
+        
+        // Thick main bolt
+        float main_glow = segment_glow(ro, rd, glow_tmax, ground_pos, sky_pos, 0.35);
+        aura += vec3(0.95, 0.98, 1.00) * main_glow * intensity * 2.8;
+        aura += vec3(0.50, 0.85, 1.00) * main_glow * intensity * 1.4;
+        
+        // Jagged secondary arcs (offset from main bolt with time-based variation)
+        float arc_seed = float(i) * 2.713;
+        vec3 offset1 = vec3(sin(WORLD_T * 20.0 + arc_seed) * 0.45, cos(WORLD_T * 23.0 + arc_seed) * 0.45, 0.0);
+        vec3 offset2 = vec3(cos(WORLD_T * 18.0 + arc_seed + 1.57) * 0.35, sin(WORLD_T * 21.0 + arc_seed + 1.57) * 0.35, 0.0);
+        
+        vec3 mid1 = mix(ground_pos, sky_pos, 0.35) + offset1;
+        vec3 mid2 = mix(ground_pos, sky_pos, 0.65) + offset2;
+        
+        float arc1 = segment_glow(ro, rd, glow_tmax, ground_pos, mid1, 0.18);
+        float arc2 = segment_glow(ro, rd, glow_tmax, mid1, mid2, 0.18);
+        float arc3 = segment_glow(ro, rd, glow_tmax, mid2, sky_pos, 0.18);
+        
+        aura += vec3(0.85, 0.92, 1.00) * (arc1 + arc2 + arc3) * intensity * 1.2;
+        
+        // Ground bloom
+        float bloom = corona(ro, rd, glow_tmax, ground_pos, 2.5);
+        aura += vec3(0.92, 0.95, 1.00) * bloom * intensity * 1.6;
     }
 
     // --- Sky ---------------------------------------------------------------

@@ -288,7 +288,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		gc.move_input.jump = true
 	}
 
-	for slot in 1..=4 {
+	for slot in 1..=5 {
 		if input_consume_slot(slot) {
 			gc.selected_slot = slot - 1
 		}

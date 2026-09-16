@@ -597,6 +597,17 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 				spell_state.cooldowns[spell_id] = max(spell_state.cooldowns[spell_id] - dt, 0)
 			}
 		}
+
+		// Update cast-time spells
+		if spell_state.casting {
+			def := &SPELL_DEFS[spell_state.cast_spell]
+			spell_state.cast_progress += dt
+
+			// Cast complete
+			if spell_state.cast_progress >= def.cast_time {
+				server_finish_cast(server, Entity_ID(i))
+			}
+		}
 	}
 }
 
@@ -614,6 +625,12 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 
 	def := &SPELL_DEFS[spell_id]
 	spell_state := &server.world.spell_states[caster_id]
+
+	// Can't start a new cast while already casting
+	if spell_state.casting {
+		return false
+	}
+
 	if spell_state.cooldowns[spell_id] > 0 {
 		return false
 	}
@@ -623,52 +640,236 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return false
 	}
 
-	char.mana -= def.mana_cost
-	spell_state.cooldowns[spell_id] = def.cooldown_sec
-
-	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
-	direction := camera_forward(char.yaw, char.pitch)
-
-	switch def.payload {
-	case .Projectile:
-		spell_cast := Spell_Cast{
-			caster_id = caster_id,
-			spell_id  = spell_id,
-			origin    = origin,
-			direction = direction,
-			tick      = tick,
+	// Find target for lightning
+	target_id := INVALID_ENTITY
+	if def.payload == .Lightning {
+		target_id = server_find_best_target(&server.world, caster_id, char.yaw, char.pitch, def.range)
+		if target_id == INVALID_ENTITY {
+			return false // no valid target
 		}
-		projectile_spawn(&server.projectiles, &server.world, &spell_cast, def)
-
-	case .Teleport:
-		blink_dir := norm_vec3(vec3{direction.x, direction.y, 0})
-		if len2_vec3(blink_dir) < 0.5 {
-			blink_dir = camera_forward(char.yaw, 0)
-		}
-		// Walk the blink forward in small steps and stop at the last free spot.
-		best := char.pos
-		steps := 24
-		for s in 1..=steps {
-			cand := char.pos + blink_dir * (def.range * f32(s) / f32(steps))
-			if blink_spot_free(cand) {
-				best = cand
-			} else {
-				break
-			}
-		}
-		char.pos = best
-		char.vel.x = blink_dir.x * 3.0
-		char.vel.y = blink_dir.y * 3.0
-
-	case .None:
 	}
 
+	// Consume resources
+	char.mana -= def.mana_cost
+	spell_state.cooldowns[spell_id] = def.cooldown_sec
 	server.world.characters[caster_id] = char
+
+	// Instant cast or start channel
+	if def.cast_time <= 0 {
+		origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
+		direction := camera_forward(char.yaw, char.pitch)
+
+		switch def.payload {
+		case .Projectile:
+			spell_cast := Spell_Cast{
+				caster_id = caster_id,
+				spell_id  = spell_id,
+				origin    = origin,
+				direction = direction,
+				tick      = tick,
+			}
+			projectile_spawn(&server.projectiles, &server.world, &spell_cast, def)
+
+		case .Teleport:
+			blink_dir := norm_vec3(vec3{direction.x, direction.y, 0})
+			if len2_vec3(blink_dir) < 0.5 {
+				blink_dir = camera_forward(char.yaw, 0)
+			}
+			best := char.pos
+			steps := 24
+			for s in 1..=steps {
+				cand := char.pos + blink_dir * (def.range * f32(s) / f32(steps))
+				if blink_spot_free(cand) {
+					best = cand
+				} else {
+					break
+				}
+			}
+			char.pos = best
+			char.vel.x = blink_dir.x * 3.0
+			char.vel.y = blink_dir.y * 3.0
+			server.world.characters[caster_id] = char
+
+		case .None:
+		}
+	} else {
+		// Start cast-time channel
+		spell_state.casting = true
+		spell_state.cast_spell = spell_id
+		spell_state.cast_progress = 0
+		spell_state.cast_target_id = target_id
+	}
 
 	if SERVER_VERBOSE {
 		server_log("[Combat] Entity %d cast %s", caster_id, def.name)
 	}
 	return true
+}
+
+// Finish a cast-time spell
+server_finish_cast :: proc(server: ^Server, caster_id: Entity_ID) {
+	spell_state := &server.world.spell_states[caster_id]
+	if !spell_state.casting {
+		return
+	}
+
+	spell_id := spell_state.cast_spell
+	target_id := spell_state.cast_target_id
+	spell_state.casting = false
+
+	def := &SPELL_DEFS[spell_id]
+	char := server.world.characters[caster_id]
+
+	// Validate target still valid for lightning
+	if def.payload == .Lightning {
+		if !entity_alive(&server.world, target_id) {
+			// Target died/invalid - refund mana and cooldown
+			char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+			spell_state.cooldowns[spell_id] = 0
+			server.world.characters[caster_id] = char
+			if SERVER_VERBOSE {
+				server_log("[Combat] Lightning cast failed - target lost")
+			}
+			return
+		}
+
+		target := server.world.characters[target_id]
+		dist := len_vec3(target.pos - char.pos)
+		if dist > def.range {
+			// Target out of range - refund
+			char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+			spell_state.cooldowns[spell_id] = 0
+			server.world.characters[caster_id] = char
+			if SERVER_VERBOSE {
+				server_log("[Combat] Lightning cast failed - target out of range")
+			}
+			return
+		}
+
+		// Strike the target
+		server_lightning_strike(server, caster_id, target_id, def)
+	}
+}
+
+// Execute a lightning strike on a target
+server_lightning_strike :: proc(server: ^Server, caster_id: Entity_ID, target_id: Entity_ID, def: ^Spell_Def) {
+	target := server.world.characters[target_id]
+	caster_team := entity_get_team(&server.world, caster_id)
+	impact_pos := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+
+	// Direct hit
+	target.health -= def.damage
+	server.world.characters[target_id] = target
+
+	if SERVER_VERBOSE {
+		server_log("[Combat] Lightning from %d hit %d for %.0f (%.0f HP left)",
+			caster_id, target_id, def.damage, target.health)
+	}
+
+	// Splash damage around target
+	if def.aoe_radius > 0 && def.aoe_damage_frac > 0 {
+		for i in 1..<MAX_ENTITIES {
+			id := Entity_ID(i)
+			if !entity_alive(&server.world, id) || id == caster_id || id == target_id {
+				continue
+			}
+			if !teams_are_enemies(caster_team, server.world.teams[i]) {
+				continue
+			}
+			victim := server.world.characters[i]
+			center := victim.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+			d := center - impact_pos
+			dist := len_vec3(d)
+			if dist > def.aoe_radius {
+				continue
+			}
+			if !world_segment_clear(impact_pos, center, 0.8) {
+				continue
+			}
+			falloff := 1.0 - 0.5 * (dist / def.aoe_radius)
+			victim.health -= def.damage * def.aoe_damage_frac * falloff
+			server.world.characters[i] = victim
+		}
+	}
+
+	// Create a zero-velocity "impact marker" projectile for clients to render
+	// The client will immediately convert this to a visual impact + lightning strike
+	spell_cast := Spell_Cast{
+		caster_id = caster_id,
+		spell_id  = .Call_Lightning,
+		origin    = impact_pos,
+		direction = vec3{0, 0, 1},
+		tick      = server.tick_id,
+	}
+	for i in 0..<MAX_PROJECTILES {
+		if !server.projectiles.projectiles[i].active {
+			server.projectiles.projectiles[i] = Projectile{
+				active   = true,
+				id       = server.projectiles.next_id,
+				spell_id = .Call_Lightning,
+				owner_id = caster_id,
+				pos      = impact_pos,
+				vel      = vec3{0, 0, 0},
+				lifetime = 0.05, // vanishes almost immediately
+				radius   = 0.1,
+			}
+			server.projectiles.next_id += 1
+			server.projectiles.count += 1
+			break
+		}
+	}
+}
+
+// Find the best target in the caster's crosshair cone
+server_find_best_target :: proc(world: ^Entity_World, caster_id: Entity_ID, yaw, pitch: f32, max_range: f32) -> Entity_ID {
+	caster := world.characters[caster_id]
+	caster_team := world.teams[caster_id]
+	origin := caster.pos + vec3{0, 0, PLAYER_EYE_M}
+	look := camera_forward(yaw, pitch)
+
+	best_id := INVALID_ENTITY
+	best_score: f32 = -1
+
+	for i in 1..<MAX_ENTITIES {
+		id := Entity_ID(i)
+		if !entity_alive(world, id) || id == caster_id {
+			continue
+		}
+		if !teams_are_enemies(caster_team, world.teams[i]) {
+			continue
+		}
+
+		target := world.characters[i]
+		target_center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		to_target := target_center - origin
+		dist := len_vec3(to_target)
+
+		if dist > max_range {
+			continue
+		}
+
+		dir := to_target / max(dist, 0.001)
+		dot := dot_vec3(dir, look)
+
+		// Must be in front and reasonably aimed at
+		if dot < 0.85 {
+			continue
+		}
+
+		// LOS check
+		if !world_segment_clear(origin, target_center, 0.8) {
+			continue
+		}
+
+		// Score: prefer closer and more centered
+		score := dot * (1.0 - dist / max_range)
+		if score > best_score {
+			best_score = score
+			best_id = id
+		}
+	}
+
+	return best_id
 }
 
 @(private = "file")
