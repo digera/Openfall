@@ -102,7 +102,8 @@ vec3 spell_tint(float type) {
     if (type < 1.5) return vec3(0.78, 0.46, 1.00);   // missile: violet
     if (type < 2.5) return vec3(0.52, 0.48, 1.00);   // orb: indigo
     if (type < 3.5) return vec3(1.00, 1.00, 1.00);   // blink
-    return vec3(0.50, 0.92, 1.00);                   // frost: cyan
+    if (type < 4.5) return vec3(0.50, 0.92, 1.00);   // frost: cyan
+    return vec3(0.40, 0.75, 1.00);                   // thunderbolt: electric blue
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
