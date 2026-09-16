@@ -585,7 +585,16 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 
 		sdtx.pos(col, rows - 2)
-		if cd > 0 {
+		// Show charge bar if charging this spell
+		if gc.charging_spell == spell && gc.charging_spell != .None {
+			sdtx.color3f(0.3, 0.85, 1.0)
+			frac := gc.charge_accum / def.cast_time
+			filled := int(frac * 10)
+			for k in 0..<10 {
+				sdtx.putc(k < filled ? '=' : '.')
+			}
+			sdtx.printf(" %.1f", gc.charge_accum)
+		} else if cd > 0 {
 			sdtx.color3f(0.45, 0.45, 0.5)
 			frac := 1.0 - cd / def.cooldown_sec
 			filled := int(frac * 10)

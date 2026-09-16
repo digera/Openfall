@@ -298,7 +298,7 @@ server_apply_client_inputs :: proc(server: ^Server) {
 		server.world.inputs[id] = input
 
 		if input.cast_spell != .None {
-			server_handle_spell_cast(server, id, input.cast_spell, server.tick_id)
+			server_handle_spell_cast(server, id, input.cast_spell, input.charge_frac, server.tick_id)
 		}
 	}
 }
@@ -601,7 +601,7 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 }
 
 // Validate and execute a spell cast. Returns true if the cast happened.
-server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, tick: u32) -> bool {
+server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, charge_frac: f32, tick: u32) -> bool {
 	if !entity_alive(&server.world, caster_id) {
 		return false
 	}
@@ -623,6 +623,9 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return false
 	}
 
+	// Clamp charge_frac to [0.2, 1.0] (minimum 20% charge required)
+	charge_frac = clamp(charge_frac, 0.2, 1.0)
+
 	char.mana -= def.mana_cost
 	spell_state.cooldowns[spell_id] = def.cooldown_sec
 
@@ -632,11 +635,12 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	switch def.payload {
 	case .Projectile:
 		spell_cast := Spell_Cast{
-			caster_id = caster_id,
-			spell_id  = spell_id,
-			origin    = origin,
-			direction = direction,
-			tick      = tick,
+			caster_id   = caster_id,
+			spell_id    = spell_id,
+			origin      = origin,
+			direction   = direction,
+			tick        = tick,
+			charge_frac = charge_frac,
 		}
 		projectile_spawn(&server.projectiles, &server.world, &spell_cast, def)
 
@@ -645,11 +649,12 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		if len2_vec3(blink_dir) < 0.5 {
 			blink_dir = camera_forward(char.yaw, 0)
 		}
-		// Walk the blink forward in small steps and stop at the last free spot.
+		// Blink range scales with charge
+		effective_range := def.range * charge_frac
 		best := char.pos
 		steps := 24
 		for s in 1..=steps {
-			cand := char.pos + blink_dir * (def.range * f32(s) / f32(steps))
+			cand := char.pos + blink_dir * (effective_range * f32(s) / f32(steps))
 			if blink_spot_free(cand) {
 				best = cand
 			} else {
@@ -666,7 +671,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	server.world.characters[caster_id] = char
 
 	if SERVER_VERBOSE {
-		server_log("[Combat] Entity %d cast %s", caster_id, def.name)
+		server_log("[Combat] Entity %d cast %s (charge %.2f)", caster_id, def.name, charge_frac)
 	}
 	return true
 }

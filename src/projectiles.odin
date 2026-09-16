@@ -75,6 +75,9 @@ projectile_spawn :: proc(world: ^Projectile_World, entity_world: ^Entity_World, 
 			// Start slightly ahead of the eye so the caster never clips their own shot.
 			origin := spell_cast.origin + spell_cast.direction * (CHARACTER_RADIUS_M + def.proj_radius + 0.15)
 
+			// Scale damage by charge fraction
+			scaled_damage := def.damage * spell_cast.charge_frac
+
 			world.projectiles[i] = Projectile{
 				active       = true,
 				id           = id,
@@ -89,7 +92,7 @@ projectile_spawn :: proc(world: ^Projectile_World, entity_world: ^Entity_World, 
 				bounces_left = def.proj_bounces,
 				restitution  = def.proj_restitution,
 				pierce_left  = def.proj_pierce,
-				damage       = def.damage,
+				damage       = scaled_damage,
 				aoe_radius   = def.aoe_radius,
 				aoe_frac     = def.aoe_damage_frac,
 				knockback    = def.knockback,

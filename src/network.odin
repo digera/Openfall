@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(2)
+PROTOCOL_VERSION :: u8(3)
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -368,6 +368,7 @@ serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> in
 		bw_i16(&w, quant_angle(in_.yaw))
 		bw_i16(&w, quant_angle(in_.pitch))
 		bw_u8(&w, u8(in_.cast_spell))
+		bw_u8(&w, u8(in_.charge_frac * 255))
 	}
 	return w.ok ? w.pos : 0
 }
@@ -390,6 +391,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		in_.yaw = dequant_angle(br_i16(&r))
 		in_.pitch = dequant_angle(br_i16(&r))
 		in_.cast_spell = Spell_ID(br_u8(&r))
+		in_.charge_frac = f32(br_u8(&r)) / 255.0
 		packet.inputs[i] = in_
 	}
 	return packet, r.ok

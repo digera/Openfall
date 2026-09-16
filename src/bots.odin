@@ -403,8 +403,11 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			c.yaw = b.aim_yaw
 			c.pitch = b.aim_pitch
 			server.world.characters[b.id] = c
-			if server_handle_spell_cast(server, b.id, spell, server.tick_id) {
-				b.cast_timer = rand.float32_range(0.45, 1.0)
+			// Bots always full-charge (charge_frac = 1.0)
+			if server_handle_spell_cast(server, b.id, spell, 1.0, server.tick_id) {
+				def := &SPELL_DEFS[spell]
+				// Wait for cast_time before next cast
+				b.cast_timer = def.cast_time + rand.float32_range(0.45, 1.0)
 			} else {
 				b.cast_timer = 0.15
 			}

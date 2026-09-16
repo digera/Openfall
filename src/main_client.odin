@@ -52,6 +52,10 @@ Game_Client :: struct {
 	cooldowns:      [Spell_ID]f32,
 	cast_pulse:     f32,
 	last_cast:      Spell_ID,
+
+	// Charge-cast state
+	charging_spell: Spell_ID,
+	charge_accum:   f32,
 }
 
 game_client: Game_Client
@@ -307,7 +311,9 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 		input := gc.move_input
 		input.yaw = gc.view_yaw
 		input.pitch = gc.view_pitch
-		input.cast_spell = client_decide_cast(gc)
+		cast_spell, charge_frac := client_decide_cast(gc)
+		input.cast_spell = cast_spell
+		input.charge_frac = charge_frac
 
 		qinput := input_quantize(input)
 		gc.client_world.client_tick += 1
@@ -336,29 +342,62 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }
 
-// Decide whether this tick carries a cast. Mirrors the server's checks so
-// the HUD cooldown is responsive and we don't spam rejected casts.
-client_decide_cast :: proc(gc: ^Game_Client) -> Spell_ID {
-	if !input.held_left || !sapp.mouse_locked() {
-		return .None
-	}
+// Charge-cast system: hold LMB to charge, release to fire.
+// Returns (spell_to_cast, charge_fraction) — spell is .None unless firing this tick.
+client_decide_cast :: proc(gc: ^Game_Client) -> (Spell_ID, f32) {
 	pred := &gc.client_world.prediction
-	if !pred.initialized || pred.predicted_char.dead {
-		return .None
+	is_dead := !pred.initialized || pred.predicted_char.dead
+	match_ended := gc.client_world.have_game_state && Match_State(gc.client_world.game_state.match_state) == .Ended
+	can_charge := input.held_left && sapp.mouse_locked() && !is_dead && !match_ended
+
+	if can_charge {
+		spell := HOTBAR[gc.selected_slot]
+		def := &SPELL_DEFS[spell]
+
+		// Start charging if this is a new hold on a valid spell
+		if gc.charging_spell == .None {
+			if gc.cooldowns[spell] <= 0 && pred.predicted_char.mana >= def.mana_cost {
+				gc.charging_spell = spell
+				gc.charge_accum = 0
+			}
+		}
+
+		// Accumulate charge if we're charging this spell
+		if gc.charging_spell == spell && spell_valid(spell) {
+			gc.charge_accum += FIXED_DT
+			gc.charge_accum = min(gc.charge_accum, def.cast_time)
+		} else if gc.charging_spell != .None {
+			// Switched slots or spell became invalid, cancel charge
+			gc.charging_spell = .None
+			gc.charge_accum = 0
+		}
+
+		return .None, 0
+	} else {
+		// Released LMB or can't charge — fire if we have charge
+		if gc.charging_spell != .None && spell_valid(gc.charging_spell) {
+			spell := gc.charging_spell
+			def := &SPELL_DEFS[spell]
+			charge_frac := gc.charge_accum / def.cast_time
+
+			// Minimum 20% charge to fire
+			if charge_frac >= 0.2 {
+				gc.cooldowns[spell] = def.cooldown_sec
+				gc.cast_pulse = 1
+				gc.last_cast = spell
+				camera_fx_on_cast(&gc.fx, spell)
+
+				gc.charging_spell = .None
+				gc.charge_accum = 0
+				return spell, charge_frac
+			}
+		}
+
+		// Cancel charge if released too early
+		gc.charging_spell = .None
+		gc.charge_accum = 0
+		return .None, 0
 	}
-	if gc.client_world.have_game_state && Match_State(gc.client_world.game_state.match_state) == .Ended {
-		return .None
-	}
-	spell := HOTBAR[gc.selected_slot]
-	def := &SPELL_DEFS[spell]
-	if gc.cooldowns[spell] > 0 || pred.predicted_char.mana < def.mana_cost {
-		return .None
-	}
-	gc.cooldowns[spell] = def.cooldown_sec
-	gc.cast_pulse = 1
-	gc.last_cast = spell
-	camera_fx_on_cast(&gc.fx, spell)
-	return spell
 }
 
 main_client :: proc() {
