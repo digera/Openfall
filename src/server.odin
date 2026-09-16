@@ -601,6 +601,52 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 		// Update cast-time spells
 		if spell_state.casting {
 			def := &SPELL_DEFS[spell_state.cast_spell]
+
+			// Continuous validation for Lightning: check LOS each tick
+			if def.payload == .Lightning {
+				target_id := spell_state.cast_target_id
+				if !entity_alive(&server.world, target_id) {
+					// Target died - cancel cast, refund
+					spell_state.casting = false
+					char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+					spell_state.cooldowns[spell_state.cast_spell] = 0
+					server.world.characters[i] = char
+					if SERVER_VERBOSE {
+						server_log("[Combat] Lightning cast interrupted - target died")
+					}
+					continue
+				}
+
+				target := server.world.characters[target_id]
+				dist := len_vec3(target.pos - char.pos)
+				if dist > def.range {
+					// Out of range - cancel cast, refund
+					spell_state.casting = false
+					char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+					spell_state.cooldowns[spell_state.cast_spell] = 0
+					server.world.characters[i] = char
+					if SERVER_VERBOSE {
+						server_log("[Combat] Lightning cast interrupted - target out of range")
+					}
+					continue
+				}
+
+				// LOS check: cannot cast through walls
+				caster_eye := char.pos + vec3{0, 0, PLAYER_EYE_M}
+				target_center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+				if !world_segment_clear(caster_eye, target_center, 0.8) {
+					// LOS broken - cancel cast, refund
+					spell_state.casting = false
+					char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+					spell_state.cooldowns[spell_state.cast_spell] = 0
+					server.world.characters[i] = char
+					if SERVER_VERBOSE {
+						server_log("[Combat] Lightning cast interrupted - LOS broken")
+					}
+					continue
+				}
+			}
+
 			spell_state.cast_progress += dt
 
 			// Cast complete
@@ -742,6 +788,20 @@ server_finish_cast :: proc(server: ^Server, caster_id: Entity_ID) {
 			server.world.characters[caster_id] = char
 			if SERVER_VERBOSE {
 				server_log("[Combat] Lightning cast failed - target out of range")
+			}
+			return
+		}
+
+		// LOS check: cannot strike around corners
+		caster_eye := char.pos + vec3{0, 0, PLAYER_EYE_M}
+		target_center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		if !world_segment_clear(caster_eye, target_center, 0.8) {
+			// LOS broken - refund
+			char.mana = min(char.mana + def.mana_cost, MANA_MAX)
+			spell_state.cooldowns[spell_id] = 0
+			server.world.characters[caster_id] = char
+			if SERVER_VERBOSE {
+				server_log("[Combat] Lightning cast failed - LOS broken")
 			}
 			return
 		}

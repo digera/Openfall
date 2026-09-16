@@ -15,9 +15,18 @@ Added **Call Lightning** as the 5th spell - a targeted, long-cast, high-damage l
 ## Spell Behavior
 1. **Target Acquisition**: Server finds the best enemy in the caster's crosshair cone (85° dot threshold)
 2. **Cast Channel**: 1.8s cast time during which the target must remain valid
-3. **Validation**: If target dies, moves out of range, or loses LOS during cast → **spell fails and refunds mana + cooldown**
+3. **Continuous Validation** (every tick + at cast end):
+   - Target alive
+   - In range (≤22m)
+   - **Clear LOS** (caster eye → target center via `world_segment_clear`)
+   - If any check fails → **spell fails and refunds mana + cooldown**
 4. **Strike**: On successful completion, lightning bolt strikes from sky (45m above ground) to target
 5. **Damage**: Direct hit on primary target + splash damage to nearby enemies
+
+### LOS Policy (Anti-Corner-Shooting)
+- **Horizontal LOS**: Gameplay collision check is caster→target (eye to center)
+- **Sky bolt is VFX only**: Visual comes from above but doesn't bypass cover
+- **Cannot wall-shoot**: Target ducking behind pillar during cast = fail + refund
 
 ## Technical Implementation
 
@@ -47,8 +56,11 @@ Entity_Spell_State :: struct {
   - Consumes mana/cooldown upfront
   - Starts channel for cast-time spells
 - **`server_update_resources`**: Advances cast progress each tick
-- **`server_finish_cast`**: Validates target and executes strike
-  - Refunds mana/cooldown if target lost
+  - **Continuous validation**: For Lightning, checks alive/range/**LOS** every tick
+  - **Interrupts cast** if target becomes invalid → refunds mana/cooldown
+- **`server_finish_cast`**: Final validation before strike
+  - **Final LOS check**: `world_segment_clear(caster_eye, target_center)` before damage
+  - Refunds mana/cooldown if target lost or **LOS broken**
 - **`server_lightning_strike`**: Apply damage and spawn VFX marker projectile
 - **`server_find_best_target`**: Cone-based targeting with LOS checks
 
@@ -99,6 +111,9 @@ The effect uses segment_glow (beam) and corona (sphere glow) primitives in the r
 - **Damage**: 85 direct + 34 AoE max = 119 total if both hit, comparable to Frost Lance piercing potential
 - **Mana**: 60 cost = 60% of max mana pool, heavy investment
 - **Targeting**: Cone threshold of 0.85 dot (~32° cone) requires reasonably accurate aim
+- **LOS validation**: Cannot hit around corners - target must maintain LOS throughout entire 1.8s cast
+  - **Test**: Start cast, have target duck behind pillar → cast fails, mana/cooldown refunded
+  - **Test**: Target stays in open → strike lands successfully
 
 ## Known Limitations
 - No casting animation (reuses idle pose)
