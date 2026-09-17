@@ -274,14 +274,6 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	gc.view_yaw = wrap_angle(gc.view_yaw - dx * CAM_LOOK_SENS)
 	gc.view_pitch = clampf(gc.view_pitch - dy * CAM_LOOK_SENS, -CAM_PITCH_MAX, CAM_PITCH_MAX)
 
-	// Aim assist when RMB held and we have a valid target
-	// Only set aim_lock flag when assist actually runs (so server drains stamina only when locked)
-	if input.held_right && gc.client_world.target_id != INVALID_ENTITY {
-		if client_apply_aim_assist(gc, dt) {
-			gc.move_input.aim_lock = true
-		}
-	}
-
 	fwd: f32 = 0
 	str: f32 = 0
 	if input.key_w { fwd += 1 }
@@ -300,6 +292,14 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	// Hold Space to jump; also latch a press that landed between sim ticks.
 	if input_consume_jump() || input.key_space {
 		gc.move_input.jump = true
+	}
+
+	// Aim assist when RMB held and we have a valid target
+	// Only set aim_lock flag when assist actually runs (so server drains stamina only when locked)
+	if input.held_right && gc.client_world.target_id != INVALID_ENTITY {
+		if client_apply_aim_assist(gc, dt) {
+			gc.move_input.aim_lock = true
+		}
 	}
 
 	for slot in 1..=HOTBAR_SLOTS {
