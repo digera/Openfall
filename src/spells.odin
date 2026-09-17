@@ -15,10 +15,12 @@ Spell_ID :: enum u8 {
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
+	Self_Heal      = 5,    // wind-up self heal, nothing leaves the caster
 }
 
-// Spells bound to hotbar slots 1..4
-HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Blink, .Frost_Lance}
+// Spells bound to hotbar slots 1..4. Blink keeps its definition but loses the
+// third slot: sustain buys more there than a second way to move does.
+HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -44,6 +46,7 @@ Spell_Def :: struct {
 	knockback:       f32,
 	slow_ticks:      int,
 
+	heal:          f32,   // health restored to the caster at full charge
 	range:         f32,   // blink distance
 }
 
@@ -51,6 +54,7 @@ Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
+	Heal,
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -123,6 +127,20 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		damage        = 68,
 		slow_ticks    = 180, // 3 s
 	},
+
+	// Sustain, not an escape: the wind-up is long enough to be punished and a
+	// full heal is worth less than one lance, so trading into a healing
+	// opponent still wins.
+	.Self_Heal = {
+		id            = .Self_Heal,
+		name          = "Self Heal",
+		short_name    = "HEAL",
+		mana_cost     = 30,
+		cooldown_sec  = 5.0,
+		cast_time     = 1.0,
+		payload       = .Heal,
+		heal          = 45,
+	},
 }
 
 // Releasing below this fraction of the cast time fizzles instead of casting,
@@ -131,6 +149,25 @@ SPELL_MIN_CHARGE :: f32(0.2)
 
 spell_valid :: proc(id: Spell_ID) -> bool {
 	return id != .None && int(id) < len(SPELL_DEFS) && SPELL_DEFS[id].payload != .None
+}
+
+// Everything that has to be true before a wind-up may start or a release may
+// fire. The server, the client's cast decision and the HUD all read this, so
+// the bar never offers a cast the server would throw away. Death and the match
+// state are the callers' business: they drop a charge rather than gate one.
+spell_castable :: proc(id: Spell_ID, char: Character_State, cooldown: f32) -> bool {
+	if !spell_valid(id) {
+		return false
+	}
+	def := &SPELL_DEFS[id]
+	if cooldown > 0 || char.mana < def.mana_cost {
+		return false
+	}
+	// A heal at full health is pure loss: refuse it instead of eating the mana.
+	if def.payload == .Heal && char.health >= HEALTH_MAX {
+		return false
+	}
+	return true
 }
 
 // How much of a spell a given hold is worth. Spells with no cast time are

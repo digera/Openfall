@@ -46,6 +46,7 @@ Client_Prediction :: struct {
 	teleported:   bool,
 	respawned:    bool,
 	damage_taken: f32,
+	healed:       f32,
 }
 
 Remote_Entity :: struct {
@@ -137,9 +138,13 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 		return
 	}
 
-	// Damage / death events
+	// Damage / heal / death events. Health coming back while dead is a respawn
+	// refilling the bar, which has its own flash, so it is not a heal.
 	if server_state.health < pred.last_server_health - 0.5 && !server_state.dead {
 		pred.damage_taken += pred.last_server_health - server_state.health
+	}
+	if server_state.health > pred.last_server_health + 0.5 && !pred.last_server_dead {
+		pred.healed += server_state.health - pred.last_server_health
 	}
 	if pred.last_server_dead && !server_state.dead {
 		pred.respawned = true
@@ -174,6 +179,9 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 		if !pred.respawned {
 			pred.teleported = true
 		}
+		// A round reset moves everyone and refills them while they are alive;
+		// that is a respawn, not a heal, and it has its own flash.
+		pred.healed = 0
 	} else {
 		// Keep the rendered position continuous; the offset bleeds off over time
 		pred.smooth_offset += delta

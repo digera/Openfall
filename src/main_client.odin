@@ -373,8 +373,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 			// A fresh hold, or the player swapped slots mid-charge. Picking the
 			// spell up again once its cooldown ends is deliberate: holding
 			// through the cooldown starts the next wind-up automatically.
-			def := &SPELL_DEFS[spell]
-			if !spell_valid(spell) || gc.cooldowns[spell] > 0 || pred.predicted_char.mana < def.mana_cost {
+			if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
 				client_drop_charge(gc)
 				return .None, .None
 			}

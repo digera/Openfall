@@ -68,23 +68,25 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | WASD | Walk |
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
-| 1–4 | Select spell (Missile / Orb / Blink / Lance) |
+| 1–4 | Select spell (Missile / Orb / Heal / Lance) |
 | Hold LMB | Charge the selected spell |
 | Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
 
 ## Combat
 
-Spells are charge-cast. Holding LMB winds the selected spell up over its cast time and releasing throws it; damage (and Blink's distance) scale linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
+Spells are charge-cast. Holding LMB winds the selected spell up over its cast time and releasing throws it; damage and healing scale linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
 
 The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held.
 
-| Spell | Cast | Cooldown | Mana | Damage |
+| Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
-| Blink | 0.4s | 8.0s | 20 | 11m teleport |
+| Self Heal | 1.0s | 5.0s | 30 | restores 45 to the caster |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
+
+Self Heal is sustain, not an escape: a full wind-up is worth less than one lance, so trading into a healing opponent still wins, and a heal at full health is refused outright rather than eating the mana, so it cannot be pre-charged before a fight. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 ### Targeting
 
