@@ -44,7 +44,7 @@ layout(binding=1) uniform fs_params {
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
-    vec4 beams[4];          // xyz origin, w = 1 lit (0 = none)
+    vec4 beams[4];          // xyz origin, w = spell_id (0 = none, 5 = heal, 7 = thunderbolt)
     vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
 };
@@ -707,24 +707,28 @@ void main() {
         aura += tint * spike * 0.05;
     }
 
-    // --- Thunderbolt: a held arc from the caster to whatever it lands on ---
+    // --- Beams: held arcs (Thunderbolt = electric blue, Heal = soft green) ---
     for (int i = 0; i < 4; i++) {
         vec4 B = beams[i];
         if (B.w < 0.5) continue;
+        int spell_id = int(B.w);
+        bool is_heal = (spell_id == 5); // Self_Heal = 5
+        vec3 beam_color = is_heal ? vec3(0.50, 0.95, 0.65) : vec3(0.95, 0.98, 1.00);
+        
         vec4 E = beam_ends[i];
-        aura += arc_glow(ro, rd, glow_tmax, B.xyz, E.xyz, 0.07, 0.35, float(i));
+        aura += arc_glow(ro, rd, glow_tmax, B.xyz, E.xyz, 0.07, 0.35, float(i)) * (is_heal ? 0.85 : 1.0);
         // The far end burns: hotter and wider on flesh than on stone.
         float flare = 0.10 + 0.10 * E.w + 0.03 * sin(WORLD_T * 47.0 + float(i));
         vec3 to_end = E.xyz - ro;
         float t_end = clamp(dot(to_end, rd), 0.04, glow_tmax);
         float d_end = length(ro + rd * t_end - E.xyz);
         float end_glow = 1.0 - smoothstep(flare, flare * 6.0, d_end);
-        aura += vec3(0.95, 0.98, 1.00) * end_glow * end_glow * (1.6 + 1.2 * E.w);
+        aura += beam_color * end_glow * end_glow * (1.6 + 1.2 * E.w);
         // Chains fork from the landing point to nearby bodies.
         for (int c = 0; c < 2; c++) {
             vec4 C = beam_chains[i * 2 + c];
             if (C.w < 0.5) continue;
-            aura += arc_glow(ro, rd, glow_tmax, E.xyz, C.xyz, 0.04, 0.5, float(i) * 3.0 + float(c) + 1.0) * 0.7;
+            aura += arc_glow(ro, rd, glow_tmax, E.xyz, C.xyz, 0.04, 0.5, float(i) * 3.0 + float(c) + 1.0) * (is_heal ? 0.70 : 0.70);
         }
     }
 
@@ -906,8 +910,11 @@ void main() {
         }
         for (int i = 0; i < 4; i++) {
             if (beams[i].w < 0.5) continue;
+            int spell_id = int(beams[i].w);
+            bool is_heal = (spell_id == 5);
+            vec3 light_color = is_heal ? vec3(0.50, 0.95, 0.65) : spell_tint(6.0);
             float flicker = 0.85 + 0.15 * sin(WORLD_T * 53.0 + float(i) * 1.3);
-            color += albedo * point_light(hp, hit_n, beam_ends[i].xyz, spell_tint(6.0), 6.0 * flicker, 8.0);
+            color += albedo * point_light(hp, hit_n, beam_ends[i].xyz, light_color, 6.0 * flicker, 8.0);
         }
     }
 

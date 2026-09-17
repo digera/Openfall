@@ -363,27 +363,28 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			b := &world.beams[i]
 			from: vec3
 			to := b.end
-			if b.owner_id == world.local_entity_id {
-				if !playing || dead > 0.5 {
-					continue
-				}
-				// Leaves the hand orb and lands where the crosshair says, traced
-				// this frame the way the server will trace it.
-				from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
-				trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
-				// Use the spell the client is actually channeling, not hardcoded Thunderbolt.
-				// TODO: Differentiate heal beam visually (soft green tint vs electric blue).
-				beam_spell := gc.charging_spell if spell_valid(gc.charging_spell) && SPELL_DEFS[gc.charging_spell].payload == .Beam else .Thunderbolt
-				to = client_world_beam_end(world, &SPELL_DEFS[beam_spell], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
-			} else {
-				remote := &world.remote_entities[int(b.owner_id)]
-				if !remote.active {
-					continue
-				}
-				from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
+		beam_spell_id := b.spell_id
+		if b.owner_id == world.local_entity_id {
+			if !playing || dead > 0.5 {
+				continue
 			}
-			// TODO: Pass beam type to shader for color (heal = soft green, damage = electric blue).
-			fs_params.beams[i] = {from.x, from.y, from.z, 1}
+			// Leaves the hand orb and lands where the crosshair says, traced
+			// this frame the way the server will trace it.
+			from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
+			trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
+			// Use the spell the client is actually channeling for responsive prediction.
+			beam_spell := gc.charging_spell if spell_valid(gc.charging_spell) && SPELL_DEFS[gc.charging_spell].payload == .Beam else .Thunderbolt
+			to = client_world_beam_end(world, &SPELL_DEFS[beam_spell], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
+			beam_spell_id = beam_spell
+		} else {
+			remote := &world.remote_entities[int(b.owner_id)]
+			if !remote.active {
+				continue
+			}
+			from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
+		}
+		// Pass spell ID to shader for color (heal = soft green, damage = electric blue).
+		fs_params.beams[i] = {from.x, from.y, from.z, f32(beam_spell_id)}
 			fs_params.beam_ends[i] = {to.x, to.y, to.z, b.hit ? 1 : 0}
 			// Chains arc to bodies, so they follow the interpolated remotes
 			// rather than a position that was true a snapshot ago.

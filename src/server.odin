@@ -648,15 +648,17 @@ server_send_snapshots :: proc(server: ^Server) {
 				bidx[k], bidx[best] = bidx[best], bidx[k]
 				bdist[k], bdist[best] = bdist[best], bdist[k]
 			}
-			beam := &server.world.spell_states[bidx[k]].beam
-			sb := Snapshot_Beam{
-				owner_id    = Entity_ID(bidx[k]),
-				end         = beam.end,
-				hit         = beam.hit != INVALID_ENTITY,
-				chain_count = u8(beam.chain_count),
-				chains      = beam.chains,
-			}
-			snapshot.beams[k] = sb
+		spell_state := &server.world.spell_states[bidx[k]]
+		beam := &spell_state.beam
+		sb := Snapshot_Beam{
+			owner_id    = Entity_ID(bidx[k]),
+			spell_id    = spell_state.channel_spell,
+			end         = beam.end,
+			hit         = beam.hit != INVALID_ENTITY,
+			chain_count = u8(beam.chain_count),
+			chains      = beam.chains,
+		}
+		snapshot.beams[k] = sb
 		}
 		snapshot.beam_count = u8(btake)
 

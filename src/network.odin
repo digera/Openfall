@@ -111,6 +111,7 @@ Snapshot_Strike :: struct {
 // client draws them to the bodies it is already interpolating.
 Snapshot_Beam :: struct {
 	owner_id:    Entity_ID,
+	spell_id:    Spell_ID,  // which beam spell (for color/VFX)
 	end:         vec3,
 	hit:         bool,      // the far end is a body, not the world
 	chain_count: u8,
@@ -562,6 +563,7 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	for i in 0..<bcount {
 		b := &packet.beams[i]
 		bw_u8(&w, u8(b.owner_id))
+		bw_u8(&w, u8(b.spell_id))
 		bw_pos_cm(&w, b.end)
 		chains := min(int(b.chain_count), BEAM_MAX_CHAINS)
 		flags := u8(chains) << 1
@@ -641,6 +643,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	for i in 0..<bcount {
 		b := &packet.beams[i]
 		b.owner_id = entity_id_from_wire(br_u8(&r))
+		b.spell_id = Spell_ID(br_u8(&r))
 		b.end = br_pos_cm(&r)
 		flags := br_u8(&r)
 		b.hit = flags & 1 != 0
