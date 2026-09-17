@@ -407,6 +407,18 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 				return .None, .None
 			}
 		}
+		if def.payload == .Beam {
+			// A beam is firing for as long as this is held, so the hand stays
+			// lit. Mana reaching zero means the server has just put the beam
+			// to rest; mirror the rest so the bar shows it, and let go of the
+			// spell so holding through it relights the beam when it ends.
+			gc.cast_pulse = max(gc.cast_pulse, 0.7)
+			if pred.predicted_char.mana < 1 {
+				gc.cooldowns[spell] = def.cooldown_sec
+				client_drop_charge(gc)
+				return .None, .None
+			}
+		}
 		gc.charge_accum = min(gc.charge_accum + FIXED_DT, def.cast_time)
 		return .None, gc.charging_spell
 	}
@@ -418,7 +430,8 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	def := &SPELL_DEFS[spell]
 	charge := spell_charge_frac(def, gc.charge_accum)
 	client_drop_charge(gc)
-	if charge < SPELL_MIN_CHARGE {
+	// Letting go of a beam just puts it out; there is nothing to cast.
+	if def.payload == .Beam || charge < SPELL_MIN_CHARGE {
 		return .None, .None
 	}
 	// A strike whose target is out of reach fizzles here for the same reason

@@ -124,6 +124,12 @@ camera_fx_update :: proc(fx: ^Camera_FX, gc: ^Game_Client, dt: f32) {
 	fx.fov_kick *= math.exp(-dt * 6.5)
 	fx.cast_kick *= math.exp(-dt * 11.0)
 
+	// A lit beam shivers the view a little for as long as it is held.
+	if _, lit := client_world_local_beam(&gc.client_world); lit {
+		t := f32(gc.client_world.local_time)
+		fx.cast_kick = max(fx.cast_kick, 0.0025 + 0.0025 * math.sin(t * 41.0) * math.sin(t * 13.0))
+	}
+
 	// Lean into strafes
 	right := camera_right(gc.view_yaw)
 	lateral := char.vel.x * right.x + char.vel.y * right.y
@@ -180,6 +186,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Blink:          return 3
 	case .Frost_Lance:    return 4
 	case .Call_Lightning: return 5
+	case .Thunderbolt:    return 6
 	}
 	return 1
 }
@@ -349,6 +356,42 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			continue
 		}
 		fs_params.lightning[i] = {s.pos.x, s.pos.y, s.pos.z, clampf(s.life, 0.01, 1)}
+	}
+
+	if client_world_beams_current(world) {
+		for i in 0..<world.beam_count {
+			b := &world.beams[i]
+			from: vec3
+			to := b.end
+			if b.owner_id == world.local_entity_id {
+				if !playing || dead > 0.5 {
+					continue
+				}
+				// Leaves the hand orb and lands where the crosshair says, traced
+				// this frame the way the server will trace it.
+				from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
+				trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
+				to = client_world_beam_end(world, &SPELL_DEFS[.Thunderbolt], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
+			} else {
+				remote := &world.remote_entities[int(b.owner_id)]
+				if !remote.active {
+					continue
+				}
+				from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
+			}
+			fs_params.beams[i] = {from.x, from.y, from.z, 1}
+			fs_params.beam_ends[i] = {to.x, to.y, to.z, b.hit ? 1 : 0}
+			// Chains arc to bodies, so they follow the interpolated remotes
+			// rather than a position that was true a snapshot ago.
+			for c in 0..<min(int(b.chain_count), BEAM_MAX_CHAINS) {
+				target := &world.remote_entities[int(b.chains[c])]
+				if !target.active {
+					continue
+				}
+				p := target.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+				fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
+			}
+		}
 	}
 
 	// --- Draw -----------------------------------------------------------------
@@ -607,7 +650,22 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 
 		sdtx.pos(col, rows - 2)
-		if spell == gc.charging_spell {
+		if spell == gc.charging_spell && def.payload == .Beam {
+			// A beam has no wind-up to show; the bar crackles while the server
+			// keeps it lit and the mana drain, drawn to its right, is the
+			// thing to watch.
+			_, lit := client_world_local_beam(world)
+			if lit {
+				sdtx.color3f(0.75, 0.88, 1.0)
+			} else {
+				sdtx.color3f(0.45, 0.5, 0.6)
+			}
+			phase := int(world.local_time * 24)
+			for k in 0..<10 {
+				sdtx.putc((k + phase) % 3 == 0 ? '~' : '#')
+			}
+			sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
+		} else if spell == gc.charging_spell {
 			// Wind-up: dim until the release would actually produce a cast,
 			// bright once it is past the minimum charge.
 			charge := spell_charge_frac(def, gc.charge_accum)

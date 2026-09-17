@@ -17,12 +17,13 @@ Spell_ID :: enum u8 {
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
 	Self_Heal      = 5,    // wind-up self heal, nothing leaves the caster
 	Call_Lightning = 6,    // bolt from the sky onto the crosshair's target
+	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
 }
 
 // Spells bound to hotbar slots 1..HOTBAR_SLOTS. Blink keeps its definition but
 // loses the third slot: sustain buys more there than a second way to move does.
-HOTBAR_SLOTS :: 5
-HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance, .Call_Lightning}
+HOTBAR_SLOTS :: 6
+HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance, .Call_Lightning, .Thunderbolt}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -49,7 +50,15 @@ Spell_Def :: struct {
 	slow_ticks:      int,
 
 	heal:          f32,   // health restored to the caster at full charge
-	range:         f32,   // blink distance, or how far a strike can reach its target
+	range:         f32,   // blink distance, strike reach, or beam length
+
+	// Beams. `mana_cost` is what it takes to light one, not what it spends;
+	// `cooldown_sec` is the rest forced on a beam that ran its caster dry.
+	beam_dps:          f32,
+	beam_mana_per_sec: f32,
+	beam_chain_range:  f32,   // how far an arc jumps from the last body it hit
+	beam_chain_count:  int,   // how many times
+	beam_chain_frac:   f32,   // damage each jump deals, as a fraction of the beam's
 }
 
 Spell_Payload_Type :: enum u8 {
@@ -58,6 +67,7 @@ Spell_Payload_Type :: enum u8 {
 	Teleport,
 	Heal,
 	Strike,     // lands on the targeted entity the moment it is released
+	Beam,       // does its work every tick it is held; the release is nothing
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -163,6 +173,27 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		aoe_radius      = 2.5,
 		aoe_damage_frac = 0.4,
 	},
+
+	// Quake's lightning gun, on a mana budget. Nothing up front and no
+	// wind-up; it draws mana every tick it is held and hurts whatever the
+	// crosshair is on, then arcs to the two nearest enemies behind them for
+	// half as much. A full pool buys about four seconds, roughly two kills
+	// with perfect tracking, which is less than the same mana in lances. The
+	// beam is paid for in aim, not in cast time.
+	.Thunderbolt = {
+		id                = .Thunderbolt,
+		name              = "Thunderbolt",
+		short_name        = "THUNDER",
+		mana_cost         = 10,    // needed to light it, not spent
+		cooldown_sec      = 2.0,   // only after it runs the caster dry
+		payload           = .Beam,
+		range             = 26,
+		beam_dps          = 55,
+		beam_mana_per_sec = 24,
+		beam_chain_range  = 6,
+		beam_chain_count  = 2,
+		beam_chain_frac   = 0.5,
+	},
 }
 
 // Widest the crosshair may drift off a target between picking it and the
@@ -240,6 +271,24 @@ Entity_Spell_State :: struct {
 	// server decides how long it has actually been held.
 	channel_spell: Spell_ID,
 	channel_time:  f32,
+
+	// Where the held beam ended this tick, for the snapshot. Only meaningful
+	// while channel_spell is a beam.
+	beam: Beam_State,
+}
+
+BEAM_MAX_CHAINS :: 2
+
+Beam_State :: struct {
+	end:         vec3,                    // first thing the beam met: a body or the world
+	hit:         Entity_ID,               // the body, if it was one
+	chain_count: int,
+	chains:      [BEAM_MAX_CHAINS]Entity_ID,
+}
+
+// Is the entity's held spell a beam that is actually firing?
+spell_state_beaming :: proc(state: ^Entity_Spell_State) -> bool {
+	return state.channel_spell != .None && SPELL_DEFS[state.channel_spell].payload == .Beam
 }
 
 Spell_Cast :: struct {

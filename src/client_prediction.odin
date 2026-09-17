@@ -114,6 +114,12 @@ Client_World :: struct {
 	seen_strike_head: int,
 	seen_strike_count: int,
 
+	// Beams lit as of the newest snapshot. State, not events: each snapshot
+	// replaces the lot, and one that has gone stale is not drawn.
+	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
+	beam_count:       int,
+	beam_time:        f64,
+
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
 
@@ -326,6 +332,7 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.strikes = {}
 	world.seen_strike_count = 0
 	world.seen_strike_head = 0
+	world.beam_count = 0
 	world.have_server_tick = false
 	world.have_game_state = false
 	world.target_id = INVALID_ENTITY
@@ -398,6 +405,61 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 
 	client_world_apply_projectiles(world, snapshot)
 	client_world_apply_strikes(world, snapshot)
+	client_world_apply_beams(world, snapshot)
+}
+
+BEAM_STALE_SEC :: f64(0.2)
+
+@(private = "file")
+client_world_apply_beams :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	world.beam_count = int(snapshot.beam_count)
+	world.beam_time = world.local_time
+	for i in 0..<world.beam_count {
+		world.beams[i] = snapshot.beams[i]
+		// The marker is held up for as long as the beam keeps landing.
+		if world.beams[i].owner_id == world.local_entity_id && world.beams[i].hit {
+			world.hit_marker = max(world.hit_marker, 0.6)
+		}
+	}
+}
+
+// Are the beams in the world fresh enough to draw?
+client_world_beams_current :: proc(world: ^Client_World) -> bool {
+	return world.beam_count > 0 && world.local_time - world.beam_time < BEAM_STALE_SEC
+}
+
+// The local player's beam, if the server says it is lit.
+client_world_local_beam :: proc(world: ^Client_World) -> (beam: ^Snapshot_Beam, lit: bool) {
+	if !client_world_beams_current(world) {
+		return nil, false
+	}
+	for i in 0..<world.beam_count {
+		if world.beams[i].owner_id == world.local_entity_id {
+			return &world.beams[i], true
+		}
+	}
+	return nil, false
+}
+
+// Where the local player's own beam ends this frame, traced from the eye and
+// look the server will use against the bodies the player is looking at. The
+// server decides whether the beam is lit at all; drawing its far end from a
+// round-trip-old snapshot would have it trail the crosshair.
+client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> vec3 {
+	reach := world_ray_hit(eye, look, def.range)
+	for i in 1..<MAX_ENTITIES {
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead || Entity_ID(i) == world.local_entity_id {
+			continue
+		}
+		if !teams_are_enemies(world.local_team, remote.team) {
+			continue
+		}
+		if dist, hit := ray_cylinder_hit(eye, look, remote.display_state.pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, reach); hit {
+			reach = dist
+		}
+	}
+	return eye + look * reach
 }
 
 @(private = "file")
