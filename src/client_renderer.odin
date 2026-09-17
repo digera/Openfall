@@ -346,6 +346,21 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 
 			// --- Cloak simulation: compute control points driven by motion ---
 			cloak := &r.cloak_states[k]
+			// First frame for this wisp: initialize state
+			if cloak.prev_pos == vec3{0, 0, 0} || cloak.phase == 0 {
+				cloak.prev_pos = pos
+				cloak.prev_yaw = yaw
+				cloak.phase = f32(ids[k]) * 0.73
+				// Initialize hem to rest positions
+				forward := vec3{math.cos(yaw), math.sin(yaw), 0}
+				right := vec3{-math.sin(yaw), math.cos(yaw), 0}
+				attach_point := pos + vec3{0, 0, 0.65} - forward * 0.12
+				for i in 0..<4 {
+					angle := f32(i) * math.PI * 0.5 - math.PI * 0.25
+					local_offset := right * math.cos(angle) * 0.35 + forward * math.sin(angle) * 0.35
+					cloak.hem_offsets[i] = attach_point + local_offset - vec3{0, 0, 0.85}
+				}
+			}
 			vel := (pos - cloak.prev_pos) / max(dt, 0.001)
 			yaw_vel := wrap_angle(yaw - cloak.prev_yaw) / max(dt, 0.001)
 
@@ -391,9 +406,6 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 
 			cloak.prev_pos = pos
 			cloak.prev_yaw = yaw
-			if cloak.phase == 0 {
-				cloak.phase = f32(ids[k]) * 0.73  // per-wisp idle phase
-			}
 
 			// Pack hem control points into uniforms (3 vec4s per wisp = 12 floats for 4 vec3s)
 			fs_params.cloak_hem[k] = {

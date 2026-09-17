@@ -433,42 +433,35 @@ bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax
     return hit;
 }
 
-// Cloak SDF: a flowing ribbon defined by control points
-// Returns signed distance to a thin curved sheet
+// Distance from point p to line segment (a, b)
+float dist_to_segment(vec3 p, vec3 a, vec3 b) {
+    vec3 ab = b - a;
+    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    vec3 closest = a + ab * t;
+    return length(p - closest);
+}
+
+// Cloak SDF: union of thin capsules from attach point to each hem control point
+// Simple and robust: 4 capsules forming a flared shape
 float cloak_sdf(vec3 p, vec3 attach, vec3[4] hem_points) {
     float min_dist = 1e5;
     
-    // Cloak spine: 3 layers from shoulders to hem
-    vec3 spine[4];
-    spine[0] = attach;
-    spine[1] = attach * 0.6 + (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.1;
-    spine[2] = (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.25;
-    spine[3] = (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.25;
-    
-    // Check distance to ribbon segments
-    for (int i = 0; i < 3; i++) {
-        vec3 a = spine[i];
-        vec3 b = spine[i + 1];
-        
-        // For each spine segment, trace to the hem curve at that height
-        float t_spine = clamp(dot(p - a, b - a) / max(dot(b - a, b - a), 1e-6), 0.0, 1.0);
-        vec3 spine_pt = mix(a, b, t_spine);
-        
-        // Sample the hem shape at this spine level
-        float angle = atan(p.y - spine_pt.y, p.x - spine_pt.x);
-        int idx = int(mod(angle / (3.14159 * 0.5) + 4.0, 4.0));
-        vec3 hem_a = mix(spine[i], hem_points[idx], float(i + 1) / 3.0);
-        vec3 hem_b = mix(spine[i], hem_points[(idx + 1) % 4], float(i + 1) / 3.0);
-        
-        float t_hem = clamp(dot(p - hem_a, hem_b - hem_a) / max(dot(hem_b - hem_a, hem_b - hem_a), 1e-6), 0.0, 1.0);
-        vec3 edge_pt = mix(hem_a, hem_b, t_hem);
-        
-        float d = length(p - edge_pt);
+    // Direct segments from attachment to each hem point
+    for (int i = 0; i < 4; i++) {
+        float d = dist_to_segment(p, attach, hem_points[i]);
         min_dist = min(min_dist, d);
     }
     
-    // Thin sheet: distance to nearest point minus small thickness
-    return min_dist - 0.012;
+    // Connect hem points to form the lower edge loop
+    for (int i = 0; i < 4; i++) {
+        vec3 a = hem_points[i];
+        vec3 b = hem_points[(i + 1) % 4];
+        float d = dist_to_segment(p, a, b);
+        min_dist = min(min_dist, d);
+    }
+    
+    // Capsule radius (thin ribbon)
+    return min_dist - 0.015;
 }
 
 bool cloak_trace(vec3 ro, vec3 rd, vec3 wisp_pos, float wisp_yaw, int wisp_idx, float tmin, float tmax, out float t, out vec3 n) {
