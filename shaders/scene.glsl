@@ -44,6 +44,9 @@ layout(binding=1) uniform fs_params {
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
+    vec4 beams[4];          // xyz origin, w = 1 lit (0 = none)
+    vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
+    vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
 };
 
 in vec3 ray_origin;
@@ -102,7 +105,8 @@ vec3 spell_tint(float type) {
     if (type < 2.5) return vec3(0.52, 0.48, 1.00);   // orb: indigo
     if (type < 3.5) return vec3(1.00, 1.00, 1.00);   // blink
     if (type < 4.5) return vec3(0.50, 0.92, 1.00);   // frost: cyan
-    return vec3(0.82, 0.90, 1.00);                   // lightning: white-blue
+    if (type < 5.5) return vec3(0.82, 0.90, 1.00);   // lightning: white-blue
+    return vec3(0.62, 0.80, 1.00);                   // thunderbolt: electric blue
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
@@ -188,6 +192,40 @@ float segment_glow(vec3 ro, vec3 rd, float tmax, vec3 a, vec3 b, float radius) {
     g *= g;
     float along = 1.0 - smoothstep(tmax - 0.4, tmax + 0.2, dot(q - ro, rd));
     return g * along * (0.35 + 0.65 * s);
+}
+
+// Glow from a crackling arc between `a` and `b`: the straight segment broken
+// into pieces whose joints wander off the line and re-roll thirty times a
+// second. `amp` is how far a joint may stray, `radius` the core thickness.
+vec3 arc_glow(vec3 ro, vec3 rd, float tmax, vec3 a, vec3 b, float radius, float amp, float seed) {
+    vec3 ab = b - a;
+    float len = length(ab);
+    if (len < 0.05) return vec3(0.0);
+    vec3 dir = ab / len;
+    vec3 side = normalize(cross(dir, abs(dir.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+    vec3 lift = cross(dir, side);
+    float roll = floor(WORLD_T * 30.0) + seed * 13.0;
+    const int N = 8;
+    vec3 core = vec3(0.95, 0.98, 1.00);
+    vec3 tint = vec3(0.45, 0.72, 1.00);
+    vec3 sum = vec3(0.0);
+    vec3 prev = a;
+    for (int k = 1; k <= N; k++) {
+        float f = float(k) / float(N);
+        vec3 node = a + ab * f;
+        if (k < N) {
+            // Ends stay pinned so the arc always leaves the hand and lands
+            // on the mark; the middle is where it wanders.
+            float sway = amp * sin(f * 3.14159);
+            node += side * (hash13(vec3(roll, float(k), seed)) - 0.5) * 2.0 * sway
+                  + lift * (hash13(vec3(roll, float(k) + 5.0, seed)) - 0.5) * 2.0 * sway;
+        }
+        sum += core * segment_glow(ro, rd, tmax, prev, node, radius);
+        prev = node;
+    }
+    // Soft halo along the straight line under the crackle.
+    sum += tint * segment_glow(ro, rd, tmax, a, b, radius * 5.0) * 0.45;
+    return sum;
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +707,27 @@ void main() {
         aura += tint * spike * 0.05;
     }
 
+    // --- Thunderbolt: a held arc from the caster to whatever it lands on ---
+    for (int i = 0; i < 4; i++) {
+        vec4 B = beams[i];
+        if (B.w < 0.5) continue;
+        vec4 E = beam_ends[i];
+        aura += arc_glow(ro, rd, glow_tmax, B.xyz, E.xyz, 0.07, 0.35, float(i));
+        // The far end burns: hotter and wider on flesh than on stone.
+        float flare = 0.10 + 0.10 * E.w + 0.03 * sin(WORLD_T * 47.0 + float(i));
+        vec3 to_end = E.xyz - ro;
+        float t_end = clamp(dot(to_end, rd), 0.04, glow_tmax);
+        float d_end = length(ro + rd * t_end - E.xyz);
+        float end_glow = 1.0 - smoothstep(flare, flare * 6.0, d_end);
+        aura += vec3(0.95, 0.98, 1.00) * end_glow * end_glow * (1.6 + 1.2 * E.w);
+        // Chains fork from the landing point to nearby bodies.
+        for (int c = 0; c < 2; c++) {
+            vec4 C = beam_chains[i * 2 + c];
+            if (C.w < 0.5) continue;
+            aura += arc_glow(ro, rd, glow_tmax, E.xyz, C.xyz, 0.04, 0.5, float(i) * 3.0 + float(c) + 1.0) * 0.7;
+        }
+    }
+
     // --- Sky ---------------------------------------------------------------
     if (mat == MAT_SKY) {
         vec3 col = sky_color(rd) + aura;
@@ -844,6 +903,11 @@ void main() {
         }
         if (hand_pos.w > 0.001) {
             color += albedo * point_light(hp, hit_n, hand_pos.xyz, team_tint(fx.z), 0.9 + 1.4 * fx.w, 6.0);
+        }
+        for (int i = 0; i < 4; i++) {
+            if (beams[i].w < 0.5) continue;
+            float flicker = 0.85 + 0.15 * sin(WORLD_T * 53.0 + float(i) * 1.3);
+            color += albedo * point_light(hp, hit_n, beam_ends[i].xyz, spell_tint(6.0), 6.0 * flicker, 8.0);
         }
     }
 

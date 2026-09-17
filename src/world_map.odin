@@ -241,6 +241,40 @@ world_segment_clear :: proc(a, b: vec3, step: f32 = 0.6) -> bool {
 	return true
 }
 
+// How far a ray gets before it meets a wall, the floor, the ceiling or cover:
+// `max_dist` if nothing stops it. Marches in `step`s and then bisects the last
+// one, so the answer is stable to a centimetre or so without the march being
+// that fine. `dir` must be unit length. Shared by hitscan on the server and
+// by the client drawing its own beam.
+world_ray_hit :: proc(origin, dir: vec3, max_dist: f32, step: f32 = 0.25) -> f32 {
+	free := f32(0)
+	blocked := max_dist
+	found := false
+	for t := step; t < max_dist; t += step {
+		if !world_point_free(origin + dir * t, 0.05) {
+			blocked = t
+			found = true
+			break
+		}
+		free = t
+	}
+	if !found {
+		if world_point_free(origin + dir * max_dist, 0.05) {
+			return max_dist
+		}
+		free = max(free, max_dist - step)
+	}
+	for _ in 0..<5 {
+		mid := (free + blocked) * 0.5
+		if world_point_free(origin + dir * mid, 0.05) {
+			free = mid
+		} else {
+			blocked = mid
+		}
+	}
+	return blocked
+}
+
 // Spawn point inside a team base. Slots fan out laterally then backwards.
 team_spawn_position :: proc(team: Team_ID, slot: int) -> vec3 {
 	if team == .None {

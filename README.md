@@ -68,8 +68,8 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | WASD | Walk |
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
-| 1–5 | Select spell (Missile / Orb / Heal / Lance / Bolt) |
-| Hold LMB | Charge the selected spell |
+| 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
+| Hold LMB | Charge the selected spell (Thunderbolt fires for as long as it is held) |
 | Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
 
@@ -86,10 +86,13 @@ The server times the wind-up itself — the client only reports which spell it i
 | Self Heal | 1.0s | 5.0s | 30 | restores 45 to the caster |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
+| Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
 Self Heal is sustain, not an escape: a full wind-up is worth less than one lance, so trading into a healing opponent still wins, and a heal at full health is refused outright rather than eating the mana, so it cannot be pre-charged before a fight. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
+
+Thunderbolt is the exception to charge-cast: there is no wind-up and nothing happens on release. Holding it lights a beam from your hand to whatever the crosshair is on, out to 26 m, clipped by the world, and every server tick the first hostile body on it takes damage and arcs jump from body to body behind it. It needs 10 mana to light and then drains 24 a second, so a full bar buys about four seconds of continuous fire, and a player standing in it from full health dies in 1.8 s. Running it dry rests it for two seconds, and the server, not the client, decides when it is lit: the client draws its own beam from its own crosshair for responsiveness but the damage is only ever traced on the server. It has no burst, no splash and no reach past a wall; it punishes people who stand in the open at mid range and pays nothing against someone who keeps moving between cover.
 
 ### Targeting
 

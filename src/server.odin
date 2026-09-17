@@ -130,6 +130,7 @@ server_tick :: proc(server: ^Server) {
 
 	simulate_world_step(&server.world)
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
+	beams_tick(&server.world, SIMULATION_DT, server.match.state != .Ended)
 	server_age_strikes(server, SIMULATION_DT)
 
 	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
@@ -341,8 +342,19 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 
 	// Swapping spells (or letting go without firing) restarts the wind-up.
 	if input.charge_spell != spell_state.channel_spell {
-		spell_state.channel_spell = input.charge_spell
-		spell_state.channel_time = 0
+		if SPELL_DEFS[input.charge_spell].payload == .Beam {
+			// Refused, a beam stays dark while the button is held and relights
+			// the tick it becomes castable, the way a held wind-up restarts
+			// after its cooldown.
+			beam_quench(&server.world, id)
+			if server.match.state != .Ended {
+				beam_light(&server.world, id, input.charge_spell)
+			}
+		} else {
+			spell_state.channel_spell = input.charge_spell
+			spell_state.channel_time = 0
+			spell_state.beam = {}
+		}
 	}
 	if spell_state.channel_spell != .None {
 		def := &SPELL_DEFS[spell_state.channel_spell]
@@ -611,6 +623,43 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 		snapshot.strike_count = u8(stake)
 
+		// Lit beams, nearest owner first. The client's own beam always goes:
+		// it is what tells them the server agrees they are firing.
+		bidx:  [MAX_ENTITIES]int
+		bdist: [MAX_ENTITIES]f32
+		bn := 0
+		for i in 1..<MAX_ENTITIES {
+			if !spell_state_beaming(&server.world.spell_states[i]) || !entity_alive(&server.world, Entity_ID(i)) {
+				continue
+			}
+			bidx[bn] = i
+			bdist[bn] = Entity_ID(i) == self_id ? -1 : len2_vec3(server.world.characters[i].pos - self_pos)
+			bn += 1
+		}
+		btake := min(bn, MAX_SNAPSHOT_BEAMS)
+		for k in 0..<btake {
+			best := k
+			for j in k + 1..<bn {
+				if bdist[j] < bdist[best] {
+					best = j
+				}
+			}
+			if best != k {
+				bidx[k], bidx[best] = bidx[best], bidx[k]
+				bdist[k], bdist[best] = bdist[best], bdist[k]
+			}
+			beam := &server.world.spell_states[bidx[k]].beam
+			sb := Snapshot_Beam{
+				owner_id    = Entity_ID(bidx[k]),
+				end         = beam.end,
+				hit         = beam.hit != INVALID_ENTITY,
+				chain_count = u8(beam.chain_count),
+				chains      = beam.chains,
+			}
+			snapshot.beams[k] = sb
+		}
+		snapshot.beam_count = u8(btake)
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
@@ -703,6 +752,10 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	}
 
 	def := &SPELL_DEFS[spell_id]
+	// A beam did its work while it was held; letting go is not a cast.
+	if def.payload == .Beam {
+		return false
+	}
 	spell_state := &server.world.spell_states[caster_id]
 	char := server.world.characters[caster_id]
 	if !spell_castable(spell_id, char, spell_state.cooldowns[spell_id]) {
@@ -770,6 +823,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		// so the caster copy written back below stays authoritative.
 		server_strike(server, caster_id, target_id, def, charge)
 
+	case .Beam: // refused above
 	case .None:
 	}
 

@@ -49,6 +49,7 @@ Bot :: struct {
 	next_spell:      Spell_ID, // chosen ahead of the shot so the aim can lead it
 	charge_spell:    Spell_ID, // spell currently being wound up, .None when idle
 	charge_time:     f32,
+	beam_hold:       f32,      // how long this burst of a beam is kept on the target
 	jump_timer:      f32,
 	think_offset:    int,
 }
@@ -400,7 +401,24 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	// cast time while tracking, then release at full charge. Losing the target
 	// mid-wind-up drops the charge, so they telegraph just like a player does.
 	b.cast_timer -= dt
-	if b.charge_spell != .None {
+	if b.charge_spell != .None && SPELL_DEFS[b.charge_spell].payload == .Beam {
+		// A beam is held rather than released: light it, keep it on the target
+		// for a burst, and let go when the burst is up, the target is gone, or
+		// the server has already put it out for want of mana.
+		if b.charge_time == 0 && !beam_light(&server.world, b.id, b.charge_spell) {
+			b.charge_spell = .None
+			b.cast_timer = 0.3
+		} else {
+			b.charge_time += dt
+			lit := spell_state_beaming(&server.world.spell_states[b.id])
+			if !have_target || !lit || b.charge_time >= b.beam_hold {
+				beam_quench(&server.world, b.id)
+				b.charge_spell = .None
+				b.charge_time = 0
+				b.cast_timer = rand.float32_range(0.6, 1.2)
+			}
+		}
+	} else if b.charge_spell != .None {
 		// A self-cast needs neither a target nor settled aim, so a bot that is
 		// backing out of a fight can still finish the heal it started.
 		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
@@ -441,6 +459,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		if spell != .None {
 			b.charge_spell = spell
 			b.charge_time = 0
+			b.beam_hold = rand.float32_range(1.2, 2.4)
 		} else {
 			b.cast_timer = 0.3
 		}
@@ -582,6 +601,11 @@ bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f3
 	}
 	if dist < 24 && cds[.Frost_Lance] <= 0 && char.mana >= SPELL_DEFS[.Frost_Lance].mana_cost && r < 0.6 {
 		return .Frost_Lance
+	}
+	// The beam wants a steady hand, which a bot only has up close, and enough
+	// mana behind it that the burst is worth the lock-on it telegraphs.
+	if dist < 12 && cds[.Thunderbolt] <= 0 && char.mana >= 45 && r < 0.85 {
+		return .Thunderbolt
 	}
 	if cds[.Arcane_Missile] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Missile].mana_cost {
 		return .Arcane_Missile

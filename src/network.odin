@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(4)
+PROTOCOL_VERSION :: u8(5)
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -36,6 +36,7 @@ INPUT_REDUNDANCY :: 3
 MAX_SNAPSHOT_ENTITIES    :: 22
 MAX_SNAPSHOT_PROJECTILES :: 12
 MAX_SNAPSHOT_STRIKES     :: 4
+MAX_SNAPSHOT_BEAMS       :: 4
 
 // ---------------------------------------------------------------------------
 // Packet structs (host representation)
@@ -105,6 +106,17 @@ Snapshot_Strike :: struct {
 	pos:      vec3,   // where it landed: the target's feet
 }
 
+// A beam being held this tick. It starts at its owner's eye, which the client
+// already knows, so only the far end travels; arcs are named by entity so the
+// client draws them to the bodies it is already interpolating.
+Snapshot_Beam :: struct {
+	owner_id:    Entity_ID,
+	end:         vec3,
+	hit:         bool,      // the far end is a body, not the world
+	chain_count: u8,
+	chains:      [BEAM_MAX_CHAINS]Entity_ID,
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -114,6 +126,8 @@ Server_Snapshot_Packet :: struct {
 	projectiles:      [MAX_SNAPSHOT_PROJECTILES]Snapshot_Projectile,
 	strike_count:     u8,
 	strikes:          [MAX_SNAPSHOT_STRIKES]Snapshot_Strike,
+	beam_count:       u8,
+	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
 }
 
 Snapshot_Obelisk :: struct {
@@ -489,10 +503,11 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1 = 42
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Per-strike: seq 1, owner 1, pos 6 = 8
-// Header 2 + tick 4 + ack 4 + counts 3 = 13
-// 13 + 22*42 + 12*32 + 4*8 = 1353 bytes worst case. This must stay under
-// MAX_PACKET_SIZE: the writer refuses an oversized packet and the client
-// would simply stop hearing from us in a crowded fight.
+// Per-beam: owner 1, end 6, flags 1 (hit + chain count), chains 2 = 10
+// Header 2 + tick 4 + ack 4 + counts 4 = 14
+// 14 + 22*42 + 12*32 + 4*8 + 4*10 = 1394 bytes worst case. This must stay
+// under MAX_PACKET_SIZE: the writer refuses an oversized packet and the
+// client would simply stop hearing from us in a crowded fight.
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	w := bw_init(buffer)
 	write_header(&w, .Server_Snapshot)
@@ -540,6 +555,21 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, s.seq)
 		bw_u8(&w, u8(s.owner_id))
 		bw_pos_cm(&w, s.pos)
+	}
+
+	bcount := min(int(packet.beam_count), MAX_SNAPSHOT_BEAMS)
+	bw_u8(&w, u8(bcount))
+	for i in 0..<bcount {
+		b := &packet.beams[i]
+		bw_u8(&w, u8(b.owner_id))
+		bw_pos_cm(&w, b.end)
+		chains := min(int(b.chain_count), BEAM_MAX_CHAINS)
+		flags := u8(chains) << 1
+		if b.hit { flags |= 1 }
+		bw_u8(&w, flags)
+		for j in 0..<BEAM_MAX_CHAINS {
+			bw_u8(&w, j < chains ? u8(b.chains[j]) : 0)
+		}
 	}
 	return w.ok ? w.pos : 0
 }
@@ -606,6 +636,23 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.strike_count = u8(scount)
+
+	bcount := min(int(br_u8(&r)), MAX_SNAPSHOT_BEAMS)
+	for i in 0..<bcount {
+		b := &packet.beams[i]
+		b.owner_id = entity_id_from_wire(br_u8(&r))
+		b.end = br_pos_cm(&r)
+		flags := br_u8(&r)
+		b.hit = flags & 1 != 0
+		b.chain_count = min(flags >> 1, BEAM_MAX_CHAINS)
+		for j in 0..<BEAM_MAX_CHAINS {
+			b.chains[j] = entity_id_from_wire(br_u8(&r))
+		}
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.beam_count = u8(bcount)
 	return packet, r.ok
 }
 
