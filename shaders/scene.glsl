@@ -36,9 +36,9 @@ layout(binding=1) uniform fs_params {
     vec4 fx2;               // x hit marker, y dead, z match ended, w mend
     vec4 hand_pos;          // xyz hand orb position, w scale
     vec4 floor_boxes[22];   // pairs: (center.xyz, sin yaw), (half.xyz, cos yaw)
-    vec4 solid_boxes[18];   // pairs, same layout
-    vec4 obelisks[4];       // xyz pos, w owner team
-    vec4 obelisk_fx[4];     // x capturing team, y progress, z state, w essence mult
+    vec4 solid_boxes[30];   // pairs, same layout
+    vec4 obelisks[7];       // xyz pos, w owner team
+    vec4 obelisk_fx[7];     // x capturing team, y progress, z state, w hover height
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
@@ -54,7 +54,8 @@ in vec3 ray_dir;
 out vec4 frag_color;
 
 const int NFLOOR = 11;
-const int NSOLID = 9;
+const int NSOLID = 15;
+const int NOBELISK = 7;
 
 const int MAT_NONE = 0;
 const int MAT_WALL = 1;
@@ -361,7 +362,7 @@ bool obelisk_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out in
     n = vec3(0.0, 0.0, 1.0);
     idx = 0;
     part = 0.0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < NOBELISK; i++) {
         vec3 c = obelisk_crystal_center(i);
         float et;
         vec3 en;
@@ -656,7 +657,7 @@ void main() {
         vec3 ht = mix(team_core(fx.z), team_tint(fx.z), 0.5);
         aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w);
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < NOBELISK; i++) {
         vec3 c = obelisk_crystal_center(i);
         float owner = obelisks[i].w;
         vec3 tint = team_tint(owner);
@@ -760,7 +761,7 @@ void main() {
         ring += 1.0 - smoothstep(0.0, 0.12, abs(r - 5.0));
         emissive += vec3(0.55, 0.50, 0.80) * ring * 0.10 * fade;
         // Obelisk decals: owner disc, capture progress ring
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < NOBELISK; i++) {
             vec2 d = hp.xy - obelisks[i].xy;
             float od = length(d);
             float owner = obelisks[i].w;
@@ -886,7 +887,7 @@ void main() {
             vec3 c = wisp_center(w, float(i) * 2.21);
             color += albedo * point_light(hp, hit_n, c, team_tint(team), 2.4 + 1.2 * hpv, 10.0);
         }
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < NOBELISK; i++) {
             vec3 c = obelisk_crystal_center(i);
             color += albedo * point_light(hp, hit_n, c, team_tint(obelisks[i].w), 14.0, 24.0);
         }
@@ -912,7 +913,7 @@ void main() {
     }
 
     // Distance fog toward the horizon color
-    float fog = 1.0 - exp(-hit_t * 0.011);
+    float fog = 1.0 - exp(-hit_t * 0.0066);
     if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND) fog *= 0.5;
     color = mix(color, sky_here * 1.15, fog);
     color += aura;

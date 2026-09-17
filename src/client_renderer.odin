@@ -491,7 +491,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	sdtx.color3f(0.95, 0.93, 0.86)
 	hud_center_text(cols, rows * 0.28, "N E X U S   A R E N A")
 	sdtx.color3f(0.62, 0.60, 0.68)
-	hud_center_text(cols, rows * 0.28 + 1, "three teams. four obelisks. one nexus.")
+	hud_center_text(cols, rows * 0.28 + 1, "three teams. seven obelisks. one nexus.")
 
 	sdtx.color3f(0.90, 0.88, 0.80)
 	hud_center_text(cols, rows * 0.42, title)
@@ -582,8 +582,8 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			}
 		}
 
-		// Obelisks: C = center, then lane owners
-		sdtx.pos(cols * 0.5 - 9, 3)
+		// Obelisks: C = center, then near-lane 1-3 and far-lane 4-6
+		sdtx.pos(cols * 0.5 - f32(MAX_OBELISKS) * 4.5, 3)
 		for i in 0..<MAX_OBELISKS {
 			o := &gs.obelisks[i]
 			owner := Team_ID(o.owner)

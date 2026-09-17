@@ -5,7 +5,7 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 
-// Nexus Arena UDP protocol (v2).
+// Nexus Arena UDP protocol (v6).
 //
 // Client → Server
 //   Hello            probe; server answers with Lobby
@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(5)
+PROTOCOL_VERSION :: u8(6)  // bumped for 7-Obelisk GameState
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {

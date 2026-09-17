@@ -64,7 +64,7 @@ echo ""
 # Check server output for key events
 if [ -f /tmp/nexus_dominion_test.log ]; then
     # Check for match start
-    if grep -q "\[Match\] Match started" /tmp/nexus_dominion_test.log; then
+    if grep -q "\[Match\] Round .* started" /tmp/nexus_dominion_test.log; then
         echo -e "${GREEN}✓${NC} Match started (left Waiting state)"
     else
         echo -e "${RED}✗${NC} Match did not start"
@@ -75,7 +75,7 @@ if [ -f /tmp/nexus_dominion_test.log ]; then
     fi
     
     # Check for Obelisk captures
-    CAPTURE_COUNT=$(grep -c "\[Obelisk.*\] Captured by Team" /tmp/nexus_dominion_test.log || true)
+    CAPTURE_COUNT=$(grep -c "\[Obelisk.*\] Captured by" /tmp/nexus_dominion_test.log || true)
     if [ "$CAPTURE_COUNT" -gt 0 ]; then
         echo -e "${GREEN}✓${NC} Obelisks captured ($CAPTURE_COUNT captures detected)"
     else
@@ -83,8 +83,8 @@ if [ -f /tmp/nexus_dominion_test.log ]; then
     fi
     
     # Check for match end
-    if grep -q "\[Match\] Match ended! Winner:" /tmp/nexus_dominion_test.log; then
-        WINNER=$(grep "\[Match\] Match ended! Winner:" /tmp/nexus_dominion_test.log | tail -1)
+    if grep -q "\[Match\] Round over\." /tmp/nexus_dominion_test.log; then
+        WINNER=$(grep "\[Match\] Round over\." /tmp/nexus_dominion_test.log | tail -1)
         echo -e "${GREEN}✓${NC} Match ended without crash"
         echo "  $WINNER"
     else
@@ -102,7 +102,7 @@ if [ -f /tmp/nexus_dominion_test.log ]; then
     fi
     
     # Extract final scores
-    FINAL_SCORES=$(grep "\[Match\] Match ended!" /tmp/nexus_dominion_test.log | tail -1 | grep -oP '\(\K[^)]+' || echo "unknown")
+    FINAL_SCORES=$(grep "\[Match\] Round over\." /tmp/nexus_dominion_test.log | tail -1 | grep -oP '\(\K[^)]+' || echo "unknown")
     echo "  Final Scores: $FINAL_SCORES"
     
     echo ""
