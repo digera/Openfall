@@ -41,6 +41,9 @@ Input_State :: struct {
 	// tick, `cast_spell` is set only on the tick they let go.
 	charge_spell: Spell_ID,
 	cast_spell:   Spell_ID,
+	// The crosshair's sticky soft target. Targeted spells land on it, after the
+	// server has re-validated it; nothing about it is trusted.
+	target_id:    Entity_ID,
 }
 
 Entity_World :: struct {

@@ -16,11 +16,13 @@ Spell_ID :: enum u8 {
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
 	Self_Heal      = 5,    // wind-up self heal, nothing leaves the caster
+	Call_Lightning = 6,    // bolt from the sky onto the crosshair's target
 }
 
-// Spells bound to hotbar slots 1..4. Blink keeps its definition but loses the
-// third slot: sustain buys more there than a second way to move does.
-HOTBAR := [4]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance}
+// Spells bound to hotbar slots 1..HOTBAR_SLOTS. Blink keeps its definition but
+// loses the third slot: sustain buys more there than a second way to move does.
+HOTBAR_SLOTS :: 5
+HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance, .Call_Lightning}
 
 Spell_Def :: struct {
 	id:            Spell_ID,
@@ -47,7 +49,7 @@ Spell_Def :: struct {
 	slow_ticks:      int,
 
 	heal:          f32,   // health restored to the caster at full charge
-	range:         f32,   // blink distance
+	range:         f32,   // blink distance, or how far a strike can reach its target
 }
 
 Spell_Payload_Type :: enum u8 {
@@ -55,6 +57,7 @@ Spell_Payload_Type :: enum u8 {
 	Projectile,
 	Teleport,
 	Heal,
+	Strike,     // lands on the targeted entity the moment it is released
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -141,6 +144,57 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		payload       = .Heal,
 		heal          = 45,
 	},
+
+	// The only spell that cannot be dodged, so everything else about it is
+	// slow: the longest wind-up on the bar, the biggest mana bill, and it
+	// needs the target in the open when it lands. The wind-up is the
+	// counterplay -- step behind a pillar before the bolt comes down and the
+	// caster has spent 1.8 s for nothing.
+	.Call_Lightning = {
+		id              = .Call_Lightning,
+		name            = "Call Lightning",
+		short_name      = "BOLT",
+		mana_cost       = 60,
+		cooldown_sec    = 8.0,
+		cast_time       = 1.8,
+		payload         = .Strike,
+		range           = 24,
+		damage          = 85,
+		aoe_radius      = 2.5,
+		aoe_damage_frac = 0.4,
+	},
+}
+
+// Widest the crosshair may drift off a target between picking it and the
+// release before the server calls it a different shot. Generous on purpose:
+// the soft target exists so that aim wobble during a wind-up is forgiven.
+STRIKE_AIM_COS :: f32(0.766) // cos 40 deg
+
+// Where a strike lands (and where its splash starts): the target's centre.
+strike_center :: proc(target_pos: vec3) -> vec3 {
+	return target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+}
+
+// Geometry of a strike, shared by the server's validation and the client's
+// cast decision so the bar never offers a bolt the server would refuse. Who
+// the target is (alive, hostile) is checked by each side on its own view of
+// the world.
+//
+// In range: close enough and roughly where the caster is looking. This is
+// all a wind-up needs to start; cover does not stop a bolt being *called*.
+strike_target_in_range :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
+	to := strike_center(target_pos) - eye
+	dist := len_vec3(to)
+	if dist > def.range || dist < 1e-3 {
+		return false
+	}
+	return dot_vec3(to, look) >= STRIKE_AIM_COS * dist
+}
+
+// In reach: in range and in the open. This is what the release demands.
+strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
+	return strike_target_in_range(def, eye, look, target_pos) &&
+	       world_segment_clear(eye, strike_center(target_pos))
 }
 
 // Releasing below this fraction of the cast time fizzles instead of casting,

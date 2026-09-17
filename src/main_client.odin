@@ -28,7 +28,7 @@ Game_Client :: struct {
 
 	// Movement input carried between frames
 	move_input:     Input_State,
-	selected_slot:  int,              // 0..3 into HOTBAR
+	selected_slot:  int,              // index into HOTBAR
 
 	// Fixed-step accumulator
 	sim_accum:      f32,
@@ -127,7 +127,9 @@ client_frame :: proc "c" () {
 				}
 			}
 		}
-		_ = input_consume_slot(4)
+		for slot in TEAM_COUNT + 1..=HOTBAR_SLOTS {
+			_ = input_consume_slot(slot)
+		}
 		_ = input_consume_click()
 
 	case .Joining:
@@ -291,7 +293,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		gc.move_input.jump = true
 	}
 
-	for slot in 1..=4 {
+	for slot in 1..=HOTBAR_SLOTS {
 		if input_consume_slot(slot) {
 			gc.selected_slot = slot - 1
 		}
@@ -323,6 +325,7 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 		input := gc.move_input
 		input.yaw = gc.view_yaw
 		input.pitch = gc.view_pitch
+		input.target_id = gc.client_world.target_id
 		input.cast_spell, input.charge_spell = client_decide_cast(gc)
 
 		qinput := input_quantize(input)
@@ -367,8 +370,13 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 		return .None, .None
 	}
 
+	// The cast origin and look the server will judge a targeted spell by.
+	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
+	look := camera_forward(gc.view_yaw, gc.view_pitch)
+
 	if input.held_left {
 		spell := HOTBAR[gc.selected_slot]
+		def := &SPELL_DEFS[spell]
 		if gc.charging_spell != spell {
 			// A fresh hold, or the player swapped slots mid-charge. Picking the
 			// spell up again once its cooldown ends is deliberate: holding
@@ -377,10 +385,28 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 				client_drop_charge(gc)
 				return .None, .None
 			}
+			// A strike needs someone to call it on, in range, when it starts.
+			// Cover is not asked about until the release: the target is free
+			// to duck, and the caster is free to wait them out.
+			if def.payload == .Strike {
+				target, ok := client_world_strike_target(&gc.client_world)
+				if !ok || !strike_target_in_range(def, eye, look, target.display_state.pos) {
+					client_drop_charge(gc)
+					return .None, .None
+				}
+			}
 			gc.charging_spell = spell
 			gc.charge_accum = 0
 		}
-		def := &SPELL_DEFS[gc.charging_spell]
+		// Losing the target mid-hold (they died, or the crosshair moved on to
+		// a teammate) drops the charge so the player can start over at once
+		// rather than find out on release.
+		if def.payload == .Strike {
+			if _, ok := client_world_strike_target(&gc.client_world); !ok {
+				client_drop_charge(gc)
+				return .None, .None
+			}
+		}
 		gc.charge_accum = min(gc.charge_accum + FIXED_DT, def.cast_time)
 		return .None, gc.charging_spell
 	}
@@ -389,13 +415,22 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	if spell == .None {
 		return .None, .None
 	}
-	charge := spell_charge_frac(&SPELL_DEFS[spell], gc.charge_accum)
+	def := &SPELL_DEFS[spell]
+	charge := spell_charge_frac(def, gc.charge_accum)
 	client_drop_charge(gc)
 	if charge < SPELL_MIN_CHARGE {
 		return .None, .None
 	}
+	// A strike whose target is out of reach fizzles here for the same reason
+	// the server would refuse it, and without pretending a cooldown started.
+	if def.payload == .Strike {
+		target, ok := client_world_strike_target(&gc.client_world)
+		if !ok || !strike_target_in_reach(def, eye, look, target.display_state.pos) {
+			return .None, .None
+		}
+	}
 
-	gc.cooldowns[spell] = SPELL_DEFS[spell].cooldown_sec
+	gc.cooldowns[spell] = def.cooldown_sec
 	gc.cast_pulse = 1
 	gc.last_cast = spell
 	camera_fx_on_cast(&gc.fx, spell)
