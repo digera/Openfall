@@ -25,6 +25,12 @@ Spell_ID :: enum u8 {
 HOTBAR_SLOTS :: 6
 HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance, .Call_Lightning, .Thunderbolt}
 
+Spell_Target_Filter :: enum u8 {
+	Any      = 0, // No filtering
+	Enemy    = 1, // Hostile entities only
+	Friendly = 2, // Friendly entities only (not self)
+}
+
 Spell_Def :: struct {
 	id:            Spell_ID,
 	name:          string,
@@ -34,6 +40,7 @@ Spell_Def :: struct {
 	cast_time:     f32,   // seconds of hold for a full-power cast
 
 	payload:       Spell_Payload_Type,
+	target_filter: Spell_Target_Filter, // what may be sticky-targeted while this spell is selected
 
 	proj_speed:    f32,
 	proj_lifetime: f32,
@@ -82,6 +89,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec     = 1.2,
 		cast_time        = 0.6,
 		payload          = .Projectile,
+		target_filter    = .Enemy,
 		proj_speed       = 24,
 		proj_lifetime    = 3.2,
 		proj_radius      = 0.16,
@@ -102,6 +110,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec    = 7.0,
 		cast_time       = 1.2,
 		payload         = .Projectile,
+		target_filter   = .Enemy,
 		proj_speed      = 10,
 		proj_lifetime   = 4.0,
 		proj_radius     = 0.45,
@@ -120,6 +129,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec  = 8.0,
 		cast_time     = 0.4,
 		payload       = .Teleport,
+		target_filter = .Any,
 		range         = 11,
 	},
 
@@ -132,6 +142,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec  = 4.5,
 		cast_time     = 0.9,
 		payload       = .Projectile,
+		target_filter = .Enemy,
 		proj_speed    = 13,
 		proj_lifetime = 5.0,
 		proj_radius   = 0.28,
@@ -152,6 +163,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec  = 5.0,
 		cast_time     = 1.0,
 		payload       = .Heal,
+		target_filter = .Friendly,
 		heal          = 45,
 	},
 
@@ -168,6 +180,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec    = 8.0,
 		cast_time       = 1.8,
 		payload         = .Strike,
+		target_filter   = .Enemy,
 		range           = 24,
 		damage          = 85,
 		aoe_radius      = 2.5,
@@ -187,6 +200,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		mana_cost         = 10,    // needed to light it, not spent
 		cooldown_sec      = 2.0,   // only after it runs the caster dry
 		payload           = .Beam,
+		target_filter     = .Enemy,
 		range             = 26,
 		beam_dps          = 55,
 		beam_mana_per_sec = 24,
@@ -231,6 +245,22 @@ strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> 
 // Releasing below this fraction of the cast time fizzles instead of casting,
 // so tapping the button can never stand in for a real wind-up.
 SPELL_MIN_CHARGE :: f32(0.2)
+
+// Does the target match the selected spell's targeting filter?
+spell_target_valid_for_filter :: proc(filter: Spell_Target_Filter, caster_id, target_id: Entity_ID, caster_team, target_team: Team_ID) -> bool {
+	if target_id == INVALID_ENTITY || caster_id == target_id {
+		return false
+	}
+	switch filter {
+	case .Any:
+		return true
+	case .Enemy:
+		return teams_are_enemies(caster_team, target_team)
+	case .Friendly:
+		return !teams_are_enemies(caster_team, target_team) && caster_id != target_id
+	}
+	return false
+}
 
 spell_valid :: proc(id: Spell_ID) -> bool {
 	return id != .None && int(id) < len(SPELL_DEFS) && SPELL_DEFS[id].payload != .None
