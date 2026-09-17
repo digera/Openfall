@@ -71,7 +71,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Frost_Lance:    fx.cast_kick += 0.020
 	case .Call_Lightning: fx.cast_kick += 0.030; fx.fov_kick = max(fx.fov_kick, 0.40)
 	case .Blink:          // handled when the teleport lands
-	case .Self_Heal:      // handled when the health actually comes back
+	case .Friendly_Heal:  // handled when the health actually comes back
 	}
 }
 
@@ -187,6 +187,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Frost_Lance:    return 4
 	case .Call_Lightning: return 5
 	case .Thunderbolt:    return 6
+	case .Friendly_Heal:  return 7
 	}
 	return 1
 }
@@ -363,6 +364,10 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			b := &world.beams[i]
 			from: vec3
 			to := b.end
+			on_body := b.hit
+			// The snapshot says which beam this is; a byte off the wire that is
+			// not a spell falls back to the one beam everyone can see.
+			def := &SPELL_DEFS[spell_valid(b.spell_id) ? b.spell_id : .Thunderbolt]
 			if b.owner_id == world.local_entity_id {
 				if !playing || dead > 0.5 {
 					continue
@@ -371,7 +376,12 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				// this frame the way the server will trace it.
 				from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
 				trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
-				to = client_world_beam_end(world, &SPELL_DEFS[.Thunderbolt], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
+				look := camera_forward(gc.view_yaw, gc.view_pitch)
+				if def.beam_heals {
+					to, on_body = client_world_heal_beam_end(world, def, trace_eye, look, base_pos)
+				} else {
+					to, on_body = client_world_beam_end(world, def, trace_eye, look)
+				}
 			} else {
 				remote := &world.remote_entities[int(b.owner_id)]
 				if !remote.active {
@@ -379,8 +389,8 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				}
 				from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
 			}
-			fs_params.beams[i] = {from.x, from.y, from.z, 1}
-			fs_params.beam_ends[i] = {to.x, to.y, to.z, b.hit ? 1 : 0}
+			fs_params.beams[i] = {from.x, from.y, from.z, spell_type_code(def.id)}
+			fs_params.beam_ends[i] = {to.x, to.y, to.z, on_body ? 1 : 0}
 			// Chains arc to bodies, so they follow the interpolated remotes
 			// rather than a position that was true a snapshot ago.
 			for c in 0..<min(int(b.chain_count), BEAM_MAX_CHAINS) {
@@ -653,18 +663,25 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		if spell == gc.charging_spell && def.payload == .Beam {
 			// A beam has no wind-up to show; the bar crackles while the server
 			// keeps it lit and the mana drain, drawn to its right, is the
-			// thing to watch.
-			_, lit := client_world_local_beam(world)
-			if lit {
-				sdtx.color3f(0.75, 0.88, 1.0)
-			} else {
-				sdtx.color3f(0.45, 0.5, 0.6)
+			// thing to watch. A heal beam with nobody hurt in front of it is
+			// lit and paying nothing, which the bar says rather than promise a
+			// drain that is not happening.
+			beam, lit := client_world_local_beam(world)
+			idle := lit && def.beam_heals && !beam.hit
+			switch {
+			case !lit, idle:      sdtx.color3f(0.45, 0.5, 0.6)
+			case def.beam_heals:  sdtx.color3f(0.55, 0.95, 0.68)
+			case:                 sdtx.color3f(0.75, 0.88, 1.0)
 			}
 			phase := int(world.local_time * 24)
 			for k in 0..<10 {
 				sdtx.putc((k + phase) % 3 == 0 ? '~' : '#')
 			}
-			sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
+			if idle {
+				sdtx.puts(" nobody hurt")
+			} else {
+				sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
+			}
 		} else if spell == gc.charging_spell {
 			// Wind-up: dim until the release would actually produce a cast,
 			// bright once it is past the minimum charge.
@@ -687,10 +704,6 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 				sdtx.putc(k < filled ? '=' : '.')
 			}
 			sdtx.printf(" %.1f", cd)
-		} else if def.payload == .Heal && local.health >= HEALTH_MAX {
-			// Nothing to mend: say so rather than blaming the mana.
-			sdtx.color3f(0.5, 0.7, 0.55)
-			sdtx.puts("at full hp")
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)
