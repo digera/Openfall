@@ -274,6 +274,11 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	gc.view_yaw = wrap_angle(gc.view_yaw - dx * CAM_LOOK_SENS)
 	gc.view_pitch = clampf(gc.view_pitch - dy * CAM_LOOK_SENS, -CAM_PITCH_MAX, CAM_PITCH_MAX)
 
+	// Aim assist when RMB held and we have a valid target
+	if input.held_right && gc.client_world.target_id != INVALID_ENTITY {
+		client_apply_aim_assist(gc, dt)
+	}
+
 	fwd: f32 = 0
 	str: f32 = 0
 	if input.key_w { fwd += 1 }
@@ -288,6 +293,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	gc.move_input.move_fwd = fwd
 	gc.move_input.move_str = str
 	gc.move_input.sprint = input.key_shift
+	gc.move_input.aim_lock = input.held_right
 	// Hold Space to jump; also latch a press that landed between sim ticks.
 	if input_consume_jump() || input.key_space {
 		gc.move_input.jump = true
@@ -453,6 +459,66 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 client_drop_charge :: proc(gc: ^Game_Client) {
 	gc.charging_spell = .None
 	gc.charge_accum = 0
+}
+
+// Aim assist: smoothly pull view toward the target's center (chest/eye height)
+AIM_ASSIST_STRENGTH :: f32(3.5)   // radians per second pull rate
+AIM_ASSIST_TARGET_HEIGHT :: f32(1.4)  // chest/eye height for aiming
+
+client_apply_aim_assist :: proc(gc: ^Game_Client, dt: f32) {
+	pred := &gc.client_world.prediction
+	if !pred.initialized || pred.predicted_char.dead {
+		return
+	}
+	
+	target_id := gc.client_world.target_id
+	if target_id == INVALID_ENTITY || target_id >= MAX_ENTITIES {
+		return
+	}
+	
+	remote := &gc.client_world.remote_entities[target_id]
+	if !remote.active || remote.display_state.dead {
+		return
+	}
+	
+	// Only assist toward hostile targets
+	if !teams_are_enemies(gc.client_world.local_team, remote.team) {
+		return
+	}
+	
+	// Check stamina - lock breaks when stamina runs out
+	if pred.predicted_char.stamina <= 0 {
+		return
+	}
+	
+	// Calculate desired look direction toward target center
+	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
+	target_center := remote.display_state.pos + vec3{0, 0, AIM_ASSIST_TARGET_HEIGHT}
+	to_target := target_center - eye
+	target_dist := len_vec3(to_target)
+	
+	if target_dist < 0.1 {
+		return
+	}
+	
+	to_target = to_target / target_dist
+	
+	// Convert direction to yaw/pitch
+	target_yaw := math.atan2(to_target.y, to_target.x)
+	target_pitch := math.asin(clampf(to_target.z, -1, 1))
+	
+	// Smooth pull toward target
+	pull_rate := AIM_ASSIST_STRENGTH * dt
+	
+	// Handle yaw wrap-around correctly
+	yaw_delta := wrap_angle(target_yaw - gc.view_yaw)
+	yaw_pull := clampf(yaw_delta, -pull_rate, pull_rate)
+	gc.view_yaw = wrap_angle(gc.view_yaw + yaw_pull)
+	
+	// Pitch is simpler (no wrap-around)
+	pitch_delta := target_pitch - gc.view_pitch
+	pitch_pull := clampf(pitch_delta, -pull_rate, pull_rate)
+	gc.view_pitch = clampf(gc.view_pitch + pitch_pull, -CAM_PITCH_MAX, CAM_PITCH_MAX)
 }
 
 main_client :: proc() {

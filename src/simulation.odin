@@ -26,6 +26,7 @@ CHARACTER_JUMP_VELOCITY :: f32(6.6)
 
 STAMINA_SPRINT_DRAIN   :: f32(24.0)   // per second while sprinting
 STAMINA_SPRINT_MIN     :: f32(5.0)    // need at least this much to start sprinting
+STAMINA_AIM_LOCK_DRAIN :: f32(28.0)   // per second while aim-locked to a target
 
 // Simulate one character for one tick.
 simulate_character_step :: proc(char: ^Character_State, input: Input_State, dt: f32) {
@@ -53,11 +54,20 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	wish_len := math.sqrt(wish_fwd * wish_fwd + wish_str * wish_str)
 	moving := wish_len > 0.001
 
-	// Sprint: needs input, ground contact and stamina.
-	sprinting := input.sprint && moving && char.on_ground && char.stamina > 0
+	// Aim lock: drains stamina when active
+	aim_locking := input.aim_lock && char.stamina > 0
+	if aim_locking {
+		char.stamina = max(char.stamina - STAMINA_AIM_LOCK_DRAIN * dt, 0)
+	}
+
+	// Sprint: needs input, ground contact and stamina. Cannot sprint while aim-locked.
+	sprinting := input.sprint && moving && char.on_ground && char.stamina > 0 && !aim_locking
 	if sprinting {
 		char.stamina = max(char.stamina - STAMINA_SPRINT_DRAIN * dt, 0)
-	} else {
+	}
+	
+	// Regenerate stamina when not using any stamina abilities
+	if !sprinting && !aim_locking {
 		char.stamina = min(char.stamina + STAMINA_REGEN_PER_SEC * dt, STAMINA_MAX)
 	}
 

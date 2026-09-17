@@ -71,6 +71,7 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
 | Hold LMB | Charge the selected spell (Thunderbolt fires for as long as it is held) |
 | Release LMB | Cast at the charge reached |
+| Hold RMB | Aim lock: smoothly pull view toward current sticky target (drains stamina) |
 | Esc | Unlock mouse |
 
 ## Combat
@@ -101,6 +102,10 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, hostile, in range, roughly where the caster is looking and in the open. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
+
+### Aim Lock
+
+Hold RMB to lock aim onto the current sticky soft target. While held and a valid hostile target exists, the view smoothly pulls toward the target's center (chest/eye height) at a tunable rate, providing aim assist at the cost of **stamina drain** (28/s, slightly higher than sprint). The lock breaks immediately when RMB is released or stamina runs out. This is a costly choice, not a default: players must balance stamina for mobility (sprint/escape) against tracking assistance, and cannot hold RMB indefinitely without exhausting their stamina bar. Aim lock only assists toward hostile targets and requires an active sticky target — sweeping the crosshair away or the target dying drops the assist instantly.
 
 ## Linux
 

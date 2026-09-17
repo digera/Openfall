@@ -10,6 +10,7 @@ Input :: struct {
 	look_dy:        f32,
 	click_left:     bool,
 	held_left:      bool,
+	held_right:     bool,
 	key_w:          bool,
 	key_a:          bool,
 	key_s:          bool,
@@ -28,6 +29,7 @@ input: Input = {
 @(private)
 input_clear_held :: proc() {
 	input.held_left = false
+	input.held_right = false
 	input.key_w = false
 	input.key_a = false
 	input.key_s = false
@@ -58,9 +60,15 @@ input_event :: proc "c" (e: ^sapp.Event) {
 			input.click_left = true
 			input.held_left = true
 		}
+		if e.mouse_button == .RIGHT {
+			input.held_right = true
+		}
 	case .MOUSE_UP:
 		if e.mouse_button == .LEFT {
 			input.held_left = false
+		}
+		if e.mouse_button == .RIGHT {
+			input.held_right = false
 		}
 	case .KEY_DOWN:
 		if e.key_repeat {

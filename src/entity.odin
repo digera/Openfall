@@ -35,6 +35,7 @@ Input_State :: struct {
 	move_str:     f32,  // [-1, 1]
 	jump:         bool,
 	sprint:       bool,
+	aim_lock:     bool,
 	yaw:          f32,  // absolute, wrapped to [-pi, pi]
 	pitch:        f32,  // absolute, clamped
 	// Charge-cast intent: `charge_spell` is whatever the player is holding this
