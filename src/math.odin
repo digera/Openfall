@@ -67,6 +67,58 @@ cross_vec3 :: proc(a, b: vec3) -> vec3 {
 	}
 }
 
+// Ray against a Z-up cylinder standing on `base` -- the character hitbox shape,
+// shared by server hit registration and client target selection so the two
+// always agree on what the crosshair is covering. `dir` must be unit length;
+// a ray that starts inside the cylinder reports a distance of zero.
+ray_cylinder_hit :: proc(origin, dir, base: vec3, radius, height, max_dist: f32) -> (dist: f32, hit: bool) {
+	// Clip the ray against the horizontal slab the cylinder occupies...
+	t_enter: f32 = 0
+	t_exit := max_dist
+	z_lo := base.z
+	z_hi := base.z + height
+	if abs(dir.z) < 1e-6 {
+		if origin.z < z_lo || origin.z > z_hi {
+			return 0, false
+		}
+	} else {
+		inv := 1.0 / dir.z
+		t0 := (z_lo - origin.z) * inv
+		t1 := (z_hi - origin.z) * inv
+		if t0 > t1 {
+			t0, t1 = t1, t0
+		}
+		t_enter = max(t_enter, t0)
+		t_exit = min(t_exit, t1)
+	}
+
+	// ...then against the infinite cylinder around its axis.
+	mx := origin.x - base.x
+	my := origin.y - base.y
+	a := dir.x * dir.x + dir.y * dir.y
+	c := mx * mx + my * my - radius * radius
+	if a < 1e-12 {
+		// Aimed straight up or down: only a ray already over the disc can hit.
+		if c > 0 {
+			return 0, false
+		}
+	} else {
+		b := mx * dir.x + my * dir.y
+		disc := b * b - a * c
+		if disc < 0 {
+			return 0, false
+		}
+		root := math.sqrt(disc)
+		t_enter = max(t_enter, (-b - root) / a)
+		t_exit = min(t_exit, (-b + root) / a)
+	}
+
+	if t_enter > t_exit {
+		return 0, false
+	}
+	return t_enter, true
+}
+
 hash_u32 :: proc(n: u32) -> u32 {
 	x := n
 	x = (x ~ (x >> 16)) * 0x7FEB_352D

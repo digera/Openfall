@@ -460,6 +460,16 @@ server_send_snapshots :: proc(server: ^Server) {
 	}
 	buffer: [MAX_PACKET_SIZE]u8
 
+	// Bots and humans share the entity array; clients only need the distinction
+	// to label a target.
+	bot_ids: [MAX_ENTITIES]bool
+	for i in 0..<MAX_BOTS {
+		b := &server.bots[i]
+		if b.active && b.id < MAX_ENTITIES {
+			bot_ids[b.id] = true
+		}
+	}
+
 	for ci in 0..<server.client_count {
 		client := &server.clients[ci]
 		self_id := client.entity_id
@@ -506,6 +516,7 @@ server_send_snapshots :: proc(server: ^Server) {
 				pitch      = char.pitch,
 				on_ground  = char.on_ground,
 				dead       = char.dead,
+				is_bot     = bot_ids[id],
 				health     = char.health,
 				mana       = char.mana,
 				stamina    = char.stamina,

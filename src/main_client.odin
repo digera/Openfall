@@ -149,6 +149,7 @@ client_frame :: proc "c" () {
 	}
 
 	client_world_update(&gc.client_world, dt)
+	client_update_target(gc)
 	camera_fx_update(&gc.fx, gc, dt)
 
 	for spell in Spell_ID {
@@ -295,6 +296,19 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 			gc.selected_slot = slot - 1
 		}
 	}
+}
+
+// Aiming is the only thing that picks a target, so anything that stops the
+// player aiming drops it the same way it drops a charge.
+client_update_target :: proc(gc: ^Game_Client) {
+	pred := &gc.client_world.prediction
+	if gc.phase != .Playing || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
+		gc.client_world.target_id = INVALID_ENTITY
+		return
+	}
+	// The cast origin the server will use, not the bobbing render camera.
+	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
+	client_world_acquire_target(&gc.client_world, eye, camera_forward(gc.view_yaw, gc.view_pitch))
 }
 
 // Run as many 60Hz ticks as the accumulator allows, predicting locally and

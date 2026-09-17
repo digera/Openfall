@@ -121,41 +121,14 @@ hitscan_check :: proc(
 			entity_pos = entity_world.characters[entity_idx].pos
 		}
 		
-		// Ray vs cylinder intersection
-		// Cylinder: center at entity_pos, radius CHARACTER_RADIUS_M, height CHARACTER_HEIGHT_M
-		
-		// Project ray origin onto cylinder axis (Z)
-		ray_start_2d := vec3{origin.x, origin.y, 0}
-		ray_dir_2d := vec3{direction.x, direction.y, 0}
-		cyl_center_2d := vec3{entity_pos.x, entity_pos.y, 0}
-		
-		// Closest point on ray to cylinder axis in 2D
-		to_cyl := cyl_center_2d - ray_start_2d
-		proj_len := dot_vec3(to_cyl, ray_dir_2d)
-		
-		if proj_len < 0 || proj_len > max_range {
-			continue  // Behind ray or beyond range
+		// Capping the ray at the best distance so far keeps only the nearest hit
+		dist, ok := ray_cylinder_hit(origin, direction, entity_pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, closest_dist)
+		if !ok {
+			continue
 		}
-		
-		closest_point_2d := ray_start_2d + ray_dir_2d * proj_len
-		dist_to_axis := length_vec3(closest_point_2d - cyl_center_2d)
-		
-		if dist_to_axis > CHARACTER_RADIUS_M {
-			continue  // Missed horizontally
-		}
-		
-		// Check vertical bounds
-		hit_z := origin.z + direction.z * proj_len
-		if hit_z < entity_pos.z || hit_z > entity_pos.z + CHARACTER_HEIGHT_M {
-			continue  // Missed vertically
-		}
-		
-		// Hit! Check if closest
-		if proj_len < closest_dist {
-			closest_dist = proj_len
-			hit_entity = Entity_ID(entity_idx)
-			hit_pos = origin + direction * proj_len
-		}
+		closest_dist = dist
+		hit_entity = Entity_ID(entity_idx)
+		hit_pos = origin + direction * dist
 	}
 	
 	if hit_entity != INVALID_ENTITY {
