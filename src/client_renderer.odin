@@ -585,7 +585,21 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 
 		sdtx.pos(col, rows - 2)
-		if cd > 0 {
+		if spell == gc.charging_spell {
+			// Wind-up: dim until the release would actually produce a cast,
+			// bright once it is past the minimum charge.
+			charge := spell_charge_frac(def, gc.charge_accum)
+			if charge < SPELL_MIN_CHARGE {
+				sdtx.color3f(0.45, 0.5, 0.6)
+			} else {
+				sdtx.color3f(0.3, 0.85, 1.0)
+			}
+			filled := int(charge * 10)
+			for k in 0..<10 {
+				sdtx.putc(k < filled ? '#' : '.')
+			}
+			sdtx.printf(" %3.0f%%", charge * 100)
+		} else if cd > 0 {
 			sdtx.color3f(0.45, 0.45, 0.5)
 			frac := 1.0 - cd / def.cooldown_sec
 			filled := int(frac * 10)

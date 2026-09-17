@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(2)
+PROTOCOL_VERSION :: u8(3)
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -237,6 +237,14 @@ quant_u8 :: proc(v: f32, scale: f32) -> u8 {
 	return u8(clampf(math.round(v * scale), 0, 255))
 }
 
+// A hostile client can put any byte on the wire, and Spell_ID indexes an
+// enumerated array, so anything that is not a real spell becomes .None here.
+@(private = "file")
+spell_id_from_wire :: proc(raw: u8) -> Spell_ID {
+	id := Spell_ID(raw)
+	return spell_valid(id) ? id : .None
+}
+
 // Round-trip an input through the wire representation. The client predicts
 // with the result so its simulation matches the server bit-for-bit.
 input_quantize :: proc(input: Input_State) -> Input_State {
@@ -367,6 +375,7 @@ serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> in
 		bw_u8(&w, input_flags(in_))
 		bw_i16(&w, quant_angle(in_.yaw))
 		bw_i16(&w, quant_angle(in_.pitch))
+		bw_u8(&w, u8(in_.charge_spell))
 		bw_u8(&w, u8(in_.cast_spell))
 	}
 	return w.ok ? w.pos : 0
@@ -389,7 +398,8 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		in_.sprint = flags & 2 != 0
 		in_.yaw = dequant_angle(br_i16(&r))
 		in_.pitch = dequant_angle(br_i16(&r))
-		in_.cast_spell = Spell_ID(br_u8(&r))
+		in_.charge_spell = spell_id_from_wire(br_u8(&r))
+		in_.cast_spell = spell_id_from_wire(br_u8(&r))
 		packet.inputs[i] = in_
 	}
 	return packet, r.ok

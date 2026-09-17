@@ -277,12 +277,10 @@ server_apply_client_inputs :: proc(server: ^Server) {
 			continue
 		}
 
-		// Catch up if we've accumulated too much
-		pending_cast := Spell_ID.None
+		// Catch up if we've accumulated too much. Skipped inputs still feed the
+		// channel so a burst of packets can't rob a player of their wind-up.
 		for client.input_count > INPUT_BUFFER_TARGET + 2 {
-			if client.inputs[0].cast_spell != .None {
-				pending_cast = client.inputs[0].cast_spell
-			}
+			server_advance_channel(server, id, client.inputs[0])
 			client_pop_input(client)
 		}
 
@@ -292,14 +290,45 @@ server_apply_client_inputs :: proc(server: ^Server) {
 		client.last_applied_tick = tick
 		client.has_applied = true
 
-		if input.cast_spell == .None {
-			input.cast_spell = pending_cast
-		}
 		server.world.inputs[id] = input
+		server_advance_channel(server, id, input)
+	}
+}
 
-		if input.cast_spell != .None {
-			server_handle_spell_cast(server, id, input.cast_spell, server.tick_id)
+// Fold one input tick into the caster's wind-up, and fire when the input says
+// the button came up. The client only reports *which* spell it is holding; the
+// charge itself is timed here, so a client can never claim a hold it never did.
+@(private = "file")
+server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_State) {
+	spell_state := &server.world.spell_states[id]
+
+	if !entity_alive(&server.world, id) {
+		spell_state.channel_spell = .None
+		spell_state.channel_time = 0
+		return
+	}
+
+	if input.cast_spell != .None {
+		charge := f32(0)
+		if spell_state.channel_spell == input.cast_spell {
+			charge = spell_charge_frac(&SPELL_DEFS[input.cast_spell], spell_state.channel_time)
 		}
+		spell_state.channel_spell = .None
+		spell_state.channel_time = 0
+		if charge >= SPELL_MIN_CHARGE {
+			server_handle_spell_cast(server, id, input.cast_spell, charge, server.tick_id)
+		}
+		return
+	}
+
+	// Swapping spells (or letting go without firing) restarts the wind-up.
+	if input.charge_spell != spell_state.channel_spell {
+		spell_state.channel_spell = input.charge_spell
+		spell_state.channel_time = 0
+	}
+	if spell_state.channel_spell != .None {
+		def := &SPELL_DEFS[spell_state.channel_spell]
+		spell_state.channel_time = min(spell_state.channel_time + FIXED_DT, def.cast_time)
 	}
 }
 
@@ -600,8 +629,9 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 	}
 }
 
-// Validate and execute a spell cast. Returns true if the cast happened.
-server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, tick: u32) -> bool {
+// Validate and execute a spell cast at the given charge. Returns true if the
+// cast happened.
+server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, charge_frac: f32, tick: u32) -> bool {
 	if !entity_alive(&server.world, caster_id) {
 		return false
 	}
@@ -623,6 +653,8 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return false
 	}
 
+	charge := clampf(charge_frac, SPELL_MIN_CHARGE, 1)
+
 	char.mana -= def.mana_cost
 	spell_state.cooldowns[spell_id] = def.cooldown_sec
 
@@ -632,11 +664,12 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	switch def.payload {
 	case .Projectile:
 		spell_cast := Spell_Cast{
-			caster_id = caster_id,
-			spell_id  = spell_id,
-			origin    = origin,
-			direction = direction,
-			tick      = tick,
+			caster_id   = caster_id,
+			spell_id    = spell_id,
+			origin      = origin,
+			direction   = direction,
+			tick        = tick,
+			charge_frac = charge,
 		}
 		projectile_spawn(&server.projectiles, &server.world, &spell_cast, def)
 
@@ -646,10 +679,11 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 			blink_dir = camera_forward(char.yaw, 0)
 		}
 		// Walk the blink forward in small steps and stop at the last free spot.
+		reach := def.range * charge
 		best := char.pos
 		steps := 24
 		for s in 1..=steps {
-			cand := char.pos + blink_dir * (def.range * f32(s) / f32(steps))
+			cand := char.pos + blink_dir * (reach * f32(s) / f32(steps))
 			if blink_spot_free(cand) {
 				best = cand
 			} else {
@@ -666,7 +700,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	server.world.characters[caster_id] = char
 
 	if SERVER_VERBOSE {
-		server_log("[Combat] Entity %d cast %s", caster_id, def.name)
+		server_log("[Combat] Entity %d cast %s at %.0f%% charge", caster_id, def.name, charge * 100)
 	}
 	return true
 }

@@ -69,8 +69,22 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
 | 1–4 | Select spell (Missile / Orb / Blink / Lance) |
-| Hold LMB | Cast selected spell |
+| Hold LMB | Charge the selected spell |
+| Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
+
+## Combat
+
+Spells are charge-cast. Holding LMB winds the selected spell up over its cast time and releasing throws it; damage (and Blink's distance) scale linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
+
+The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held.
+
+| Spell | Cast | Cooldown | Mana | Damage |
+|---|---|---|---|---|
+| Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
+| Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
+| Blink | 0.4s | 8.0s | 20 | 11m teleport |
+| Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 
 ## Linux
 

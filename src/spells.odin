@@ -26,6 +26,7 @@ Spell_Def :: struct {
 	short_name:    string,
 	mana_cost:     f32,
 	cooldown_sec:  f32,
+	cast_time:     f32,   // seconds of hold for a full-power cast
 
 	payload:       Spell_Payload_Type,
 
@@ -61,9 +62,10 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		name             = "Arcane Missile",
 		short_name       = "MISSILE",
 		mana_cost        = 12,
-		cooldown_sec     = 0.8,
+		cooldown_sec     = 1.2,
+		cast_time        = 0.6,
 		payload          = .Projectile,
-		proj_speed       = 30,
+		proj_speed       = 24,
 		proj_lifetime    = 3.2,
 		proj_radius      = 0.16,
 		proj_gravity     = 0.45,
@@ -80,9 +82,10 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		name            = "Arcane Orb",
 		short_name      = "ORB",
 		mana_cost       = 40,
-		cooldown_sec    = 5.0,
+		cooldown_sec    = 7.0,
+		cast_time       = 1.2,
 		payload         = .Projectile,
-		proj_speed      = 12,
+		proj_speed      = 10,
 		proj_lifetime   = 4.0,
 		proj_radius     = 0.45,
 		proj_gravity    = 0.6,
@@ -97,7 +100,8 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		name          = "Blink",
 		short_name    = "BLINK",
 		mana_cost     = 20,
-		cooldown_sec  = 6.0,
+		cooldown_sec  = 8.0,
+		cast_time     = 0.4,
 		payload       = .Teleport,
 		range         = 11,
 	},
@@ -108,9 +112,10 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		name          = "Frost Lance",
 		short_name    = "LANCE",
 		mana_cost     = 32,
-		cooldown_sec  = 3.4,
+		cooldown_sec  = 4.5,
+		cast_time     = 0.9,
 		payload       = .Projectile,
-		proj_speed    = 15,
+		proj_speed    = 13,
 		proj_lifetime = 5.0,
 		proj_radius   = 0.28,
 		proj_gravity  = 0.1,
@@ -120,18 +125,37 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 	},
 }
 
+// Releasing below this fraction of the cast time fizzles instead of casting,
+// so tapping the button can never stand in for a real wind-up.
+SPELL_MIN_CHARGE :: f32(0.2)
+
 spell_valid :: proc(id: Spell_ID) -> bool {
 	return id != .None && int(id) < len(SPELL_DEFS) && SPELL_DEFS[id].payload != .None
 }
 
+// How much of a spell a given hold is worth. Spells with no cast time are
+// always full power.
+spell_charge_frac :: proc(def: ^Spell_Def, held_sec: f32) -> f32 {
+	if def.cast_time <= 0 {
+		return 1
+	}
+	return clampf(held_sec / def.cast_time, 0, 1)
+}
+
 Entity_Spell_State :: struct {
 	cooldowns: [Spell_ID]f32,
+
+	// Server-owned wind-up. The client reports which spell it is holding, the
+	// server decides how long it has actually been held.
+	channel_spell: Spell_ID,
+	channel_time:  f32,
 }
 
 Spell_Cast :: struct {
-	caster_id: Entity_ID,
-	spell_id:  Spell_ID,
-	origin:    vec3,
-	direction: vec3,
-	tick:      u32,
+	caster_id:   Entity_ID,
+	spell_id:    Spell_ID,
+	origin:      vec3,
+	direction:   vec3,
+	tick:        u32,
+	charge_frac: f32,
 }
