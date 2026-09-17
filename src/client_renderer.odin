@@ -69,6 +69,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Arcane_Missile: fx.cast_kick += 0.010
 	case .Arcane_Orb:     fx.cast_kick += 0.028; fx.fov_kick = max(fx.fov_kick, 0.35)
 	case .Frost_Lance:    fx.cast_kick += 0.020
+	case .Call_Lightning: fx.cast_kick += 0.030; fx.fov_kick = max(fx.fov_kick, 0.40)
 	case .Blink:          // handled when the teleport lands
 	case .Self_Heal:      // handled when the health actually comes back
 	}
@@ -169,6 +170,8 @@ client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 	sg.shutdown()
 }
 
+// Render type codes for the shader's spell_tint; an appearance, not the
+// Spell_ID, so spells that share a look can share a code.
 @(private = "file")
 spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	#partial switch spell {
@@ -176,6 +179,7 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Arcane_Orb:     return 2
 	case .Blink:          return 3
 	case .Frost_Lance:    return 4
+	case .Call_Lightning: return 5
 	}
 	return 1
 }
@@ -339,6 +343,14 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		fs_params.impacts[i] = {im.pos.x, im.pos.y, im.pos.z, spell_type_code(im.spell) + clampf(im.age, 0.01, 0.99)}
 	}
 
+	for i in 0..<MAX_CLIENT_STRIKES {
+		s := &world.strikes[i]
+		if !s.live {
+			continue
+		}
+		fs_params.lightning[i] = {s.pos.x, s.pos.y, s.pos.z, clampf(s.life, 0.01, 1)}
+	}
+
 	// --- Draw -----------------------------------------------------------------
 	client_renderer_overlay(r, gc)
 
@@ -471,7 +483,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	}
 
 	sdtx.color3f(0.42, 0.40, 0.38)
-	hud_center_text(cols, rows - 1, "WASD move  /  Shift sprint  /  Space jump  /  1-4 spells  /  LMB cast  /  Esc unlock mouse")
+	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
 }
 
 @(private = "file")
@@ -575,8 +587,9 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	// --- Hotbar (bottom center) ------------------------------------------------
 	slot_w: f32 = 14
-	start := cols * 0.5 - slot_w * 2
-	for i in 0..<4 {
+	start := cols * 0.5 - slot_w * f32(HOTBAR_SLOTS) * 0.5
+	_, have_strike_target := client_world_strike_target(world)
+	for i in 0..<HOTBAR_SLOTS {
 		spell := HOTBAR[i]
 		def := &SPELL_DEFS[spell]
 		cd := gc.cooldowns[spell]
@@ -623,6 +636,10 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)
+		} else if def.payload == .Strike && !have_strike_target {
+			// Affordable and off cooldown, but nobody under the crosshair.
+			sdtx.color3f(0.6, 0.6, 0.65)
+			sdtx.puts("no target")
 		} else {
 			sdtx.color3f(0.5, 0.75, 0.55)
 			sdtx.puts("==========")

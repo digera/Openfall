@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(3)
+PROTOCOL_VERSION :: u8(4)
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -35,6 +35,7 @@ INPUT_REDUNDANCY :: 3
 
 MAX_SNAPSHOT_ENTITIES    :: 22
 MAX_SNAPSHOT_PROJECTILES :: 12
+MAX_SNAPSHOT_STRIKES     :: 4
 
 // ---------------------------------------------------------------------------
 // Packet structs (host representation)
@@ -94,6 +95,16 @@ Snapshot_Projectile :: struct {
 	radius:   f32,
 }
 
+// A strike that landed recently. Strikes are instantaneous, so unlike a
+// projectile there is no object whose disappearance the client can watch for;
+// the server keeps each one in its snapshots for a few frames and the client
+// deduplicates by `seq`, so one dropped packet does not lose the bolt.
+Snapshot_Strike :: struct {
+	seq:      u8,
+	owner_id: Entity_ID,
+	pos:      vec3,   // where it landed: the target's feet
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -101,6 +112,8 @@ Server_Snapshot_Packet :: struct {
 	entities:         [MAX_SNAPSHOT_ENTITIES]Snapshot_Entity,
 	projectile_count: u8,
 	projectiles:      [MAX_SNAPSHOT_PROJECTILES]Snapshot_Projectile,
+	strike_count:     u8,
+	strikes:          [MAX_SNAPSHOT_STRIKES]Snapshot_Strike,
 }
 
 Snapshot_Obelisk :: struct {
@@ -236,6 +249,28 @@ dequant_axis :: proc(q: i8) -> f32 {
 
 quant_u8 :: proc(v: f32, scale: f32) -> u8 {
 	return u8(clampf(math.round(v * scale), 0, 255))
+}
+
+// Effect positions to the centimetre in six bytes rather than twelve. The
+// arena is ~75 m across, so +-327 m is not a limit anyone will find.
+bw_pos_cm :: proc(w: ^Byte_Writer, v: vec3) {
+	for k in 0..<3 {
+		bw_i16(w, i16(clampf(math.round(v[k] * 100), -32767, 32767)))
+	}
+}
+
+br_pos_cm :: proc(r: ^Byte_Reader) -> vec3 {
+	x := f32(br_i16(r)) / 100.0
+	y := f32(br_i16(r)) / 100.0
+	z := f32(br_i16(r)) / 100.0
+	return {x, y, z}
+}
+
+// Entity ids ride as one byte; anything past the table is nobody.
+@(private = "file")
+entity_id_from_wire :: proc(raw: u8) -> Entity_ID {
+	id := Entity_ID(raw)
+	return id < MAX_ENTITIES ? id : INVALID_ENTITY
 }
 
 // A hostile client can put any byte on the wire, and Spell_ID indexes an
@@ -378,6 +413,7 @@ serialize_client_input :: proc(packet: ^Client_Input_Packet, buffer: []u8) -> in
 		bw_i16(&w, quant_angle(in_.pitch))
 		bw_u8(&w, u8(in_.charge_spell))
 		bw_u8(&w, u8(in_.cast_spell))
+		bw_u8(&w, u8(in_.target_id))
 	}
 	return w.ok ? w.pos : 0
 }
@@ -401,6 +437,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		in_.pitch = dequant_angle(br_i16(&r))
 		in_.charge_spell = spell_id_from_wire(br_u8(&r))
 		in_.cast_spell = spell_id_from_wire(br_u8(&r))
+		in_.target_id = entity_id_from_wire(br_u8(&r))
 		packet.inputs[i] = in_
 	}
 	return packet, r.ok
@@ -451,8 +488,11 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 
 // Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1 = 42
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
-// Header 2 + tick 4 + ack 4 + counts 2 = 12
-// 12 + 22*42 + 12*32 = 1320 bytes worst case.
+// Per-strike: seq 1, owner 1, pos 6 = 8
+// Header 2 + tick 4 + ack 4 + counts 3 = 13
+// 13 + 22*42 + 12*32 + 4*8 = 1353 bytes worst case. This must stay under
+// MAX_PACKET_SIZE: the writer refuses an oversized packet and the client
+// would simply stop hearing from us in a crowded fight.
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	w := bw_init(buffer)
 	write_header(&w, .Server_Snapshot)
@@ -491,6 +531,15 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_vec3(&w, p.vel)
 		bw_u8(&w, quant_u8(p.lifetime, 20))   // 0.05 s resolution, max 12.75 s
 		bw_u8(&w, quant_u8(p.radius, 100))    // cm
+	}
+
+	scount := min(int(packet.strike_count), MAX_SNAPSHOT_STRIKES)
+	bw_u8(&w, u8(scount))
+	for i in 0..<scount {
+		s := &packet.strikes[i]
+		bw_u8(&w, s.seq)
+		bw_u8(&w, u8(s.owner_id))
+		bw_pos_cm(&w, s.pos)
 	}
 	return w.ok ? w.pos : 0
 }
@@ -545,6 +594,18 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.projectile_count = u8(pcount)
+
+	scount := min(int(br_u8(&r)), MAX_SNAPSHOT_STRIKES)
+	for i in 0..<scount {
+		s := &packet.strikes[i]
+		s.seq = br_u8(&r)
+		s.owner_id = entity_id_from_wire(br_u8(&r))
+		s.pos = br_pos_cm(&r)
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.strike_count = u8(scount)
 	return packet, r.ok
 }
 

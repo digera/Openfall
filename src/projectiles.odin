@@ -294,35 +294,48 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 	if direct != INVALID_ENTITY {
 		projectile_apply_direct(world, entity_world, slot, direct)
 	}
-
-	if proj.aoe_radius > 0 && proj.aoe_frac > 0 {
-		for entity_idx in 1..<MAX_ENTITIES {
-			id := Entity_ID(entity_idx)
-			if !entity_alive(entity_world, id) || id == proj.owner_id || id == direct {
-				continue
-			}
-			if !teams_are_enemies(proj.owner_team, entity_world.teams[entity_idx]) {
-				continue
-			}
-			target := entity_world.characters[entity_idx]
-			center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
-			d := center - at
-			dist := len_vec3(d)
-			if dist > proj.aoe_radius {
-				continue
-			}
-			// Cover stops the blast, otherwise a wide splash reaches through walls.
-			if !world_segment_clear(at, center, 0.8) {
-				continue
-			}
-			falloff := 1.0 - 0.5 * (dist / proj.aoe_radius)
-			target.health -= proj.damage * proj.aoe_frac * falloff
-			if proj.knockback > 0 {
-				character_apply_impulse(&target, d, proj.knockback * falloff)
-			}
-			entity_world.characters[entity_idx] = target
-		}
-	}
-
+	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
 	projectile_destroy(world, slot)
+}
+
+// A blast at `at`: everyone hostile within `radius` who is not `direct` (they
+// already took the hit itself) loses up to `damage`, falling off to half at
+// the edge. Shared by projectile detonations and strikes.
+splash_damage :: proc(
+	entity_world: ^Entity_World,
+	at: vec3,
+	owner_id: Entity_ID,
+	owner_team: Team_ID,
+	direct: Entity_ID,
+	damage, radius, knockback: f32,
+) {
+	if radius <= 0 || damage <= 0 {
+		return
+	}
+	for entity_idx in 1..<MAX_ENTITIES {
+		id := Entity_ID(entity_idx)
+		if !entity_alive(entity_world, id) || id == owner_id || id == direct {
+			continue
+		}
+		if !teams_are_enemies(owner_team, entity_world.teams[entity_idx]) {
+			continue
+		}
+		target := entity_world.characters[entity_idx]
+		center := target.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		d := center - at
+		dist := len_vec3(d)
+		if dist > radius {
+			continue
+		}
+		// Cover stops the blast, otherwise a wide splash reaches through walls.
+		if !world_segment_clear(at, center, 0.8) {
+			continue
+		}
+		falloff := 1.0 - 0.5 * (dist / radius)
+		target.health -= damage * falloff
+		if knockback > 0 {
+			character_apply_impulse(&target, d, knockback * falloff)
+		}
+		entity_world.characters[entity_idx] = target
+	}
 }

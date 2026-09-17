@@ -74,6 +74,20 @@ Client_Impact :: struct {
 	live:  bool,
 }
 
+// A lightning bolt being drawn: sky to `pos`, gone in STRIKE_FLASH_SEC.
+Client_Strike :: struct {
+	pos:  vec3,
+	life: f32,       // 1 → 0
+	live: bool,
+}
+
+MAX_CLIENT_STRIKES :: 4
+STRIKE_FLASH_SEC   :: f32(0.45)
+// Strike sequence numbers already spawned. The server replays a strike for a
+// third of a second so a lost snapshot does not lose it; this keeps the
+// replays from spawning it again.
+SEEN_STRIKES       :: 16
+
 Client_World :: struct {
 	local_entity_id: Entity_ID,
 	local_team:      Team_ID,
@@ -95,11 +109,16 @@ Client_World :: struct {
 	impacts:          [MAX_CLIENT_IMPACTS]Client_Impact,
 	hit_marker:       f32,
 
+	strikes:          [MAX_CLIENT_STRIKES]Client_Strike,
+	seen_strikes:     [SEEN_STRIKES]u8,
+	seen_strike_head: int,
+	seen_strike_count: int,
+
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
 
-	// Sticky soft target, purely presentational for now; targeted spells will
-	// read it and send it up for the server to validate.
+	// Sticky soft target. Drawn under the crosshair, and sent up with every
+	// input so a targeted spell lands on it once the server has validated it.
 	target_id:        Entity_ID,
 }
 
@@ -304,6 +323,9 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.projectiles = {}
 	world.projectile_count = 0
 	world.impacts = {}
+	world.strikes = {}
+	world.seen_strike_count = 0
+	world.seen_strike_head = 0
 	world.have_server_tick = false
 	world.have_game_state = false
 	world.target_id = INVALID_ENTITY
@@ -375,6 +397,53 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	}
 
 	client_world_apply_projectiles(world, snapshot)
+	client_world_apply_strikes(world, snapshot)
+}
+
+@(private = "file")
+client_world_apply_strikes :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	for i in 0..<int(snapshot.strike_count) {
+		s := &snapshot.strikes[i]
+		seen := false
+		for k in 0..<world.seen_strike_count {
+			if world.seen_strikes[k] == s.seq {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		world.seen_strikes[world.seen_strike_head] = s.seq
+		world.seen_strike_head = (world.seen_strike_head + 1) % SEEN_STRIKES
+		world.seen_strike_count = min(world.seen_strike_count + 1, SEEN_STRIKES)
+
+		client_world_add_strike(world, s.pos)
+		// The ground flash and its light come from the impact path; the bolt
+		// itself is drawn from the strike.
+		client_world_add_impact(world, s.pos + vec3{0, 0, 0.4}, .Call_Lightning)
+		if s.owner_id == world.local_entity_id {
+			world.hit_marker = 1
+		}
+	}
+}
+
+@(private = "file")
+client_world_add_strike :: proc(world: ^Client_World, pos: vec3) {
+	slot := 0
+	oldest_life: f32 = 2
+	for i in 0..<MAX_CLIENT_STRIKES {
+		s := &world.strikes[i]
+		if !s.live {
+			slot = i
+			break
+		}
+		if s.life < oldest_life {
+			oldest_life = s.life
+			slot = i
+		}
+	}
+	world.strikes[slot] = Client_Strike{pos = pos, life = 1, live = true}
 }
 
 @(private = "file")
@@ -483,10 +552,22 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 		#partial switch im.spell {
 		case .Arcane_Orb:     speed = 1.2
 		case .Arcane_Missile: speed = 1.9
+		case .Call_Lightning: speed = 1.6
 		}
 		im.age -= dt * speed
 		if im.age <= 0 {
 			im.live = false
+		}
+	}
+
+	for i in 0..<MAX_CLIENT_STRIKES {
+		s := &world.strikes[i]
+		if !s.live {
+			continue
+		}
+		s.life -= dt / STRIKE_FLASH_SEC
+		if s.life <= 0 {
+			s.live = false
 		}
 	}
 
@@ -511,6 +592,18 @@ client_world_target_valid :: proc(world: ^Client_World, id: Entity_ID) -> bool {
 	}
 	remote := &world.remote_entities[id]
 	return remote.active && !remote.display_state.dead
+}
+
+// The current target if it is someone a strike may land on: alive and
+// hostile. Where they stand is the caller's question; the server asks the same
+// things of its own state, this only keeps the client from winding up or
+// releasing a bolt that would be refused.
+client_world_strike_target :: proc(world: ^Client_World) -> (remote: ^Remote_Entity, ok: bool) {
+	if !client_world_target_valid(world, world.target_id) {
+		return nil, false
+	}
+	remote = &world.remote_entities[world.target_id]
+	return remote, teams_are_enemies(world.local_team, remote.team)
 }
 
 // Entities are tested at their interpolated display position, so the selection

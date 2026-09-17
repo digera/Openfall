@@ -43,6 +43,7 @@ layout(binding=1) uniform fs_params {
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
+    vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
 };
 
 in vec3 ray_origin;
@@ -100,7 +101,8 @@ vec3 spell_tint(float type) {
     if (type < 1.5) return vec3(0.78, 0.46, 1.00);   // missile: violet
     if (type < 2.5) return vec3(0.52, 0.48, 1.00);   // orb: indigo
     if (type < 3.5) return vec3(1.00, 1.00, 1.00);   // blink
-    return vec3(0.50, 0.92, 1.00);                   // frost: cyan
+    if (type < 4.5) return vec3(0.50, 0.92, 1.00);   // frost: cyan
+    return vec3(0.82, 0.90, 1.00);                   // lightning: white-blue
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
@@ -606,6 +608,7 @@ void main() {
         float rad = 0.25 + 0.9 * grow;
         if (itype > 1.5 && itype < 2.5)      rad = 0.8 + 5.4 * grow;   // orb
         else if (itype < 1.5)                rad = 0.35 + 2.0 * grow;  // missile pop
+        else if (itype > 4.5 && itype < 5.5) rad = 0.6 + 2.6 * grow;   // lightning ground flash
         vec3 tint = spell_tint(itype);
         float g = corona(ro, rd, glow_tmax, im.xyz, rad) * age * age;
         aura += tint * g * 1.6;
@@ -625,6 +628,45 @@ void main() {
             // Capturing: pulse in the capturing team's color
             aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
         }
+    }
+
+    // --- Lightning: a jagged bolt from well above the walls onto the target ---
+    for (int i = 0; i < 4; i++) {
+        vec4 L = lightning[i];
+        if (L.w < 0.005) continue;
+        float life = L.w;                             // 1 fresh -> 0 gone
+        float spike = smoothstep(0.8, 1.0, life);     // the first ~90 ms
+        float glow = life * life * 1.6 + spike * 2.4;
+        vec3 ground = L.xyz;
+        vec3 top = ground + vec3(0.0, 0.0, 40.0);
+        // The path re-rolls a few times a second so the bolt crackles rather
+        // than standing still while it fades.
+        float roll = floor(WORLD_T * 22.0) + float(i) * 17.0;
+        vec3 core = vec3(0.96, 0.98, 1.00);
+        vec3 tint = vec3(0.55, 0.78, 1.00);
+        vec3 prev = top;
+        for (int k = 1; k <= 6; k++) {
+            float f = float(k) / 6.0;
+            vec3 node = mix(top, ground, f);
+            if (k < 6) {
+                float amp = 0.15 + 0.9 * sin(f * 3.14159);
+                node.x += (hash13(vec3(roll, float(k), L.x)) - 0.5) * 2.0 * amp;
+                node.y += (hash13(vec3(roll, float(k) + 7.0, L.y)) - 0.5) * 2.0 * amp;
+            }
+            // segment_glow brightens toward its second point: the impact end.
+            aura += core * segment_glow(ro, rd, glow_tmax, prev, node, 0.16) * glow;
+            if (k == 3) {
+                // One side branch peeling off toward the ground.
+                vec3 tip = node + vec3((hash13(vec3(roll, 31.0, L.x)) - 0.5) * 7.0,
+                                       (hash13(vec3(roll, 37.0, L.y)) - 0.5) * 7.0, -5.0);
+                aura += core * segment_glow(ro, rd, glow_tmax, node, tip, 0.08) * glow * 0.5;
+            }
+            prev = node;
+        }
+        // Wide soft halo down the whole column, and the sky blinks with a
+        // fresh bolt no matter where the player is looking.
+        aura += tint * segment_glow(ro, rd, glow_tmax, top, ground, 1.1) * glow * 0.35;
+        aura += tint * spike * 0.05;
     }
 
     // --- Sky ---------------------------------------------------------------

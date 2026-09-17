@@ -323,16 +323,19 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 
 		// Aim for the spell that is actually about to be cast: they differ
 		// enough in speed and drop that one shared lead misses with all of them.
+		// Anything that is not a projectile lands where the bot is looking, so
+		// it gets no lead at all.
 		if b.next_spell == .None {
 			b.next_spell = bot_pick_spell(server, b, char, dist)
 		}
-		aim_def := &SPELL_DEFS[.Arcane_Missile]
-		if b.next_spell != .None && SPELL_DEFS[b.next_spell].payload == .Projectile {
-			aim_def = &SPELL_DEFS[b.next_spell]
+		aim_spell := b.charge_spell != .None ? b.charge_spell : b.next_spell
+		lead := chest
+		if aim_spell == .None || SPELL_DEFS[aim_spell].payload == .Projectile {
+			aim_def := &SPELL_DEFS[aim_spell == .None ? .Arcane_Missile : aim_spell]
+			flight := dist / max(aim_def.proj_speed, 1)
+			lead = chest + b.target_vel * flight * 0.8
+			lead.z -= 0.5 * PROJECTILE_GRAVITY_Z * aim_def.proj_gravity * flight * flight
 		}
-		flight := dist / max(aim_def.proj_speed, 1)
-		lead := chest + b.target_vel * flight * 0.8
-		lead.z -= 0.5 * PROJECTILE_GRAVITY_Z * aim_def.proj_gravity * flight * flight
 
 		d := lead - eye
 		hd := math.sqrt(d.x * d.x + d.y * d.y)
@@ -418,7 +421,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 				c.yaw = b.aim_yaw
 				c.pitch = b.aim_pitch
 				server.world.characters[b.id] = c
-				ok := server_handle_spell_cast(server, b.id, b.charge_spell, 1.0, server.tick_id)
+				ok := server_handle_spell_cast(server, b.id, b.charge_spell, 1.0, server.tick_id, b.target)
 				b.charge_spell = .None
 				b.charge_time = 0
 				b.cast_timer = ok ? rand.float32_range(0.45, 1.0) : 0.15
@@ -565,6 +568,13 @@ bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool 
 bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f32) -> Spell_ID {
 	cds := &server.world.spell_states[b.id].cooldowns
 	r := rand.float32()
+	// The bolt cannot be dodged, so a bot that can afford it reaches for it
+	// first at mid range, where a lance would take long enough to arrive to be
+	// sidestepped. Point blank it is a waste of the wind-up.
+	if dist > 8 && dist < SPELL_DEFS[.Call_Lightning].range - 3 && cds[.Call_Lightning] <= 0 &&
+	   char.mana >= SPELL_DEFS[.Call_Lightning].mana_cost && r < 0.3 {
+		return .Call_Lightning
+	}
 	// The orb only lands at short range now that it lobs, and the lance is too
 	// slow to connect across the map.
 	if dist < 13 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.4 {

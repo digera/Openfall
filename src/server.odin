@@ -53,6 +53,22 @@ Server :: struct {
 
 	obelisks:      Obelisk_World,
 	match:         Match,
+
+	// Strikes that landed in the last STRIKE_LINGER_SEC, replayed into every
+	// snapshot until they age out so a lost packet does not lose the bolt.
+	strikes:       [MAX_STRIKES]Strike,
+	strike_seq:    u8,
+}
+
+MAX_STRIKES       :: 16
+STRIKE_LINGER_SEC :: f32(0.35) // ~10 snapshots
+
+Strike :: struct {
+	live:     bool,
+	seq:      u8,
+	owner_id: Entity_ID,
+	pos:      vec3,
+	age:      f32,
 }
 
 server_init :: proc(port: u16) -> (server: Server, ok: bool) {
@@ -114,6 +130,7 @@ server_tick :: proc(server: ^Server) {
 
 	simulate_world_step(&server.world)
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
+	server_age_strikes(server, SIMULATION_DT)
 
 	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
 	if match_tick(&server.match, &server.obelisks, SIMULATION_DT) {
@@ -144,6 +161,7 @@ server_tick :: proc(server: ^Server) {
 server_round_reset :: proc(server: ^Server) {
 	obelisk_world_reset(&server.obelisks)
 	projectile_clear_all(&server.projectiles)
+	server.strikes = {}
 	entity_respawn_all(&server.world)
 	for i in 0..<MAX_BOTS {
 		if server.bots[i].active {
@@ -316,7 +334,7 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 		spell_state.channel_spell = .None
 		spell_state.channel_time = 0
 		if charge >= SPELL_MIN_CHARGE {
-			server_handle_spell_cast(server, id, input.cast_spell, charge, server.tick_id)
+			server_handle_spell_cast(server, id, input.cast_spell, charge, server.tick_id, input.target_id)
 		}
 		return
 	}
@@ -563,6 +581,36 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 		snapshot.projectile_count = u8(ptake)
 
+		// Recent strikes, nearest first. A bolt is visible from across the
+		// arena, so this only matters when more than four land at once.
+		sidx:  [MAX_STRIKES]int
+		sdist: [MAX_STRIKES]f32
+		sn := 0
+		for i in 0..<MAX_STRIKES {
+			if !server.strikes[i].live {
+				continue
+			}
+			sidx[sn] = i
+			sdist[sn] = len2_vec3(server.strikes[i].pos - self_pos)
+			sn += 1
+		}
+		stake := min(sn, MAX_SNAPSHOT_STRIKES)
+		for k in 0..<stake {
+			best := k
+			for j in k + 1..<sn {
+				if sdist[j] < sdist[best] {
+					best = j
+				}
+			}
+			if best != k {
+				sidx[k], sidx[best] = sidx[best], sidx[k]
+				sdist[k], sdist[best] = sdist[best], sdist[k]
+			}
+			strike := &server.strikes[sidx[k]]
+			snapshot.strikes[k] = Snapshot_Strike{seq = strike.seq, owner_id = strike.owner_id, pos = strike.pos}
+		}
+		snapshot.strike_count = u8(stake)
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
@@ -640,9 +688,10 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 	}
 }
 
-// Validate and execute a spell cast at the given charge. Returns true if the
-// cast happened.
-server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, charge_frac: f32, tick: u32) -> bool {
+// Validate and execute a spell cast at the given charge. `target_id` is what
+// the caster's crosshair was holding; only targeted spells read it, and they
+// re-check it here before anything is spent. Returns true if the cast happened.
+server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, charge_frac: f32, tick: u32, target_id := INVALID_ENTITY) -> bool {
 	if !entity_alive(&server.world, caster_id) {
 		return false
 	}
@@ -660,13 +709,19 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		return false
 	}
 
+	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
+	direction := camera_forward(char.yaw, char.pitch)
+
+	// A strike with nowhere to land is refused, not refunded: the wind-up was
+	// the price of letting the target slip behind cover.
+	if def.payload == .Strike && !server_strike_target_ok(server, caster_id, target_id, def, origin, direction) {
+		return false
+	}
+
 	charge := clampf(charge_frac, SPELL_MIN_CHARGE, 1)
 
 	char.mana -= def.mana_cost
 	spell_state.cooldowns[spell_id] = def.cooldown_sec
-
-	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
-	direction := camera_forward(char.yaw, char.pitch)
 
 	switch def.payload {
 	case .Projectile:
@@ -710,6 +765,11 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 				def.short_name, caster_id, char.health - before, char.health)
 		}
 
+	case .Strike:
+		// Touches the target and bystanders only; the splash skips its owner,
+		// so the caster copy written back below stays authoritative.
+		server_strike(server, caster_id, target_id, def, charge)
+
 	case .None:
 	}
 
@@ -719,6 +779,68 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		server_log("[Combat] Entity %d cast %s at %.0f%% charge", caster_id, def.name, charge * 100)
 	}
 	return true
+}
+
+// Everything the server demands of a strike target: alive, hostile, and
+// within the shared reach test from the caster's real eye and look.
+@(private = "file")
+server_strike_target_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, eye, look: vec3) -> bool {
+	if target_id == caster_id || !entity_alive(&server.world, target_id) {
+		return false
+	}
+	if !teams_are_enemies(server.world.teams[caster_id], server.world.teams[target_id]) {
+		return false
+	}
+	return strike_target_in_reach(def, eye, look, server.world.characters[target_id].pos)
+}
+
+// Land a strike: the target takes the hit, anyone hostile around them takes
+// the splash, and the bolt is queued for every client's snapshots.
+@(private = "file")
+server_strike :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, charge: f32) {
+	target := server.world.characters[target_id]
+	damage := def.damage * charge
+	target.health -= damage
+	server.world.characters[target_id] = target
+	if SERVER_VERBOSE {
+		server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
+			def.short_name, caster_id, target_id, damage, target.health)
+	}
+
+	at := strike_center(target.pos)
+	splash_damage(&server.world, at, caster_id, server.world.teams[caster_id], target_id,
+		damage * def.aoe_damage_frac, def.aoe_radius, def.knockback)
+
+	// Record it where the bolt meets the ground: the target's feet.
+	slot := 0
+	oldest: f32 = -1
+	for i in 0..<MAX_STRIKES {
+		s := &server.strikes[i]
+		if !s.live {
+			slot = i
+			break
+		}
+		if s.age > oldest {
+			oldest = s.age
+			slot = i
+		}
+	}
+	server.strike_seq += 1
+	server.strikes[slot] = Strike{live = true, seq = server.strike_seq, owner_id = caster_id, pos = target.pos}
+}
+
+@(private = "file")
+server_age_strikes :: proc(server: ^Server, dt: f32) {
+	for i in 0..<MAX_STRIKES {
+		s := &server.strikes[i]
+		if !s.live {
+			continue
+		}
+		s.age += dt
+		if s.age >= STRIKE_LINGER_SEC {
+			s.live = false
+		}
+	}
 }
 
 @(private = "file")

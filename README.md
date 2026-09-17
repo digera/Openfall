@@ -68,7 +68,7 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | WASD | Walk |
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
-| 1–4 | Select spell (Missile / Orb / Heal / Lance) |
+| 1–5 | Select spell (Missile / Orb / Heal / Lance / Bolt) |
 | Hold LMB | Charge the selected spell |
 | Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
@@ -85,14 +85,19 @@ The server times the wind-up itself — the client only reports which spell it i
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
 | Self Heal | 1.0s | 5.0s | 30 | restores 45 to the caster |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
+| Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 
 Self Heal is sustain, not an escape: a full wind-up is worth less than one lance, so trading into a healing opponent still wins, and a heal at full health is refused outright rather than eating the mana, so it cannot be pre-charged before a fight. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
+
+Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 
 ### Targeting
 
 The crosshair carries a sticky soft target: the nearest living wisp or player it sweeps over, shown by name and health bar under the crosshair. It holds through aim wobble and only changes when the crosshair covers someone else, when the target dies, or when you unlock the mouse — so a spell wound up on someone stays wound up on them. Selection is slightly more forgiving than a projectile hit and reaches 100 m.
 
-This is presentation only today. Targeted spells (Call Lightning, Heal Other) will send the selected entity with the cast for the server to re-validate; the server trusts nothing the client picks. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, hostile, in range, roughly where the caster is looking and in the open. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+
+Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 
 ## Linux
 

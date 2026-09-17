@@ -17,7 +17,7 @@ Input :: struct {
 	key_space:      bool,
 	key_shift:      bool,
 	jump:           bool,      // latched press
-	slot_press:     [4]bool,   // latched 1..4 presses
+	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
 	window_focused: bool,
 }
 
@@ -75,10 +75,11 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .SPACE:
 			input.key_space = true
 			input.jump = true
-		case ._1: input.slot_press[0] = true
-		case ._2: input.slot_press[1] = true
-		case ._3: input.slot_press[2] = true
-		case ._4: input.slot_press[3] = true
+		case ._1, ._2, ._3, ._4, ._5, ._6, ._7, ._8, ._9:
+			slot := int(e.key_code) - int(sapp.Keycode._1)
+			if slot < HOTBAR_SLOTS {
+				input.slot_press[slot] = true
+			}
 		case .ESCAPE:
 			sapp.lock_mouse(false)
 			input_clear_held()
@@ -119,7 +120,7 @@ input_consume_jump :: proc() -> bool {
 
 // slot is 1-based
 input_consume_slot :: proc(slot: int) -> bool {
-	if slot < 1 || slot > 4 {
+	if slot < 1 || slot > HOTBAR_SLOTS {
 		return false
 	}
 	if input.slot_press[slot - 1] {
