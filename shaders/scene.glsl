@@ -42,6 +42,10 @@ layout(binding=1) uniform fs_params {
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
+    vec4 wisp_yaws[16];     // x = yaw (radians), yzw unused
+    vec4 cloak_hem[16];     // xyzw = 4 packed hem control points (x: 2×fp16)
+    vec4 cloak_hem2[16];    // xyzw = continuation (y: 2×fp16)
+    vec4 cloak_hem3[16];    // xyzw = continuation (z: 2×fp16)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
     vec4 beams[4];          // xyz origin, w = 1 lit (0 = none)
@@ -65,6 +69,7 @@ const int MAT_OBELISK = 5;
 const int MAT_WISP = 6;
 const int MAT_PROJ = 7;
 const int MAT_HAND = 8;
+const int MAT_CLOAK = 9;
 
 const vec3 MOON_DIR = normalize(vec3(0.35, -0.55, 0.75));
 
@@ -428,6 +433,94 @@ bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax
     return hit;
 }
 
+// Cloak SDF: a flowing ribbon defined by control points
+// Returns signed distance to a thin curved sheet
+float cloak_sdf(vec3 p, vec3 attach, vec3[4] hem_points) {
+    float min_dist = 1e5;
+    
+    // Cloak spine: 3 layers from shoulders to hem
+    vec3 spine[4];
+    spine[0] = attach;
+    spine[1] = attach * 0.6 + (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.1;
+    spine[2] = (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.25;
+    spine[3] = (hem_points[0] + hem_points[1] + hem_points[2] + hem_points[3]) * 0.25;
+    
+    // Check distance to ribbon segments
+    for (int i = 0; i < 3; i++) {
+        vec3 a = spine[i];
+        vec3 b = spine[i + 1];
+        
+        // For each spine segment, trace to the hem curve at that height
+        float t_spine = clamp(dot(p - a, b - a) / max(dot(b - a, b - a), 1e-6), 0.0, 1.0);
+        vec3 spine_pt = mix(a, b, t_spine);
+        
+        // Sample the hem shape at this spine level
+        float angle = atan(p.y - spine_pt.y, p.x - spine_pt.x);
+        int idx = int(mod(angle / (3.14159 * 0.5) + 4.0, 4.0));
+        vec3 hem_a = mix(spine[i], hem_points[idx], float(i + 1) / 3.0);
+        vec3 hem_b = mix(spine[i], hem_points[(idx + 1) % 4], float(i + 1) / 3.0);
+        
+        float t_hem = clamp(dot(p - hem_a, hem_b - hem_a) / max(dot(hem_b - hem_a, hem_b - hem_a), 1e-6), 0.0, 1.0);
+        vec3 edge_pt = mix(hem_a, hem_b, t_hem);
+        
+        float d = length(p - edge_pt);
+        min_dist = min(min_dist, d);
+    }
+    
+    // Thin sheet: distance to nearest point minus small thickness
+    return min_dist - 0.012;
+}
+
+bool cloak_trace(vec3 ro, vec3 rd, vec3 wisp_pos, float wisp_yaw, int wisp_idx, float tmin, float tmax, out float t, out vec3 n) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    
+    // Bounding sphere check
+    vec3 bound_center = wisp_pos + vec3(0.0, 0.0, 0.0);
+    if (!bounds_hit(ro, rd, bound_center, 1.2, tmax)) return false;
+    
+    // Unpack hem control points from uniforms
+    vec4 h1 = cloak_hem[wisp_idx];
+    vec4 h2 = cloak_hem2[wisp_idx];
+    vec4 h3 = cloak_hem3[wisp_idx];
+    vec3 hem_points[4];
+    hem_points[0] = vec3(h1.x, h1.y, h1.z);
+    hem_points[1] = vec3(h1.w, h2.x, h2.y);
+    hem_points[2] = vec3(h2.z, h2.w, h3.x);
+    hem_points[3] = vec3(h3.y, h3.z, h3.w);
+    
+    // Attachment point
+    float cy = cos(wisp_yaw);
+    float sy = sin(wisp_yaw);
+    vec3 forward = vec3(cy, sy, 0.0);
+    vec3 attach = wisp_pos + vec3(0.0, 0.0, 0.65) - forward * 0.12;
+    
+    // Sphere-trace the cloak SDF
+    float ray_t = tmin;
+    for (int step = 0; step < 32; step++) {
+        vec3 p = ro + rd * ray_t;
+        float d = cloak_sdf(p, attach, hem_points);
+        
+        if (d < 0.008) {
+            // Hit: estimate normal via gradient
+            float eps = 0.01;
+            vec3 grad = vec3(
+                cloak_sdf(p + vec3(eps, 0.0, 0.0), attach, hem_points) - d,
+                cloak_sdf(p + vec3(0.0, eps, 0.0), attach, hem_points) - d,
+                cloak_sdf(p + vec3(0.0, 0.0, eps), attach, hem_points) - d
+            );
+            n = normalize(grad + vec3(1e-6));
+            t = ray_t;
+            return true;
+        }
+        
+        ray_t += max(d, 0.02);
+        if (ray_t > tmax) break;
+    }
+    
+    return false;
+}
+
 bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float team, out float hp, out float part) {
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
@@ -588,6 +681,20 @@ void main() {
     vec3 wn;
     if (wisp_trace(ro, rd, best, wt, wn, wisp_team, wisp_hp, wisp_part)) {
         best = wt; hit_n = wn; mat = MAT_WISP;
+    }
+
+    // Cloak trace: check all visible wisps
+    float cloak_team = 0.0;
+    for (int i = 0; i < 16; i++) {
+        vec4 w = wisps[i];
+        if (w.w < 0.5) continue;
+        float ct;
+        vec3 cn;
+        float yaw = wisp_yaws[i].x;
+        if (cloak_trace(ro, rd, w.xyz, yaw, i, 0.04, best, ct, cn)) {
+            best = ct; hit_n = cn; mat = MAT_CLOAK;
+            cloak_team = floor(w.w);
+        }
     }
 
     float proj_type = 0.0;
@@ -864,6 +971,19 @@ void main() {
         float fres = pow(1.0 - ndv, 2.0);
         emissive = mix(core, tint, 0.5 + 0.5 * fres) * (0.9 + 1.6 * fx.w) + core * pow(ndv, 6.0) * 0.6;
         albedo = vec3(0.0);
+    } else if (mat == MAT_CLOAK) {
+        vec3 tint = team_tint(cloak_team);
+        float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
+        // Fabric: darker than the wisp body, soft shading
+        albedo = tint * 0.25;
+        // Subtle fold shading via fresnel and vertical gradients
+        float fres = pow(1.0 - ndv, 1.8);
+        float vertical_shade = 0.7 + 0.3 * clamp(hit_n.z, -1.0, 1.0);
+        albedo *= vertical_shade;
+        // Soft rim light from team color
+        emissive = tint * fres * 0.15;
+        spec_pow = 4.0;
+        spec_amt = 0.02;
     }
 
     vec3 color = emissive;
@@ -913,7 +1033,7 @@ void main() {
 
     // Distance fog toward the horizon color
     float fog = 1.0 - exp(-hit_t * 0.011);
-    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND) fog *= 0.5;
+    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND || mat == MAT_CLOAK) fog *= 0.5;
     color = mix(color, sky_here * 1.15, fog);
     color += aura;
 

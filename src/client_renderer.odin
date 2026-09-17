@@ -26,6 +26,14 @@ SDTX_ORIGIN_CELLS :: f32(1)
 SDTX_CHAR_PX      :: f32(8)
 SDTX_CANVAS_SCALE :: f32(0.5)
 
+// Cloak simulation state for one wisp
+Cloak_State :: struct {
+	prev_pos:    vec3,
+	prev_yaw:    f32,
+	hem_offsets: [4]vec3,  // 4 control points: smooth trailing positions
+	phase:       f32,      // idle sway phase offset
+}
+
 Client_Renderer :: struct {
 	pip:         sg.Pipeline,
 	bind:        sg.Bindings,
@@ -38,6 +46,8 @@ Client_Renderer :: struct {
 	world_t:      f32,
 	perf_accum:   f64,
 	perf_frames:  int,
+
+	cloak_states: [16]Cloak_State,  // one per visible wisp slot
 }
 
 // ---------------------------------------------------------------------------
@@ -325,12 +335,79 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			remote := &world.remote_entities[ids[k]]
 			hp := clampf(remote.display_state.health / HEALTH_MAX, 0.05, 0.95)
 			pos := remote.display_state.pos
+			yaw := remote.display_state.yaw
 			// Idle bob, animated here once per wisp rather than per pixel
 			phase := f32(ids[k]) * 2.21
 			pos.x += 0.045 * math.sin(r.world_t * 1.37 + phase)
 			pos.y += 0.045 * math.cos(r.world_t * 1.11 + phase * 0.83)
 			pos.z += CHARACTER_HEIGHT_M * 0.50 + 0.06 * math.sin(r.world_t * 2.07 + phase)
 			fs_params.wisps[k] = {pos.x, pos.y, pos.z, f32(u8(remote.team)) + hp}
+			fs_params.wisp_yaws[k] = {yaw, 0, 0, 0}
+
+			// --- Cloak simulation: compute control points driven by motion ---
+			cloak := &r.cloak_states[k]
+			vel := (pos - cloak.prev_pos) / max(dt, 0.001)
+			yaw_vel := wrap_angle(yaw - cloak.prev_yaw) / max(dt, 0.001)
+
+			// Cloak "shoulders" attach slightly behind the wisp center
+			forward := vec3{math.cos(yaw), math.sin(yaw), 0}
+			right := vec3{-math.sin(yaw), math.cos(yaw), 0}
+			attach_point := pos + vec3{0, 0, 0.65} - forward * 0.12
+
+			// Target hem positions trail behind motion and swing with turns
+			horizontal_speed := math.sqrt(vel.x * vel.x + vel.y * vel.y)
+			trail_dir := vec3{0, 0, 0}
+			if horizontal_speed > 0.3 {
+				trail_dir = norm_vec3(vec3{-vel.x, -vel.y, 0})
+			}
+
+			// 4 control points arranged around the hem
+			for i in 0..<4 {
+				angle := f32(i) * math.PI * 0.5 - math.PI * 0.25  // -45°, 45°, 135°, 225°
+				local_offset := right * math.cos(angle) * 0.35 + forward * math.sin(angle) * 0.35
+
+				// Base hem position: below and slightly out from attachment
+				target := attach_point + local_offset - vec3{0, 0, 0.85}
+
+				// Trail behind motion (stronger for faster movement)
+				target += trail_dir * clampf(horizontal_speed * 0.18, 0, 0.4)
+
+				// Swing outward with turn rate
+				swing_factor := math.cos(angle + math.PI * 0.5)  // side-to-side
+				target += right * (yaw_vel * swing_factor * 0.08)
+
+				// Idle sway when moving slowly
+				if horizontal_speed < 1.5 {
+					sway_phase := r.world_t * 1.8 + cloak.phase + f32(i) * 0.5
+					idle_amp := (1.5 - horizontal_speed) / 1.5
+					target.x += math.sin(sway_phase) * 0.06 * idle_amp
+					target.y += math.cos(sway_phase * 0.8) * 0.05 * idle_amp
+				}
+
+				// Smooth toward target with spring (fake cloth settling)
+				blend := clampf(dt * 8.0, 0, 1)
+				cloak.hem_offsets[i] += (target - cloak.hem_offsets[i]) * blend
+			}
+
+			cloak.prev_pos = pos
+			cloak.prev_yaw = yaw
+			if cloak.phase == 0 {
+				cloak.phase = f32(ids[k]) * 0.73  // per-wisp idle phase
+			}
+
+			// Pack hem control points into uniforms (3 vec4s per wisp = 12 floats for 4 vec3s)
+			fs_params.cloak_hem[k] = {
+				cloak.hem_offsets[0].x, cloak.hem_offsets[0].y, cloak.hem_offsets[0].z,
+				cloak.hem_offsets[1].x,
+			}
+			fs_params.cloak_hem2[k] = {
+				cloak.hem_offsets[1].y, cloak.hem_offsets[1].z,
+				cloak.hem_offsets[2].x, cloak.hem_offsets[2].y,
+			}
+			fs_params.cloak_hem3[k] = {
+				cloak.hem_offsets[2].z,
+				cloak.hem_offsets[3].x, cloak.hem_offsets[3].y, cloak.hem_offsets[3].z,
+			}
 		}
 	}
 
