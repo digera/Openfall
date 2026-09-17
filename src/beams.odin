@@ -42,6 +42,10 @@ beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
 		// Route to the appropriate trace: heal beams find friendlies, damage beams find enemies.
 		if state.channel_spell == .Self_Heal {
 			heal_beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
+			// Quench heal beam if it found no valid target (all friendlies out of range or self at full HP).
+			if state.beam.hit == INVALID_ENTITY {
+				beam_quench(world, id)
+			}
 		} else {
 			beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
 		}
@@ -152,7 +156,7 @@ heal_beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_
 	reach := world_ray_hit(origin, dir, def.range)
 
 	// Wide cone for friendly targeting: more forgiving than damage beams.
-	// cos(30 deg) = ~0.866 gives a 60-degree total cone width.
+	// cos(30 deg) = ~0.866 gives a 60-degree total cone width (inside means dot >= COS * dist).
 	HEAL_BEAM_AIM_COS :: f32(0.866)
 
 	hit := INVALID_ENTITY
@@ -162,11 +166,8 @@ heal_beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_
 		if id == caster_id || !entity_alive(world, id) {
 			continue
 		}
-		// Heal friendlies (same team, not None), never enemies.
-		if teams_are_enemies(caster_team, world.teams[i]) {
-			continue
-		}
-		if caster_team == .None || world.teams[i] == .None || caster_team != world.teams[i] {
+		// Heal same-team friendlies only (not None, not enemies).
+		if caster_team == .None || world.teams[i] != caster_team {
 			continue
 		}
 
@@ -177,11 +178,11 @@ heal_beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_
 		if dist < 1e-3 || dist > def.range {
 			continue
 		}
-		// Wide cone check
+		// Wide cone check: accept targets inside cone (dot >= COS * dist).
 		if dot_vec3(to, dir) < HEAL_BEAM_AIM_COS * dist {
 			continue
 		}
-		// LOS check: prefer targets in the open
+		// LOS check: prefer targets in the open.
 		if !world_segment_clear(origin, center) {
 			continue
 		}
@@ -193,14 +194,19 @@ heal_beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_
 		}
 	}
 
-	// Fallback: if no friendlies found, heal self.
+	// Fallback: if no friendlies found, heal self (unless already at full HP, to avoid mana waste).
 	if hit == INVALID_ENTITY {
-		hit = caster_id
-		hit_dist = 0 // beam ends at caster for visual feedback
+		caster := world.characters[caster_id]
+		if caster.health < HEALTH_MAX {
+			hit = caster_id
+			hit_dist = 0 // beam ends at caster for visual feedback
+		}
 	}
 
 	out^ = {end = origin + dir * hit_dist, hit = hit}
-	beam_heal(world, hit, healing)
+	if hit != INVALID_ENTITY {
+		beam_heal(world, hit, healing)
+	}
 }
 
 // Sixty small hits a second: no per-hit log line, the kill shows up in [Death].
