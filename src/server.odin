@@ -47,6 +47,7 @@ Server :: struct {
 	client_count:  int,
 
 	bots:          [MAX_BOTS]Bot,
+	bots_per_team: int,
 
 	projectiles:   Projectile_World,
 	lag_comp:      Lag_Comp_State,
@@ -73,7 +74,6 @@ Strike :: struct {
 
 server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 	fmt.println("=== Nexus Arena Headless Server ===")
-	fmt.printf("Initializing on port %d, %d teams x %d slots\n", port, TEAM_COUNT, TEAM_SIZE)
 
 	server.world = entity_world_init()
 	server.start_time = time.tick_now()
@@ -81,6 +81,21 @@ server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 	server.lag_comp = lag_comp_init()
 	server.obelisks = obelisk_world_init()
 	server.match = match_init()
+
+	// Default bots per team
+	server.bots_per_team = BOTS_PER_TEAM
+	{
+		buf: [64]u8
+		if v := os.get_env_buf(buf[:], "BOTS_PER_TEAM"); v != "" {
+			if count, pok := strconv.parse_int(v); pok && count >= 0 && count <= TEAM_SIZE {
+				server.bots_per_team = count
+				fmt.printf("Bot count override: %d bots per team\n", count)
+			}
+		}
+	}
+
+	fmt.printf("Initializing on port %d, %d teams x %d human slots, %d bots per team\n", 
+		port, TEAM_COUNT, TEAM_SIZE, server.bots_per_team)
 
 	// Test knobs: NEXUS_TEST_ESSENCE=50 (win threshold), NEXUS_TEST_FAST=10 (essence multiplier)
 	{

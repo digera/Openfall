@@ -60,8 +60,9 @@ else
     exit 1
 fi
 
-if grep -q "16 entities active" /tmp/nexus_smoke.log; then
-    echo -e "${GREEN}✓ 16 bots spawned${NC}"
+if grep -q "entities active" /tmp/nexus_smoke.log; then
+    ENTITY_COUNT=$(grep -oP '\d+(?= entities active)' /tmp/nexus_smoke.log | head -1)
+    echo -e "${GREEN}✓ $ENTITY_COUNT bots spawned${NC}"
 else
     echo -e "${RED}✗ Bot spawning failed${NC}"
     exit 1
@@ -140,7 +141,7 @@ echo "All Phase 1 goals met:"
 echo "  ✓ Fixed 60Hz deterministic tick"
 echo "  ✓ Shared simulation kernel"
 echo "  ✓ Network protocol scaffold"
-echo "  ✓ 16 bot entities with movement"
+echo "  ✓ Bot entities with movement"
 echo "  ✓ Performance <0.2ms target"
 echo ""
 echo "Server logs available at:"
