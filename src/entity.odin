@@ -29,13 +29,16 @@ Character_State :: struct {
 // Input for one entity for one tick. Look angles are absolute so a dropped
 // packet can never desync the server's aim from the client's view.
 Input_State :: struct {
-	move_fwd:   f32,  // [-1, 1]
-	move_str:   f32,  // [-1, 1]
-	jump:       bool,
-	sprint:     bool,
-	yaw:        f32,  // absolute, wrapped to [-pi, pi]
-	pitch:      f32,  // absolute, clamped
-	cast_spell: Spell_ID,
+	move_fwd:     f32,  // [-1, 1]
+	move_str:     f32,  // [-1, 1]
+	jump:         bool,
+	sprint:       bool,
+	yaw:          f32,  // absolute, wrapped to [-pi, pi]
+	pitch:        f32,  // absolute, clamped
+	// Charge-cast intent: `charge_spell` is whatever the player is holding this
+	// tick, `cast_spell` is set only on the tick they let go.
+	charge_spell: Spell_ID,
+	cast_spell:   Spell_ID,
 }
 
 Entity_World :: struct {

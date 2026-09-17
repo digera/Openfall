@@ -47,6 +47,8 @@ Bot :: struct {
 
 	cast_timer:      f32,
 	next_spell:      Spell_ID, // chosen ahead of the shot so the aim can lead it
+	charge_spell:    Spell_ID, // spell currently being wound up, .None when idle
+	charge_time:     f32,
 	jump_timer:      f32,
 	think_offset:    int,
 }
@@ -140,6 +142,8 @@ bot_reset_ai :: proc(b: ^Bot) {
 	b.steer_timer = 0
 	b.orbit_phase = rand.float32_range(0, 6.283)
 	b.cast_timer = rand.float32_range(0.4, 1.2)
+	b.charge_spell = .None
+	b.charge_time = 0
 	b.jump_timer = rand.float32_range(1, 4)
 	b.aim_err_timer = 0
 }
@@ -389,25 +393,43 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	server.world.inputs[b.id] = input
 
 	// --- Cast ------------------------------------------------------------
+	// Bots wind up the same way players do: commit to a spell, hold it for its
+	// cast time while tracking, then release at full charge. Losing the target
+	// mid-wind-up drops the charge, so they telegraph just like a player does.
 	b.cast_timer -= dt
-	if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
+	if b.charge_spell != .None {
+		if !have_target {
+			b.charge_spell = .None
+			b.charge_time = 0
+			b.cast_timer = 0.2
+		} else {
+			b.charge_time += dt
+			def := &SPELL_DEFS[b.charge_spell]
+			// The aim gate can't stall the release forever, or a bot that never
+			// settles would hold its charge for the rest of the match.
+			aimed := abs(yaw_diff) < 0.12
+			if b.charge_time >= def.cast_time && (aimed || b.charge_time >= def.cast_time + 0.6) {
+				// The cast reads the entity's yaw/pitch, which the sim sets from
+				// input next tick; apply our aim now so the shot goes where we look.
+				c := server.world.characters[b.id]
+				c.yaw = b.aim_yaw
+				c.pitch = b.aim_pitch
+				server.world.characters[b.id] = c
+				ok := server_handle_spell_cast(server, b.id, b.charge_spell, 1.0, server.tick_id)
+				b.charge_spell = .None
+				b.charge_time = 0
+				b.cast_timer = ok ? rand.float32_range(0.45, 1.0) : 0.15
+			}
+		}
+	} else if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
 		spell := b.next_spell
 		if spell == .None {
 			spell = bot_pick_spell(server, b, char, len_vec3(b.target_pos - char.pos))
 		}
 		b.next_spell = .None
 		if spell != .None {
-			// The cast reads the entity's yaw/pitch, which the sim sets from
-			// input next tick; apply our aim now so the shot goes where we look.
-			c := server.world.characters[b.id]
-			c.yaw = b.aim_yaw
-			c.pitch = b.aim_pitch
-			server.world.characters[b.id] = c
-			if server_handle_spell_cast(server, b.id, spell, server.tick_id) {
-				b.cast_timer = rand.float32_range(0.45, 1.0)
-			} else {
-				b.cast_timer = 0.15
-			}
+			b.charge_spell = spell
+			b.charge_time = 0
 		} else {
 			b.cast_timer = 0.3
 		}

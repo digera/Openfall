@@ -52,6 +52,8 @@ Game_Client :: struct {
 	cooldowns:      [Spell_ID]f32,
 	cast_pulse:     f32,
 	last_cast:      Spell_ID,
+	charging_spell: Spell_ID,
+	charge_accum:   f32,
 }
 
 game_client: Game_Client
@@ -307,7 +309,7 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 		input := gc.move_input
 		input.yaw = gc.view_yaw
 		input.pitch = gc.view_pitch
-		input.cast_spell = client_decide_cast(gc)
+		input.cast_spell, input.charge_spell = client_decide_cast(gc)
 
 		qinput := input_quantize(input)
 		gc.client_world.client_tick += 1
@@ -336,29 +338,60 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }
 
-// Decide whether this tick carries a cast. Mirrors the server's checks so
-// the HUD cooldown is responsive and we don't spam rejected casts.
-client_decide_cast :: proc(gc: ^Game_Client) -> Spell_ID {
-	if !input.held_left || !sapp.mouse_locked() {
-		return .None
-	}
+// Hold LMB to wind the selected spell up, release to throw it at whatever
+// charge it reached. Mirrors the server's checks so the HUD stays responsive
+// and we don't spam rejected casts; the server still times the charge itself.
+client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_spell: Spell_ID) {
 	pred := &gc.client_world.prediction
-	if !pred.initialized || pred.predicted_char.dead {
-		return .None
+	alive := pred.initialized && !pred.predicted_char.dead
+	match_over := gc.client_world.have_game_state && Match_State(gc.client_world.game_state.match_state) == .Ended
+
+	// Dying, unlocking the mouse or the match ending drop the wind-up on the
+	// floor. Only letting go of the button fires.
+	if !alive || match_over || !sapp.mouse_locked() {
+		client_drop_charge(gc)
+		return .None, .None
 	}
-	if gc.client_world.have_game_state && Match_State(gc.client_world.game_state.match_state) == .Ended {
-		return .None
+
+	if input.held_left {
+		spell := HOTBAR[gc.selected_slot]
+		if gc.charging_spell != spell {
+			// A fresh hold, or the player swapped slots mid-charge. Picking the
+			// spell up again once its cooldown ends is deliberate: holding
+			// through the cooldown starts the next wind-up automatically.
+			def := &SPELL_DEFS[spell]
+			if !spell_valid(spell) || gc.cooldowns[spell] > 0 || pred.predicted_char.mana < def.mana_cost {
+				client_drop_charge(gc)
+				return .None, .None
+			}
+			gc.charging_spell = spell
+			gc.charge_accum = 0
+		}
+		def := &SPELL_DEFS[gc.charging_spell]
+		gc.charge_accum = min(gc.charge_accum + FIXED_DT, def.cast_time)
+		return .None, gc.charging_spell
 	}
-	spell := HOTBAR[gc.selected_slot]
-	def := &SPELL_DEFS[spell]
-	if gc.cooldowns[spell] > 0 || pred.predicted_char.mana < def.mana_cost {
-		return .None
+
+	spell := gc.charging_spell
+	if spell == .None {
+		return .None, .None
 	}
-	gc.cooldowns[spell] = def.cooldown_sec
+	charge := spell_charge_frac(&SPELL_DEFS[spell], gc.charge_accum)
+	client_drop_charge(gc)
+	if charge < SPELL_MIN_CHARGE {
+		return .None, .None
+	}
+
+	gc.cooldowns[spell] = SPELL_DEFS[spell].cooldown_sec
 	gc.cast_pulse = 1
 	gc.last_cast = spell
 	camera_fx_on_cast(&gc.fx, spell)
-	return spell
+	return spell, .None
+}
+
+client_drop_charge :: proc(gc: ^Game_Client) {
+	gc.charging_spell = .None
+	gc.charge_accum = 0
 }
 
 main_client :: proc() {
