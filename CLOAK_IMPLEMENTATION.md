@@ -33,9 +33,11 @@ Wisps (players/bots) now wear flowing cloaks that trail behind motion, swing dur
 
 **cloak_sdf(p, attach, hem_points[4])**
 - Signed distance field for a thin curved ribbon
-- Spine interpolates from attachment point (shoulders) through mid-points to hem
-- Samples hem curve circularly based on angle from spine
-- Returns distance to nearest point on ribbon minus small thickness (0.012)
+- Union of 8 capsules:
+  - 4 from attachment point to each hem control point (main drape)
+  - 4 connecting hem points in a loop (hem edge)
+- Returns distance to nearest capsule minus radius (0.015)
+- Simple and robust: no complex interpolation or angle sampling
 
 **cloak_trace(ro, rd, wisp_pos, wisp_yaw, wisp_idx, tmin, tmax, out t, out n)**
 - Bounding sphere check (1.2m radius around wisp) before SDF evaluation
@@ -124,11 +126,12 @@ Measured on reference machine (TODO: add actual perf numbers after Windows build
 | Component | File | Lines |
 |-----------|------|-------|
 | Cloak state struct | `src/client_renderer.odin` | 30–36 |
-| Simulation logic | `src/client_renderer.odin` | 345–405 |
-| Uniform packing | `src/client_renderer.odin` | 407–419 |
-| Cloak uniforms | `shaders/scene.glsl` | 45–48 |
-| SDF definition | `shaders/scene.glsl` | 435–468 |
-| Trace routine | `shaders/scene.glsl` | 470–520 |
+| Simulation logic | `src/client_renderer.odin` | 345–420 |
+| Uniform packing | `src/client_renderer.odin` | 422–434 |
+| Cloak uniforms | `shaders/scene.glsl` | 45–49 |
+| SDF helper | `shaders/scene.glsl` | 435–442 |
+| SDF definition | `shaders/scene.glsl` | 444–462 |
+| Trace routine | `shaders/scene.glsl` | 464–514 |
 | Material shading | `shaders/scene.glsl` | 991–1005 |
 
 ## Future Improvements (Out of Scope)
