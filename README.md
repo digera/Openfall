@@ -4,6 +4,8 @@ Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Soko
 
 Three teams (Ember / Tide / Verdant) fight over four obelisks on a three-lane map: each lane runs from a team base to an open central plaza. The centre obelisk is worth double essence. First team to 1500 essence (or the leader at 12 minutes) wins the round; rounds auto-reset. Teams are filled with bots up to `TEAM_SIZE`, and bots leave as humans join.
 
+**New:** Wisps now wear flowing procedural cloaks that trail motion, swing with turns, and sway when idle—all rendered via fragment shader SDF raymarching. See [PR #13](https://github.com/digera/odinfpstemplate/pull/13) for details.
+
 ## Requirements (Windows)
 
 - [Odin](https://odin-lang.org/) (dev-2026-07 or newer)
