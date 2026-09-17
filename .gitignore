@@ -39,3 +39,7 @@ $RECYCLE.BIN/
 *.swo
 *~
 .ols/
+
+# Local dedicated-server deploy (SSH host/port)
+/deploy.ps1
+/deploy/

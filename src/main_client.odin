@@ -60,7 +60,7 @@ client_init :: proc "c" () {
 	context = runtime.default_context()
 	fmt.println("=== Nexus Arena Client ===")
 
-	server_host := "localhost"
+	server_host := DEFAULT_SERVER_HOST
 	ip_buf: [256]u8
 	if env_ip := os.get_env_buf(ip_buf[:], "SERVER_IP"); env_ip != "" {
 		server_host = env_ip

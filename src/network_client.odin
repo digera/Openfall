@@ -31,28 +31,41 @@ Client_Packet :: struct {
 	lobby:     Server_Lobby_Packet,
 }
 
+network_client_resolve_host :: proc(server_host: string, server_port: u16) -> (ep: net.Endpoint, ok: bool) {
+	host := server_host
+	if host == "" {
+		host = DEFAULT_SERVER_HOST
+	}
+	if host == "localhost" || host == "127.0.0.1" {
+		return net.Endpoint{address = net.IP4_Loopback, port = int(server_port)}, true
+	}
+
+	resolved, err := net.resolve_ip4(host)
+	if err != nil {
+		fmt.eprintf("Failed to resolve server address '%s': %v\n", host, err)
+		return {}, false
+	}
+	resolved.port = int(server_port)
+	return resolved, true
+}
+
 network_client_init :: proc(client: ^Network_Client, server_host: string, server_port: u16) -> bool {
 	if !network_init(&client.endpoint, 0) {
 		fmt.eprintln("Failed to initialize client network")
 		return false
 	}
 
-	addr := net.IP4_Loopback
-	if server_host != "" && server_host != "localhost" && server_host != "127.0.0.1" {
-		parsed, parse_ok := net.parse_ip4_address(server_host)
-		if !parse_ok {
-			fmt.eprintf("Failed to parse server address '%s' (expected IPv4 or localhost)\n", server_host)
-			network_shutdown(&client.endpoint)
-			return false
-		}
-		addr = parsed
+	ep, ok := network_client_resolve_host(server_host, server_port)
+	if !ok {
+		network_shutdown(&client.endpoint)
+		return false
 	}
 
-	client.server_addr = net.Endpoint{address = addr, port = int(server_port)}
+	client.server_addr = ep
 	client.last_send_time = time.tick_now()
 	client.last_recv_time = time.tick_now()
 
-	fmt.printf("Client initialized, server: %v:%d\n", server_host, server_port)
+	fmt.printf("Client initialized, server: %s (%v):%d\n", server_host, ep.address, server_port)
 	return true
 }
 

@@ -2,7 +2,8 @@ param(
     [ValidateSet("server", "client", "testclient", "both")]
     [string]$Target = "both",
     [switch]$Run,
-    [switch]$Release
+    [switch]$Release,
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,11 +17,15 @@ if (-not (Test-Path $Sokol)) {
 $OutDir = Join-Path $Root "bin"
 $SrcDir = Join-Path $Root "src"
 
-if (-not (Test-Path $Odin)) {
+if (-not $StageOnly -and -not (Test-Path $Odin)) {
     Write-Error "Odin not found at $Odin. Set ODIN_ROOT or install to C:\Users\lusr\tools\odin"
 }
-if (-not (Test-Path $Sokol)) {
+$needsSokol = -not $StageOnly -and ($Target -eq "client" -or $Target -eq "both")
+if ($needsSokol -and -not (Test-Path $Sokol)) {
     Write-Error "sokol-odin missing. Copy yearning/third_party/sokol-odin into third_party/ or run third_party\build_sokol_d3d11.cmd"
+}
+if ($StageOnly -and $Target -ne "server") {
+    Write-Error "-StageOnly is only valid with -Target server"
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -77,6 +82,9 @@ function Build-OdinPackage {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+    if (-not (Test-Path $OutFile)) {
+        Write-Error "Odin reported success but did not write $OutFile"
+    }
 }
 
 # Sokol-dependent files: input.odin, scene.odin, main_client.odin, client_renderer.odin
@@ -101,12 +109,18 @@ $testClientExclude = @(
 )
 
 if ($Target -eq "server" -or $Target -eq "both") {
-    Write-Host ">> Building headless server..."
+    Write-Host ">> Staging headless server sources..."
     $tmp = Join-Path $OutDir "server_src"
     Copy-StagedSources -Dest $tmp -Exclude $serverExclude -RenameFrom "main_server.odin" -RenameTo "main.odin"
-    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_server.exe")
+    if ($StageOnly) {
+        Write-Host ">> Staged $tmp"
+        return
+    }
+    Write-Host ">> Building headless server..."
+    $serverOut = Join-Path $OutDir "nexus_server.exe"
+    Build-OdinPackage -PackageDir $tmp -OutFile $serverOut -ExtraArgs @()
     Remove-Item -Recurse -Force $tmp
-    Write-Host ">> Built $(Join-Path $OutDir 'nexus_server.exe')"
+    Write-Host ">> Built $serverOut"
 }
 
 if ($Target -eq "client" -or $Target -eq "both") {
@@ -150,9 +164,9 @@ if ($Target -eq "testclient") {
 
 Write-Host ""
 Write-Host "Playtest:"
-Write-Host "  1. .\bin\nexus_server.exe"
-Write-Host "  2. .\bin\nexus_client.exe"
-Write-Host "  Optional: `$env:SERVER_IP = '127.0.0.1' before launching the client"
+Write-Host "  .\bin\nexus_client.exe              # defaults to primord.io:27015"
+Write-Host "  `$env:SERVER_IP = '127.0.0.1'       # local dedicated server"
+Write-Host "  .\bin\nexus_server.exe"
 
 if ($Run) {
     if ($Target -eq "client") {

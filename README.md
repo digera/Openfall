@@ -30,19 +30,24 @@ This machine:
 
 Output:
 
-- `bin\nexus_server.exe`
+- `bin\nexus_server.exe` (Windows dedicated server)
 - `bin\nexus_client.exe`
 
 ## Playtest
 
-Start the server, then the client (two terminals):
+The graphical client defaults to `primord.io:27015`. Launch it after the dedicated server is up on that host:
 
 ```powershell
-.\bin\nexus_server.exe
 .\bin\nexus_client.exe
 ```
 
-Remote host: `$env:SERVER_IP = "192.168.x.x"` before launching the client. Default is `127.0.0.1:27015`.
+Local dedicated server (this machine):
+
+```powershell
+.\bin\nexus_server.exe
+$env:SERVER_IP = "127.0.0.1"
+.\bin\nexus_client.exe
+```
 
 On connect the client shows a team-select screen with live player counts. Press `1` / `2` / `3` to join Ember / Tide / Verdant. You cannot join the team that currently has strictly the most players.
 
