@@ -49,6 +49,7 @@ Camera_FX :: struct {
 	land_dip:    f32,
 	land_vel:    f32,
 	hurt:        f32,
+	mend:        f32,
 	flash:       f32,
 	fov_kick:    f32,
 	cast_kick:   f32,
@@ -69,6 +70,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Arcane_Orb:     fx.cast_kick += 0.028; fx.fov_kick = max(fx.fov_kick, 0.35)
 	case .Frost_Lance:    fx.cast_kick += 0.020
 	case .Blink:          // handled when the teleport lands
+	case .Self_Heal:      // handled when the health actually comes back
 	}
 }
 
@@ -99,6 +101,12 @@ camera_fx_update :: proc(fx: ^Camera_FX, gc: ^Game_Client, dt: f32) {
 		fx.hurt = min(fx.hurt + pred.damage_taken / 45.0, 1.0)
 		pred.damage_taken = 0
 	}
+	// Health arriving is the only confirmation a heal landed, so the mend
+	// bloom is driven off the snapshot rather than off the release.
+	if pred.healed > 0 {
+		fx.mend = min(fx.mend + pred.healed / 45.0, 1.0)
+		pred.healed = 0
+	}
 	if pred.teleported {
 		fx.flash = 1.0
 		fx.fov_kick = 1.0
@@ -110,6 +118,7 @@ camera_fx_update :: proc(fx: ^Camera_FX, gc: ^Game_Client, dt: f32) {
 	}
 
 	fx.hurt *= math.exp(-dt * 2.6)
+	fx.mend *= math.exp(-dt * 2.2)
 	fx.flash *= math.exp(-dt * 5.5)
 	fx.fov_kick *= math.exp(-dt * 6.5)
 	fx.cast_kick *= math.exp(-dt * 11.0)
@@ -239,7 +248,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	fs_params.fx = {fx.hurt, fx.flash, f32(u8(world.local_team)), gc.cast_pulse}
 	dead: f32 = (playing && pred.predicted_char.dead) ? 1 : 0
 	ended: f32 = (world.have_game_state && Match_State(world.game_state.match_state) == .Ended) ? 1 : 0
-	fs_params.fx2 = {world.hit_marker, dead, ended, 0}
+	fs_params.fx2 = {world.hit_marker, dead, ended, fx.mend}
 
 	// Hand orb: lower right of the view, bobbing with the camera
 	if playing && dead < 0.5 {
@@ -572,7 +581,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		def := &SPELL_DEFS[spell]
 		cd := gc.cooldowns[spell]
 		selected := i == gc.selected_slot
-		ready := cd <= 0 && local.mana >= def.mana_cost
+		ready := spell_castable(spell, local, cd)
 		col := start + f32(i) * slot_w
 
 		sdtx.pos(col, rows - 3)
@@ -607,6 +616,10 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 				sdtx.putc(k < filled ? '=' : '.')
 			}
 			sdtx.printf(" %.1f", cd)
+		} else if def.payload == .Heal && local.health >= HEALTH_MAX {
+			// Nothing to mend: say so rather than blaming the mana.
+			sdtx.color3f(0.5, 0.7, 0.55)
+			sdtx.puts("at full hp")
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)

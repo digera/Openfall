@@ -655,12 +655,8 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 
 	def := &SPELL_DEFS[spell_id]
 	spell_state := &server.world.spell_states[caster_id]
-	if spell_state.cooldowns[spell_id] > 0 {
-		return false
-	}
-
 	char := server.world.characters[caster_id]
-	if char.mana < def.mana_cost {
+	if !spell_castable(spell_id, char, spell_state.cooldowns[spell_id]) {
 		return false
 	}
 
@@ -704,6 +700,15 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		char.pos = best
 		char.vel.x = blink_dir.x * 3.0
 		char.vel.y = blink_dir.y * 3.0
+
+	case .Heal:
+		// Cut short and you get a fraction of the heal for the whole cost.
+		before := char.health
+		char.health = min(char.health + def.heal * charge, HEALTH_MAX)
+		if SERVER_VERBOSE {
+			server_log("[Combat] %s mended %d for %.0f (%.0f HP)",
+				def.short_name, caster_id, char.health - before, char.health)
+		}
 
 	case .None:
 	}

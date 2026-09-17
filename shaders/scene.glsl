@@ -33,7 +33,7 @@ void main() {
 layout(binding=1) uniform fs_params {
     vec4 cam_data;          // xyz cam pos, w world time
     vec4 fx;                // x hurt, y flash, z local team, w cast pulse
-    vec4 fx2;               // x hit marker, y dead, z match ended, w unused
+    vec4 fx2;               // x hit marker, y dead, z match ended, w mend
     vec4 hand_pos;          // xyz hand orb position, w scale
     vec4 floor_boxes[22];   // pairs: (center.xyz, sin yaw), (half.xyz, cos yaw)
     vec4 solid_boxes[18];   // pairs, same layout
@@ -820,6 +820,9 @@ void main() {
     color *= 1.0 - 0.28 * edge * edge;
     // Hurt: red bleed from the edges
     color = mix(color, vec3(0.75, 0.05, 0.02), fx.x * (0.25 + 0.75 * edge) * 0.8);
+    // Mend: the hurt vignette run backwards -- verdant, brightest at the
+    // centre, and it lifts the image instead of staining it.
+    color = mix(color, vec3(0.25, 0.85, 0.45), fx2.w * (0.85 - 0.55 * edge) * 0.22);
     // Blink / cast flash
     color = mix(color, team_core(fx.z), fx.y * 0.55);
     // Dead: desaturate

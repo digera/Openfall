@@ -398,7 +398,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	// mid-wind-up drops the charge, so they telegraph just like a player does.
 	b.cast_timer -= dt
 	if b.charge_spell != .None {
-		if !have_target {
+		// A self-cast needs neither a target nor settled aim, so a bot that is
+		// backing out of a fight can still finish the heal it started.
+		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
+		if !have_target && !self_cast {
 			b.charge_spell = .None
 			b.charge_time = 0
 			b.cast_timer = 0.2
@@ -407,7 +410,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			def := &SPELL_DEFS[b.charge_spell]
 			// The aim gate can't stall the release forever, or a bot that never
 			// settles would hold its charge for the rest of the match.
-			aimed := abs(yaw_diff) < 0.12
+			aimed := self_cast || abs(yaw_diff) < 0.12
 			if b.charge_time >= def.cast_time && (aimed || b.charge_time >= def.cast_time + 0.6) {
 				// The cast reads the entity's yaw/pitch, which the sim sets from
 				// input next tick; apply our aim now so the shot goes where we look.
@@ -421,6 +424,11 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 				b.cast_timer = ok ? rand.float32_range(0.45, 1.0) : 0.15
 			}
 		}
+	} else if b.cast_timer <= 0 && bot_wants_heal(server, b, char) {
+		// Healing outranks shooting: a bot this low gets more out of the heal
+		// than out of one more missile.
+		b.charge_spell = .Self_Heal
+		b.charge_time = 0
 	} else if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
 		spell := b.next_spell
 		if spell == .None {
@@ -540,6 +548,19 @@ bot_find_target :: proc(server: ^Server, b: ^Bot, eye: vec3) -> Entity_ID {
 	return best
 }
 
+// Hurt enough that a full heal is nearly all value, and only while the heal
+// would really land -- spell_castable keeps bots off a heal they cannot pay
+// for or do not need.
+@(private = "file")
+bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool {
+	if char.health > HEALTH_MAX * 0.45 {
+		return false
+	}
+	return spell_castable(.Self_Heal, char, server.world.spell_states[b.id].cooldowns[.Self_Heal])
+}
+
+// Offence only: the chosen spell also drives the aim lead, so a self-cast has
+// no business in here.
 @(private = "file")
 bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f32) -> Spell_ID {
 	cds := &server.world.spell_states[b.id].cooldowns
