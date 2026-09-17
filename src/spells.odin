@@ -141,18 +141,20 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		slow_ticks    = 180, // 3 s
 	},
 
-	// Sustain, not an escape: the wind-up is long enough to be punished and a
-	// full heal is worth less than one lance, so trading into a healing
-	// opponent still wins.
+	// Wide friendly heal beam: finds and heals the nearest same-team ally in a
+	// forgiving cone, or self if no friendlies are near. Held like Thunderbolt,
+	// mana drain per second. Sustain, not an escape: still vulnerable while
+	// channeling, so trading into a healing opponent still wins.
 	.Self_Heal = {
-		id            = .Self_Heal,
-		name          = "Self Heal",
-		short_name    = "HEAL",
-		mana_cost     = 30,
-		cooldown_sec  = 5.0,
-		cast_time     = 1.0,
-		payload       = .Heal,
-		heal          = 45,
+		id                = .Self_Heal,
+		name              = "Friendly Heal",
+		short_name        = "HEAL",
+		mana_cost         = 15,    // needed to light it
+		cooldown_sec      = 3.0,   // only after it runs the caster dry
+		payload           = .Beam,
+		range             = 18,    // short/medium range
+		beam_dps          = 30,    // 30 healing per second (HPS)
+		beam_mana_per_sec = 20,    // full mana bar (100) buys 5 seconds
 	},
 
 	// The only spell that cannot be dodged, so everything else about it is
@@ -246,10 +248,6 @@ spell_castable :: proc(id: Spell_ID, char: Character_State, cooldown: f32) -> bo
 	}
 	def := &SPELL_DEFS[id]
 	if cooldown > 0 || char.mana < def.mana_cost {
-		return false
-	}
-	// A heal at full health is pure loss: refuse it instead of eating the mana.
-	if def.payload == .Heal && char.health >= HEALTH_MAX {
 		return false
 	}
 	return true

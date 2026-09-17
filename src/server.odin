@@ -809,15 +809,6 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		char.vel.x = blink_dir.x * 3.0
 		char.vel.y = blink_dir.y * 3.0
 
-	case .Heal:
-		// Cut short and you get a fraction of the heal for the whole cost.
-		before := char.health
-		char.health = min(char.health + def.heal * charge, HEALTH_MAX)
-		if SERVER_VERBOSE {
-			server_log("[Combat] %s mended %d for %.0f (%.0f HP)",
-				def.short_name, caster_id, char.health - before, char.health)
-		}
-
 	case .Strike:
 		// Touches the target and bystanders only; the splash skips its owner,
 		// so the caster copy written back below stays authoritative.

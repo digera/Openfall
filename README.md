@@ -75,20 +75,22 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 
 ## Combat
 
-Spells are charge-cast. Holding LMB winds the selected spell up over its cast time and releasing throws it; damage and healing scale linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
+Most spells are charge-cast: holding LMB winds them up over their cast time and releasing throws them; damage scales linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
 
 The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held.
+
+Thunderbolt and Friendly Heal are exceptions: they are held beams with no wind-up and nothing happens on release. Holding them lights a beam that drains mana every tick until released or the caster runs dry.
 
 | Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
-| Self Heal | 1.0s | 5.0s | 30 | restores 45 to the caster |
+| Friendly Heal | held | 3.0s after running dry | 20/s | 30 HPS beam to nearest same-team ally in a wide 18 m cone; self-heal fallback |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
-Self Heal is sustain, not an escape: a full wind-up is worth less than one lance, so trading into a healing opponent still wins, and a heal at full health is refused outright rather than eating the mana, so it cannot be pre-charged before a fight. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
+Friendly Heal is sustain, not an escape: it is a held beam that finds and heals the nearest same-team ally within a wide 60-degree cone out to 18 m. If no friendlies are found (or you are alone), it heals yourself as fallback. It restores 30 health per second while draining 20 mana per second, so a full mana bar buys 5 seconds of healing (~150 HP total). The wide cone is more forgiving than damage beams — you don't need perfect aim to support a teammate. Line of sight is preferred: the beam picks targets it can see. Still vulnerable while channeling, so trading into a healing opponent wins. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 

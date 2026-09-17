@@ -447,14 +447,27 @@ client_world_local_beam :: proc(world: ^Client_World) -> (beam: ^Snapshot_Beam, 
 // round-trip-old snapshot would have it trail the crosshair.
 client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> vec3 {
 	reach := world_ray_hit(eye, look, def.range)
+	
+	// Heal beams (Self_Heal) find friendlies; damage beams find enemies.
+	is_heal := def.id == .Self_Heal
+	
 	for i in 1..<MAX_ENTITIES {
 		remote := &world.remote_entities[i]
 		if !remote.active || remote.display_state.dead || Entity_ID(i) == world.local_entity_id {
 			continue
 		}
-		if !teams_are_enemies(world.local_team, remote.team) {
-			continue
+		
+		// Heal beams target same-team friendlies; damage beams target enemies.
+		if is_heal {
+			if teams_are_enemies(world.local_team, remote.team) || world.local_team != remote.team || world.local_team == .None {
+				continue
+			}
+		} else {
+			if !teams_are_enemies(world.local_team, remote.team) {
+				continue
+			}
 		}
+		
 		if dist, hit := ray_cylinder_hit(eye, look, remote.display_state.pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, reach); hit {
 			reach = dist
 		}

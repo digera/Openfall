@@ -367,11 +367,13 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				if !playing || dead > 0.5 {
 					continue
 				}
-				// Leaves the hand orb and lands where the crosshair says, traced
-				// this frame the way the server will trace it.
-				from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
-				trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
-				to = client_world_beam_end(world, &SPELL_DEFS[.Thunderbolt], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
+			// Leaves the hand orb and lands where the crosshair says, traced
+			// this frame the way the server will trace it.
+			from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
+			trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
+			// Use the spell the client is actually channeling, not hardcoded Thunderbolt.
+			beam_spell := gc.charging_spell if spell_valid(gc.charging_spell) && SPELL_DEFS[gc.charging_spell].payload == .Beam else .Thunderbolt
+			to = client_world_beam_end(world, &SPELL_DEFS[beam_spell], trace_eye, camera_forward(gc.view_yaw, gc.view_pitch))
 			} else {
 				remote := &world.remote_entities[int(b.owner_id)]
 				if !remote.active {
@@ -687,10 +689,6 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 				sdtx.putc(k < filled ? '=' : '.')
 			}
 			sdtx.printf(" %.1f", cd)
-		} else if def.payload == .Heal && local.health >= HEALTH_MAX {
-			// Nothing to mend: say so rather than blaming the mana.
-			sdtx.color3f(0.5, 0.7, 0.55)
-			sdtx.puts("at full hp")
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)

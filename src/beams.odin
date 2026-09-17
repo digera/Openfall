@@ -38,7 +38,13 @@ beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
 
 		origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
 		dir := camera_forward(char.yaw, char.pitch)
-		beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
+		
+		// Route to the appropriate trace: heal beams find friendlies, damage beams find enemies.
+		if state.channel_spell == .Self_Heal {
+			heal_beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
+		} else {
+			beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
+		}
 	}
 }
 
@@ -137,10 +143,79 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 	}
 }
 
+// Trace one heal beam: finds the nearest living friendly (same team, not self)
+// within a wide cone and heals them. If no friendlies are found, heals self as
+// fallback. `healing` is the amount to restore this tick. Writes where the beam
+// ended and who was healed into `out` for the snapshot.
+heal_beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, origin, dir: vec3, healing: f32, out: ^Beam_State) {
+	caster_team := world.teams[caster_id]
+	reach := world_ray_hit(origin, dir, def.range)
+
+	// Wide cone for friendly targeting: more forgiving than damage beams.
+	// cos(30 deg) = ~0.866 gives a 60-degree total cone width.
+	HEAL_BEAM_AIM_COS :: f32(0.866)
+
+	hit := INVALID_ENTITY
+	hit_dist := reach
+	for i in 1..<MAX_ENTITIES {
+		id := Entity_ID(i)
+		if id == caster_id || !entity_alive(world, id) {
+			continue
+		}
+		// Heal friendlies (same team, not None), never enemies.
+		if teams_are_enemies(caster_team, world.teams[i]) {
+			continue
+		}
+		if caster_team == .None || world.teams[i] == .None || caster_team != world.teams[i] {
+			continue
+		}
+
+		target_pos := world.characters[i].pos
+		center := target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		to := center - origin
+		dist := len_vec3(to)
+		if dist < 1e-3 || dist > def.range {
+			continue
+		}
+		// Wide cone check
+		if dot_vec3(to, dir) < HEAL_BEAM_AIM_COS * dist {
+			continue
+		}
+		// LOS check: prefer targets in the open
+		if !world_segment_clear(origin, center) {
+			continue
+		}
+		// Capping at the best distance so far keeps only the nearest friendly.
+		dist_cyl, ok := ray_cylinder_hit(origin, dir, target_pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, hit_dist)
+		if ok {
+			hit = id
+			hit_dist = dist_cyl
+		}
+	}
+
+	// Fallback: if no friendlies found, heal self.
+	if hit == INVALID_ENTITY {
+		hit = caster_id
+		hit_dist = 0 // beam ends at caster for visual feedback
+	}
+
+	out^ = {end = origin + dir * hit_dist, hit = hit}
+	beam_heal(world, hit, healing)
+}
+
 // Sixty small hits a second: no per-hit log line, the kill shows up in [Death].
 @(private = "file")
 beam_damage :: proc(world: ^Entity_World, target_id: Entity_ID, damage: f32) {
 	target := world.characters[target_id]
 	target.health -= damage
+	world.characters[target_id] = target
+}
+
+// Restore health to a target, capped at HEALTH_MAX. No log spam; sixty small
+// heals a second, the health bar is the feedback.
+@(private = "file")
+beam_heal :: proc(world: ^Entity_World, target_id: Entity_ID, healing: f32) {
+	target := world.characters[target_id]
+	target.health = min(target.health + healing, HEALTH_MAX)
 	world.characters[target_id] = target
 }

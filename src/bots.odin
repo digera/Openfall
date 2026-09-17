@@ -405,13 +405,16 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		// A beam is held rather than released: light it, keep it on the target
 		// for a burst, and let go when the burst is up, the target is gone, or
 		// the server has already put it out for want of mana.
+		is_heal_beam := b.charge_spell == .Self_Heal
 		if b.charge_time == 0 && !beam_light(&server.world, b.id, b.charge_spell) {
 			b.charge_spell = .None
 			b.cast_timer = 0.3
 		} else {
 			b.charge_time += dt
 			lit := spell_state_beaming(&server.world.spell_states[b.id])
-			if !have_target || !lit || b.charge_time >= b.beam_hold {
+			// Heal beams don't need a target (self-heal fallback), damage beams do.
+			target_ok := have_target || is_heal_beam
+			if !target_ok || !lit || b.charge_time >= b.beam_hold {
 				beam_quench(&server.world, b.id)
 				b.charge_spell = .None
 				b.charge_time = 0
@@ -419,10 +422,8 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			}
 		}
 	} else if b.charge_spell != .None {
-		// A self-cast needs neither a target nor settled aim, so a bot that is
-		// backing out of a fight can still finish the heal it started.
-		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
-		if !have_target && !self_cast {
+		// Charge-cast spells (not beams): wind up and release when aimed.
+		if !have_target {
 			b.charge_spell = .None
 			b.charge_time = 0
 			b.cast_timer = 0.2
@@ -431,7 +432,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			def := &SPELL_DEFS[b.charge_spell]
 			// The aim gate can't stall the release forever, or a bot that never
 			// settles would hold its charge for the rest of the match.
-			aimed := self_cast || abs(yaw_diff) < 0.12
+			aimed := abs(yaw_diff) < 0.12
 			if b.charge_time >= def.cast_time && (aimed || b.charge_time >= def.cast_time + 0.6) {
 				// The cast reads the entity's yaw/pitch, which the sim sets from
 				// input next tick; apply our aim now so the shot goes where we look.
@@ -447,9 +448,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 	} else if b.cast_timer <= 0 && bot_wants_heal(server, b, char) {
 		// Healing outranks shooting: a bot this low gets more out of the heal
-		// than out of one more missile.
+		// than out of one more missile. Heal is now a beam like Thunderbolt.
 		b.charge_spell = .Self_Heal
 		b.charge_time = 0
+		b.beam_hold = rand.float32_range(1.5, 3.0) // Hold heal beam longer than damage beams
 	} else if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
 		spell := b.next_spell
 		if spell == .None {
