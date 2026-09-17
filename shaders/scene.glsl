@@ -44,7 +44,7 @@ layout(binding=1) uniform fs_params {
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
-    vec4 beams[4];          // xyz origin, w = 1 lit (0 = none)
+    vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
     vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
 };
@@ -107,7 +107,16 @@ vec3 spell_tint(float type) {
     if (type < 3.5) return vec3(1.00, 1.00, 1.00);   // blink
     if (type < 4.5) return vec3(0.50, 0.92, 1.00);   // frost: cyan
     if (type < 5.5) return vec3(0.82, 0.90, 1.00);   // lightning: white-blue
-    return vec3(0.62, 0.80, 1.00);                   // thunderbolt: electric blue
+    if (type < 6.5) return vec3(0.62, 0.80, 1.00);   // thunderbolt: electric blue
+    return vec3(0.50, 0.95, 0.65);                   // heal beam: soft green
+}
+
+// A beam that mends reads green where one that burns reads white-hot, so which
+// of the two is lit on a teammate is clear from across a lane.
+bool beam_mends(float type) { return type > 6.5; }
+
+vec3 beam_core(float type) {
+    return beam_mends(type) ? vec3(0.55, 1.00, 0.70) : vec3(0.95, 0.98, 1.00);
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
@@ -708,24 +717,25 @@ void main() {
         aura += tint * spike * 0.05;
     }
 
-    // --- Thunderbolt: a held arc from the caster to whatever it lands on ---
+    // --- Beams: a held arc from the caster to whatever it lands on ---
     for (int i = 0; i < 4; i++) {
         vec4 B = beams[i];
         if (B.w < 0.5) continue;
+        vec3 core = beam_core(B.w);
         vec4 E = beam_ends[i];
-        aura += arc_glow(ro, rd, glow_tmax, B.xyz, E.xyz, 0.07, 0.35, float(i));
+        aura += core * arc_glow(ro, rd, glow_tmax, B.xyz, E.xyz, 0.07, 0.35, float(i));
         // The far end burns: hotter and wider on flesh than on stone.
         float flare = 0.10 + 0.10 * E.w + 0.03 * sin(WORLD_T * 47.0 + float(i));
         vec3 to_end = E.xyz - ro;
         float t_end = clamp(dot(to_end, rd), 0.04, glow_tmax);
         float d_end = length(ro + rd * t_end - E.xyz);
         float end_glow = 1.0 - smoothstep(flare, flare * 6.0, d_end);
-        aura += vec3(0.95, 0.98, 1.00) * end_glow * end_glow * (1.6 + 1.2 * E.w);
+        aura += core * end_glow * end_glow * (1.6 + 1.2 * E.w);
         // Chains fork from the landing point to nearby bodies.
         for (int c = 0; c < 2; c++) {
             vec4 C = beam_chains[i * 2 + c];
             if (C.w < 0.5) continue;
-            aura += arc_glow(ro, rd, glow_tmax, E.xyz, C.xyz, 0.04, 0.5, float(i) * 3.0 + float(c) + 1.0) * 0.7;
+            aura += core * arc_glow(ro, rd, glow_tmax, E.xyz, C.xyz, 0.04, 0.5, float(i) * 3.0 + float(c) + 1.0) * 0.7;
         }
     }
 
@@ -906,9 +916,10 @@ void main() {
             color += albedo * point_light(hp, hit_n, hand_pos.xyz, team_tint(fx.z), 0.9 + 1.4 * fx.w, 6.0);
         }
         for (int i = 0; i < 4; i++) {
-            if (beams[i].w < 0.5) continue;
+            float code = beams[i].w;
+            if (code < 0.5) continue;
             float flicker = 0.85 + 0.15 * sin(WORLD_T * 53.0 + float(i) * 1.3);
-            color += albedo * point_light(hp, hit_n, beam_ends[i].xyz, spell_tint(6.0), 6.0 * flicker, 8.0);
+            color += albedo * point_light(hp, hit_n, beam_ends[i].xyz, spell_tint(code), 6.0 * flicker, 8.0);
         }
     }
 

@@ -69,26 +69,30 @@ Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
-| Hold LMB | Charge the selected spell (Thunderbolt fires for as long as it is held) |
+| Hold LMB | Charge the selected spell (Heal and Thunderbolt run for as long as they are held) |
 | Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
 
 ## Combat
 
-Spells are charge-cast. Holding LMB winds the selected spell up over its cast time and releasing throws it; damage and healing scale linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
+Most spells are charge-cast: holding LMB winds them up over their cast time and releasing throws them; damage scales linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
 
 The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held.
+
+Thunderbolt and Friendly Heal are the exceptions: they are held beams with no wind-up, and nothing happens on release. Holding one lights a beam that draws mana every tick it does work, until it is released or the caster runs dry.
 
 | Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
-| Self Heal | 1.0s | 5.0s | 30 | restores 45 to the caster |
+| Friendly Heal | held | 3.0s after running dry | 20/s while mending | 30 health/s to an ally in a wide 18 m cone, or to yourself |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
-Self Heal is sustain, not an escape: a full wind-up is worth less than one lance, so trading into a healing opponent still wins, and a heal at full health is refused outright rather than eating the mana, so it cannot be pre-charged before a fight. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
+Friendly Heal is Thunderbolt in reverse: a held beam that mends instead of burns, and the only spell on the bar that does something for someone else. It restores 30 health a second for 20 mana a second, so a full pool buys five seconds and about 150 health — more than a full bar of mana is worth in damage, but only if there is someone to spend it on. Who it mends is decided in that order: the teammate under your crosshair, then the nearest wounded teammate inside a 60-degree cone out to 18 m, then yourself. The cone is much wider than a damage beam's because keeping a moving ally up should not be an aim test, and the beam visibly bends to whoever it picked. Cover breaks it: it only mends people it can see.
+
+It costs nothing to hold over a healthy team. With nobody hurt in front of it the beam idles — lit, green and drawing no mana — and starts mending the tick someone needs it, so there is no way to waste a pool by holding the button. It is still sustain and not an escape: you are standing in the open, lit up green, doing no damage while it runs, so trading into a healing opponent wins. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 
@@ -100,7 +104,7 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 
 **Context-aware targeting:** The sticky target respects the selected spell. Offensive spells (Missile, Orb, Lance, Call Lightning, Thunderbolt) only stick to enemies. Heal only sticks to teammates (not yourself). Switching spells clears an invalid target or retargets under the crosshair to a valid one, so the bar stays predictable when you swap slots mid-fight.
 
-The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, hostile, in range, roughly where the caster is looking and in the open. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. The heal beam reads it the same way: point at the teammate you mean to keep alive and the beam follows them rather than whoever happens to be nearest. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 

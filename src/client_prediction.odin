@@ -445,7 +445,7 @@ client_world_local_beam :: proc(world: ^Client_World) -> (beam: ^Snapshot_Beam, 
 // look the server will use against the bodies the player is looking at. The
 // server decides whether the beam is lit at all; drawing its far end from a
 // round-trip-old snapshot would have it trail the crosshair.
-client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> vec3 {
+client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> (end: vec3, on_body: bool) {
 	reach := world_ray_hit(eye, look, def.range)
 	for i in 1..<MAX_ENTITIES {
 		remote := &world.remote_entities[i]
@@ -457,9 +457,52 @@ client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: 
 		}
 		if dist, hit := ray_cylinder_hit(eye, look, remote.display_state.pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, reach); hit {
 			reach = dist
+			on_body = true
 		}
 	}
-	return eye + look * reach
+	return eye + look * reach, on_body
+}
+
+// The same for a heal beam, which bends to the ally it mends instead of running
+// along the crosshair. Mirrors heal_beam_target on the server -- the crosshair's
+// pick, then the nearest wounded ally in the cone, then the player themselves --
+// off the interpolated positions the player can actually see. With nobody to
+// mend the beam idles along the look direction, which is what the server draws.
+client_world_heal_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look, self_pos: vec3) -> (end: vec3, on_body: bool) {
+	best := INVALID_ENTITY
+	best_d2 := f32(0)
+	for i in 1..<MAX_ENTITIES {
+		id := Entity_ID(i)
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead || id == world.local_entity_id {
+			continue
+		}
+		if !spell_target_valid_for_filter(.Friendly, world.local_entity_id, id, world.local_team, remote.team) {
+			continue
+		}
+		if remote.display_state.health >= HEALTH_MAX {
+			continue
+		}
+		pos := remote.display_state.pos
+		if !heal_beam_in_reach(def, eye, look, pos) {
+			continue
+		}
+		if id == world.target_id {
+			return strike_center(pos), true
+		}
+		d2 := len2_vec3(strike_center(pos) - eye)
+		if best == INVALID_ENTITY || d2 < best_d2 {
+			best = id
+			best_d2 = d2
+		}
+	}
+	if best != INVALID_ENTITY {
+		return strike_center(world.remote_entities[best].display_state.pos), true
+	}
+	if world.prediction.predicted_char.health < HEALTH_MAX {
+		return strike_center(self_pos), true
+	}
+	return eye + look * world_ray_hit(eye, look, def.range), false
 }
 
 @(private = "file")

@@ -5,7 +5,7 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 
-// Nexus Arena UDP protocol (v6).
+// Nexus Arena UDP protocol (v7).
 //
 // Client → Server
 //   Hello            probe; server answers with Lobby
@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(6)  // bumped for 7-Obelisk GameState
+PROTOCOL_VERSION :: u8(7)  // bumped for the spell id carried by every beam
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -111,6 +111,7 @@ Snapshot_Strike :: struct {
 // client draws them to the bodies it is already interpolating.
 Snapshot_Beam :: struct {
 	owner_id:    Entity_ID,
+	spell_id:    Spell_ID,  // which beam it is, so the client can colour it
 	end:         vec3,
 	hit:         bool,      // the far end is a body, not the world
 	chain_count: u8,
@@ -562,6 +563,7 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	for i in 0..<bcount {
 		b := &packet.beams[i]
 		bw_u8(&w, u8(b.owner_id))
+		bw_u8(&w, u8(b.spell_id))
 		bw_pos_cm(&w, b.end)
 		chains := min(int(b.chain_count), BEAM_MAX_CHAINS)
 		flags := u8(chains) << 1
@@ -641,6 +643,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	for i in 0..<bcount {
 		b := &packet.beams[i]
 		b.owner_id = entity_id_from_wire(br_u8(&r))
+		b.spell_id = spell_id_from_wire(br_u8(&r))
 		b.end = br_pos_cm(&r)
 		flags := br_u8(&r)
 		b.hit = flags & 1 != 0

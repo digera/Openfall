@@ -15,7 +15,7 @@ Spell_ID :: enum u8 {
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
-	Self_Heal      = 5,    // wind-up self heal, nothing leaves the caster
+	Friendly_Heal  = 5,    // held beam that mends an ally in a wide cone, or the caster
 	Call_Lightning = 6,    // bolt from the sky onto the crosshair's target
 	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
 }
@@ -23,7 +23,7 @@ Spell_ID :: enum u8 {
 // Spells bound to hotbar slots 1..HOTBAR_SLOTS. Blink keeps its definition but
 // loses the third slot: sustain buys more there than a second way to move does.
 HOTBAR_SLOTS :: 6
-HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Self_Heal, .Frost_Lance, .Call_Lightning, .Thunderbolt}
+HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Friendly_Heal, .Frost_Lance, .Call_Lightning, .Thunderbolt}
 
 Spell_Target_Filter :: enum u8 {
 	Any      = 0, // No filtering
@@ -56,13 +56,13 @@ Spell_Def :: struct {
 	knockback:       f32,
 	slow_ticks:      int,
 
-	heal:          f32,   // health restored to the caster at full charge
 	range:         f32,   // blink distance, strike reach, or beam length
 
 	// Beams. `mana_cost` is what it takes to light one, not what it spends;
 	// `cooldown_sec` is the rest forced on a beam that ran its caster dry.
-	beam_dps:          f32,
+	beam_dps:          f32,   // damage, or health restored, per second
 	beam_mana_per_sec: f32,
+	beam_heals:        bool,  // mends an ally in a wide cone instead of burning what the crosshair is on
 	beam_chain_range:  f32,   // how far an arc jumps from the last body it hit
 	beam_chain_count:  int,   // how many times
 	beam_chain_frac:   f32,   // damage each jump deals, as a fraction of the beam's
@@ -72,7 +72,6 @@ Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
-	Heal,
 	Strike,     // lands on the targeted entity the moment it is released
 	Beam,       // does its work every tick it is held; the release is nothing
 }
@@ -152,19 +151,23 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		slow_ticks    = 180, // 3 s
 	},
 
-	// Sustain, not an escape: the wind-up is long enough to be punished and a
-	// full heal is worth less than one lance, so trading into a healing
-	// opponent still wins.
-	.Self_Heal = {
-		id            = .Self_Heal,
-		name          = "Self Heal",
-		short_name    = "HEAL",
-		mana_cost     = 30,
-		cooldown_sec  = 5.0,
-		cast_time     = 1.0,
-		payload       = .Heal,
-		target_filter = .Friendly,
-		heal          = 45,
+	// Thunderbolt's opposite: a held beam that mends instead of burns. The
+	// cone it searches is wide, so keeping a moving ally alive is not an aim
+	// test, and with nobody in front of it the beam falls back to the caster.
+	// Sustain, not an escape: the caster is still standing still and visible
+	// while it runs, so trading into a healing opponent still wins.
+	.Friendly_Heal = {
+		id                = .Friendly_Heal,
+		name              = "Friendly Heal",
+		short_name        = "HEAL",
+		mana_cost         = 15,    // needed to light it, not spent
+		cooldown_sec      = 3.0,   // only after it runs the caster dry
+		payload           = .Beam,
+		target_filter     = .Friendly,
+		range             = 18,
+		beam_dps          = 30,    // health per second
+		beam_mana_per_sec = 20,    // a full pool buys 5 s of mending
+		beam_heals        = true,
 	},
 
 	// The only spell that cannot be dodged, so everything else about it is
@@ -242,6 +245,27 @@ strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> 
 	       world_segment_clear(eye, strike_center(target_pos))
 }
 
+// Widest a heal beam may be off an ally and still mend them. Much wider than a
+// strike's: keeping a moving teammate up should not be an aim test, and a beam
+// that picks the wrong ally costs nobody anything.
+HEAL_BEAM_AIM_COS :: f32(0.866) // cos 30 deg, a 60 deg cone
+
+// Geometry of the heal beam's search, shared by the server's trace and the
+// client's prediction so the beam a player sees ends on the ally the server is
+// actually mending. Cover stops it: the beam has to see who it heals.
+heal_beam_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
+	center := strike_center(target_pos)
+	to := center - eye
+	dist := len_vec3(to)
+	if dist > def.range || dist < 1e-3 {
+		return false
+	}
+	if dot_vec3(to, look) < HEAL_BEAM_AIM_COS * dist {
+		return false
+	}
+	return world_segment_clear(eye, center)
+}
+
 // Releasing below this fraction of the cast time fizzles instead of casting,
 // so tapping the button can never stand in for a real wind-up.
 SPELL_MIN_CHARGE :: f32(0.2)
@@ -284,10 +308,6 @@ spell_castable :: proc(id: Spell_ID, char: Character_State, cooldown: f32) -> bo
 	}
 	def := &SPELL_DEFS[id]
 	if cooldown > 0 || char.mana < def.mana_cost {
-		return false
-	}
-	// A heal at full health is pure loss: refuse it instead of eating the mana.
-	if def.payload == .Heal && char.health >= HEALTH_MAX {
 		return false
 	}
 	return true
