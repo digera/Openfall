@@ -247,6 +247,10 @@ strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> 
 SPELL_MIN_CHARGE :: f32(0.2)
 
 // Does the target match the selected spell's targeting filter?
+// Examples:
+//   - Enemy filter: Alpha targeting Beta → true, Alpha targeting Alpha → false
+//   - Friendly filter: Alpha targeting Alpha (not self) → true, Alpha targeting Beta → false
+//   - Friendly filter: None targeting None → false (teamless entities can't be "friendly")
 spell_target_valid_for_filter :: proc(filter: Spell_Target_Filter, caster_id, target_id: Entity_ID, caster_team, target_team: Team_ID) -> bool {
 	if target_id == INVALID_ENTITY || caster_id == target_id {
 		return false
@@ -257,7 +261,11 @@ spell_target_valid_for_filter :: proc(filter: Spell_Target_Filter, caster_id, ta
 	case .Enemy:
 		return teams_are_enemies(caster_team, target_team)
 	case .Friendly:
-		return !teams_are_enemies(caster_team, target_team) && caster_id != target_id
+		// Require same non-None team, excluding self
+		if caster_team == .None || target_team == .None {
+			return false
+		}
+		return caster_team == target_team && caster_id != target_id
 	}
 	return false
 }
