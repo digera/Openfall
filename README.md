@@ -86,6 +86,12 @@ The server times the wind-up itself — the client only reports which spell it i
 | Blink | 0.4s | 8.0s | 20 | 11m teleport |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 
+### Targeting
+
+The crosshair carries a sticky soft target: the nearest living wisp or player it sweeps over, shown by name and health bar under the crosshair. It holds through aim wobble and only changes when the crosshair covers someone else, when the target dies, or when you unlock the mouse — so a spell wound up on someone stays wound up on them. Selection is slightly more forgiving than a projectile hit and reaches 100 m.
+
+This is presentation only today. Targeted spells (Call Lightning, Heal Other) will send the selected entity with the cast for the server to re-validate; the server trusts nothing the client picks. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+
 ## Linux
 
 ```bash

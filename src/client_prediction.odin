@@ -12,6 +12,11 @@ INTERP_DELAY_TICKS     :: f64(5.0)     // ~83 ms behind the newest snapshot
 REMOTE_TIMEOUT_SEC     :: f64(1.0)
 MAX_CLIENT_IMPACTS     :: 8
 
+TARGET_RANGE_M         :: f32(100.0)
+// Selection is deliberately more forgiving than a projectile hit: picking the
+// wrong name off the HUD costs nothing, sweeping past the right one is annoying.
+TARGET_RADIUS_M        :: CHARACTER_RADIUS_M * 1.8
+
 // Connection state machine shared by the graphical and headless clients.
 Client_Phase :: enum u8 {
 	Connecting,   // pinging the server for a lobby packet
@@ -46,6 +51,7 @@ Client_Prediction :: struct {
 Remote_Entity :: struct {
 	id:        Entity_ID,
 	team:      Team_ID,
+	is_bot:    bool,
 	states:    [INTERP_BUFFER_SIZE]Character_State, // newest first
 	ticks:     [INTERP_BUFFER_SIZE]u32,
 	count:     int,
@@ -90,6 +96,10 @@ Client_World :: struct {
 
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
+
+	// Sticky soft target, purely presentational for now; targeted spells will
+	// read it and send it up for the server to validate.
+	target_id:        Entity_ID,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +283,7 @@ remote_entity_interpolate :: proc(remote: ^Remote_Entity, render_tick: f64) {
 client_world_init :: proc() -> Client_World {
 	world := Client_World{}
 	world.local_entity_id = INVALID_ENTITY
+	world.target_id = INVALID_ENTITY
 	client_prediction_init(&world.prediction)
 	return world
 }
@@ -287,6 +298,7 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.impacts = {}
 	world.have_server_tick = false
 	world.have_game_state = false
+	world.target_id = INVALID_ENTITY
 }
 
 // Estimated server tick at which remote entities should be displayed.
@@ -349,6 +361,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 			remote.active = true
 		}
 		remote.team = entity.team
+		remote.is_bot = entity.is_bot
 		remote.last_seen = world.local_time
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 	}
@@ -471,4 +484,48 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	world.hit_marker = max(world.hit_marker - dt * 4.0, 0)
 	client_prediction_decay_offset(&world.prediction, dt)
+
+	if !client_world_target_valid(world, world.target_id) {
+		world.target_id = INVALID_ENTITY
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sticky soft target
+//
+// The crosshair latches onto the nearest entity it touches and holds it until
+// it touches another one -- aim wobble during a wind-up must not lose the
+// target that the cast was meant for.
+
+client_world_target_valid :: proc(world: ^Client_World, id: Entity_ID) -> bool {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return false
+	}
+	remote := &world.remote_entities[id]
+	return remote.active && !remote.display_state.dead
+}
+
+// Entities are tested at their interpolated display position, so the selection
+// follows what the player can actually see rather than the newer server state.
+client_world_acquire_target :: proc(world: ^Client_World, eye: vec3, look_dir: vec3) {
+	best_dist := TARGET_RANGE_M
+	best_id := INVALID_ENTITY
+	for i in 1..<MAX_ENTITIES {
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead {
+			continue
+		}
+		dist, hit := ray_cylinder_hit(
+			eye, look_dir, remote.display_state.pos,
+			TARGET_RADIUS_M, CHARACTER_HEIGHT_M, best_dist,
+		)
+		if !hit {
+			continue
+		}
+		best_dist = dist
+		best_id = Entity_ID(i)
+	}
+	if best_id != INVALID_ENTITY {
+		world.target_id = best_id
+	}
 }

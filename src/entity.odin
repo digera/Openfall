@@ -1,5 +1,7 @@
 package main
 
+import "core:fmt"
+
 // Entity system using numeric IDs and #soa arrays for data-oriented design.
 
 Entity_ID :: u32
@@ -132,6 +134,13 @@ entity_set_team :: proc(world: ^Entity_World, id: Entity_ID, team: Team_ID) {
 		return
 	}
 	world.teams[id] = team
+}
+
+// Label shown on the target HUD. Derived from the id rather than replicated so
+// names cost nothing per snapshot and can never disagree between clients. When
+// players eventually pick their own names this becomes a lookup.
+entity_display_name :: proc(id: Entity_ID, is_bot: bool) -> string {
+	return fmt.tprintf(is_bot ? "Wisp-%02d" : "Player-%02d", id)
 }
 
 // Is this entity a living, targetable combatant?

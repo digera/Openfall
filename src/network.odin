@@ -76,6 +76,7 @@ Snapshot_Entity :: struct {
 	pitch:      f32,
 	on_ground:  bool,
 	dead:       bool,
+	is_bot:     bool,
 	health:     f32,
 	mana:       f32,
 	stamina:    f32,
@@ -448,7 +449,7 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1, hp 1, mana 1, stamina 4, team 1, slow 1 = 42
+// Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1 = 42
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Header 2 + tick 4 + ack 4 + counts 2 = 12
 // 12 + 22*42 + 12*32 = 1320 bytes worst case.
@@ -470,6 +471,7 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		flags: u8 = 0
 		if e.on_ground { flags |= 1 }
 		if e.dead      { flags |= 2 }
+		if e.is_bot    { flags |= 4 }
 		bw_u8(&w, flags)
 		bw_u8(&w, quant_u8(e.health, 1))
 		bw_u8(&w, quant_u8(e.mana, 1))
@@ -512,6 +514,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		flags := br_u8(&r)
 		e.on_ground = flags & 1 != 0
 		e.dead = flags & 2 != 0
+		e.is_bot = flags & 4 != 0
 		e.health = f32(br_u8(&r))
 		e.mana = f32(br_u8(&r))
 		e.stamina = br_f32(&r)

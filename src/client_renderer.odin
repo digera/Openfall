@@ -633,6 +633,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.color3f(0.85, 0.83, 0.78)
 		sdtx.pos(cx, cy)
 		sdtx.puts("+")
+		hud_target_panel(world, cols, cy + 2)
 	}
 
 	if !sapp.mouse_locked() {
@@ -644,6 +645,33 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.color3f(0.7, 0.68, 0.62)
 		hud_center_text(cols, 5, "hold obelisks to gather essence - the center is worth double")
 	}
+}
+
+// Who the crosshair is holding, under the crosshair: name in team colour over a
+// health bar. Nothing is drawn when there is no target, so the centre of the
+// screen stays clean while the player is just moving around.
+@(private = "file")
+hud_target_panel :: proc(world: ^Client_World, cols: f32, row: f32) {
+	if world.target_id == INVALID_ENTITY {
+		return
+	}
+	remote := &world.remote_entities[world.target_id]
+
+	sdtx_color(team_color(remote.team))
+	hud_center_text(cols, row, entity_display_name(remote.id, remote.is_bot))
+
+	hp := remote.display_state.health
+	frac := hp / HEALTH_MAX
+	if frac > 0.6 {
+		sdtx.color3f(0.5, 0.9, 0.5)
+	} else if frac > 0.3 {
+		sdtx.color3f(1.0, 0.8, 0.3)
+	} else {
+		sdtx.color3f(1.0, 0.4, 0.3)
+	}
+	sdtx.pos(cols * 0.5 - 10, row + 1)  // 16-cell bar plus " 100" centres at -10
+	draw_bar(hp, HEALTH_MAX, 14)
+	sdtx.printf(" %3.0f", hp)
 }
 
 draw_bar :: proc(value: f32, max_value: f32, width: int) {
