@@ -98,6 +98,8 @@ Thunderbolt is the exception to charge-cast: there is no wind-up and nothing hap
 
 The crosshair carries a sticky soft target: the nearest living wisp or player it sweeps over, shown by name and health bar under the crosshair. It holds through aim wobble and only changes when the crosshair covers someone else, when the target dies, or when you unlock the mouse — so a spell wound up on someone stays wound up on them. Selection is slightly more forgiving than a projectile hit and reaches 100 m.
 
+**Context-aware targeting:** The sticky target respects the selected spell. Offensive spells (Missile, Orb, Lance, Call Lightning, Thunderbolt) only stick to enemies. Heal only sticks to teammates (not yourself). Switching spells clears an invalid target or retargets under the crosshair to a valid one, so the bar stays predictable when you swap slots mid-fight.
+
 The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, hostile, in range, roughly where the caster is looking and in the open. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.

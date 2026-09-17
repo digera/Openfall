@@ -301,7 +301,9 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 }
 
 // Aiming is the only thing that picks a target, so anything that stops the
-// player aiming drops it the same way it drops a charge.
+// player aiming drops it the same way it drops a charge. When switching spells,
+// clear the target if it's invalid for the new spell's filter, or retarget
+// under the crosshair if a valid one is there.
 client_update_target :: proc(gc: ^Game_Client) {
 	pred := &gc.client_world.prediction
 	if gc.phase != .Playing || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
@@ -310,7 +312,18 @@ client_update_target :: proc(gc: ^Game_Client) {
 	}
 	// The cast origin the server will use, not the bobbing render camera.
 	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
-	client_world_acquire_target(&gc.client_world, eye, camera_forward(gc.view_yaw, gc.view_pitch))
+	look := camera_forward(gc.view_yaw, gc.view_pitch)
+
+	// Get the currently selected spell's filter
+	spell := HOTBAR[gc.selected_slot]
+	filter := SPELL_DEFS[spell].target_filter
+
+	// If the current target doesn't match the new filter, clear it and try to retarget
+	if !client_world_target_valid_for_spell(&gc.client_world, gc.client_world.target_id, filter) {
+		gc.client_world.target_id = INVALID_ENTITY
+	}
+
+	client_world_acquire_target(&gc.client_world, eye, look, filter)
 }
 
 // Run as many 60Hz ticks as the accumulator allows, predicting locally and

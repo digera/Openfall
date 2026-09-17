@@ -656,6 +656,15 @@ client_world_target_valid :: proc(world: ^Client_World, id: Entity_ID) -> bool {
 	return remote.active && !remote.display_state.dead
 }
 
+// Is the current sticky target valid for the given spell's targeting filter?
+client_world_target_valid_for_spell :: proc(world: ^Client_World, id: Entity_ID, filter: Spell_Target_Filter) -> bool {
+	if !client_world_target_valid(world, id) {
+		return false
+	}
+	remote := &world.remote_entities[id]
+	return spell_target_valid_for_filter(filter, world.local_entity_id, id, world.local_team, remote.team)
+}
+
 // The current target if it is someone a strike may land on: alive and
 // hostile. Where they stand is the caller's question; the server asks the same
 // things of its own state, this only keeps the client from winding up or
@@ -670,12 +679,20 @@ client_world_strike_target :: proc(world: ^Client_World) -> (remote: ^Remote_Ent
 
 // Entities are tested at their interpolated display position, so the selection
 // follows what the player can actually see rather than the newer server state.
-client_world_acquire_target :: proc(world: ^Client_World, eye: vec3, look_dir: vec3) {
+// `filter` determines which entities may be selected: enemies, friendlies, or any.
+client_world_acquire_target :: proc(world: ^Client_World, eye: vec3, look_dir: vec3, filter: Spell_Target_Filter) {
 	best_dist := TARGET_RANGE_M
 	best_id := INVALID_ENTITY
 	for i in 1..<MAX_ENTITIES {
 		remote := &world.remote_entities[i]
 		if !remote.active || remote.display_state.dead {
+			continue
+		}
+		if Entity_ID(i) == world.local_entity_id {
+			continue
+		}
+		// Apply the spell's target filter
+		if !spell_target_valid_for_filter(filter, world.local_entity_id, Entity_ID(i), world.local_team, remote.team) {
 			continue
 		}
 		dist, hit := ray_cylinder_hit(
