@@ -275,8 +275,11 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	gc.view_pitch = clampf(gc.view_pitch - dy * CAM_LOOK_SENS, -CAM_PITCH_MAX, CAM_PITCH_MAX)
 
 	// Aim assist when RMB held and we have a valid target
+	// Only set aim_lock flag when assist actually runs (so server drains stamina only when locked)
 	if input.held_right && gc.client_world.target_id != INVALID_ENTITY {
-		client_apply_aim_assist(gc, dt)
+		if client_apply_aim_assist(gc, dt) {
+			gc.move_input.aim_lock = true
+		}
 	}
 
 	fwd: f32 = 0
@@ -293,7 +296,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	gc.move_input.move_fwd = fwd
 	gc.move_input.move_str = str
 	gc.move_input.sprint = input.key_shift
-	gc.move_input.aim_lock = input.held_right
+	gc.move_input.aim_lock = false
 	// Hold Space to jump; also latch a press that landed between sim ticks.
 	if input_consume_jump() || input.key_space {
 		gc.move_input.jump = true
@@ -462,33 +465,34 @@ client_drop_charge :: proc(gc: ^Game_Client) {
 }
 
 // Aim assist: smoothly pull view toward the target's center (chest/eye height)
+// Returns true if assist actually ran (so server should drain stamina)
 AIM_ASSIST_STRENGTH :: f32(3.5)   // radians per second pull rate
 AIM_ASSIST_TARGET_HEIGHT :: f32(1.4)  // chest/eye height for aiming
 
-client_apply_aim_assist :: proc(gc: ^Game_Client, dt: f32) {
+client_apply_aim_assist :: proc(gc: ^Game_Client, dt: f32) -> bool {
 	pred := &gc.client_world.prediction
 	if !pred.initialized || pred.predicted_char.dead {
-		return
+		return false
 	}
 	
 	target_id := gc.client_world.target_id
 	if target_id == INVALID_ENTITY || target_id >= MAX_ENTITIES {
-		return
+		return false
 	}
 	
 	remote := &gc.client_world.remote_entities[target_id]
 	if !remote.active || remote.display_state.dead {
-		return
+		return false
 	}
 	
 	// Only assist toward hostile targets
 	if !teams_are_enemies(gc.client_world.local_team, remote.team) {
-		return
+		return false
 	}
 	
 	// Check stamina - lock breaks when stamina runs out
 	if pred.predicted_char.stamina <= 0 {
-		return
+		return false
 	}
 	
 	// Calculate desired look direction toward target center
@@ -498,7 +502,7 @@ client_apply_aim_assist :: proc(gc: ^Game_Client, dt: f32) {
 	target_dist := len_vec3(to_target)
 	
 	if target_dist < 0.1 {
-		return
+		return false
 	}
 	
 	to_target = to_target / target_dist
@@ -519,6 +523,8 @@ client_apply_aim_assist :: proc(gc: ^Game_Client, dt: f32) {
 	pitch_delta := target_pitch - gc.view_pitch
 	pitch_pull := clampf(pitch_delta, -pull_rate, pull_rate)
 	gc.view_pitch = clampf(gc.view_pitch + pitch_pull, -CAM_PITCH_MAX, CAM_PITCH_MAX)
+	
+	return true
 }
 
 main_client :: proc() {
