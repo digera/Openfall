@@ -33,7 +33,7 @@ Packet_Type :: enum u8 {
 
 INPUT_REDUNDANCY :: 3
 
-MAX_SNAPSHOT_ENTITIES    :: 22
+MAX_SNAPSHOT_ENTITIES    :: 16  // reduced from 22 to fit 16-char names under 1400 bytes
 MAX_SNAPSHOT_PROJECTILES :: 12
 MAX_SNAPSHOT_STRIKES     :: 4
 MAX_SNAPSHOT_BEAMS       :: 4
@@ -536,9 +536,8 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // Per-strike: seq 1, owner 1, pos 6 = 8
 // Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
 // Header 2 + tick 4 + ack 4 + counts 4 = 14
-// 14 + 22*57 + 12*32 + 4*8 + 4*11 = 1682 bytes worst case (22 entities with max-length names).
-// This exceeds MAX_PACKET_SIZE (1400), but typical names are shorter and not all 22 slots are always filled.
-// The writer refuses oversized packets; in a full fight with long names, the server will send fewer entities.
+// Worst case: 14 + 16*57 + 12*32 + 4*8 + 4*11 = 14 + 912 + 384 + 32 + 44 = 1386 bytes.
+// This fits under MAX_PACKET_SIZE (1400) even when all 16 entities have 16-character names.
 //
 // Look angles ride as the same i16 an input is quantized to rather than as
 // floats. That is lossless here -- the server's yaw and pitch come from a
