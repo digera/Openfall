@@ -1,0 +1,49 @@
+================================================================================
+                         SCOREBOARD EXAMPLE
+================================================================================
+
+When player holds Tab, the following panel appears centered on screen:
+
+┌──────────────────────────────────────────────────────────────┐
+│                                                                │
+│                          SCOREBOARD                            │
+│                                                                │
+│  Name             K   D   Dealt  Taken                         │
+│  --- EMBER ---                                                 │
+│  Player-05       12   3   4820   1240    ← (highlighted if you)│
+│  Wisp-08          8   5   3210   2100                          │
+│  Wisp-03          5   7   2150   2890                          │
+│                                                                │
+│  --- TIDE ---                                                  │
+│  Player-02        9   4   3950   1680                          │
+│  Wisp-12          7   6   2980   2340                          │
+│  Player-11        4   8   1720   3120                          │
+│                                                                │
+│  --- VERDANT ---                                               │
+│  Wisp-17         11   2   5120    980                          │
+│  Wisp-22          6   5   2640   2210                          │
+│  Player-19        3   9   1890   3450                          │
+│                                                                │
+└──────────────────────────────────────────────────────────────┘
+
+FEATURES:
+- Semi-transparent dark background (repeated dark chars)
+- Title in bright white
+- Column headers in muted grey
+- Team headers in team colors (EMBER red, TIDE blue, VERDANT green)
+- Player names in light grey
+- Local player highlighted in bright yellow
+- Stats show as integers/floats
+- Sorted by team, then kills (descending)
+- Appears instantly on Tab press, disappears on Tab release
+
+DISPLAY NAMES:
+- Currently uses entity_display_name() which returns:
+  - "Player-XX" for human players (where XX is entity ID)
+  - "Wisp-XX" for bots
+- When PR #26 (typed names) lands, these will be replaced with
+  actual player-chosen names automatically through the same helper
+
+NO SPECTATORS:
+- Only active combatants are shown
+- If spectators exist, they won't appear (as per requirements)
