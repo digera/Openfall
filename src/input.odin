@@ -19,6 +19,12 @@ Input :: struct {
 	jump:           bool,      // latched press
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
 	window_focused: bool,
+
+	// Text input (for name entry)
+	char_input:     [8]rune,
+	char_count:     int,
+	enter_pressed:  bool,
+	backspace_pressed: bool,
 }
 
 input: Input = {
@@ -39,6 +45,9 @@ input_clear_held :: proc() {
 	input.click_left = false
 	input.jump = false
 	input.slot_press = {}
+	input.char_count = 0
+	input.enter_pressed = false
+	input.backspace_pressed = false
 }
 
 input_event :: proc "c" (e: ^sapp.Event) {
@@ -80,6 +89,10 @@ input_event :: proc "c" (e: ^sapp.Event) {
 			if slot < HOTBAR_SLOTS {
 				input.slot_press[slot] = true
 			}
+		case .ENTER:
+			input.enter_pressed = true
+		case .BACKSPACE:
+			input.backspace_pressed = true
 		case .ESCAPE:
 			sapp.lock_mouse(false)
 			input_clear_held()
@@ -99,6 +112,11 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		input.window_focused = false
 		sapp.lock_mouse(false)
 		input_clear_held()
+	case .CHAR:
+		if input.char_count < len(input.char_input) {
+			input.char_input[input.char_count] = e.char_code
+			input.char_count += 1
+		}
 	}
 }
 
@@ -136,4 +154,27 @@ input_consume_look :: proc() -> (dx, dy: f32) {
 	input.look_dx = 0
 	input.look_dy = 0
 	return
+}
+
+input_consume_chars :: proc() -> (chars: []rune, count: int) {
+	count = input.char_count
+	chars = input.char_input[:count]
+	input.char_count = 0
+	return
+}
+
+input_consume_enter :: proc() -> bool {
+	if input.enter_pressed {
+		input.enter_pressed = false
+		return true
+	}
+	return false
+}
+
+input_consume_backspace :: proc() -> bool {
+	if input.backspace_pressed {
+		input.backspace_pressed = false
+		return true
+	}
+	return false
 }

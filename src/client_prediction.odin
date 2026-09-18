@@ -54,6 +54,7 @@ Remote_Entity :: struct {
 	id:        Entity_ID,
 	team:      Team_ID,
 	is_bot:    bool,
+	name:      string, // player display name from server
 	states:    [INTERP_BUFFER_SIZE]Character_State, // newest first
 	ticks:     [INTERP_BUFFER_SIZE]u32,
 	count:     int,
@@ -411,6 +412,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 		}
 		remote.team = entity.team
 		remote.is_bot = entity.is_bot
+		remote.name = entity.name
 		remote.last_seen = world.local_time
 		remote.channel_spell = entity.channel_spell
 		remote.channel_frac = entity.channel_frac

@@ -229,7 +229,7 @@ server_process_packets :: proc(server: ^Server) {
 				server_send_lobby(server, from, reject)
 				continue
 			}
-			new_slot := server_register_client(server, from, join.team)
+			new_slot := server_register_client(server, from, join.team, join.name)
 			if new_slot >= 0 {
 				server_send_welcome(server, new_slot)
 				server_send_gamestate_to(server, new_slot)
@@ -470,7 +470,23 @@ server_validate_join :: proc(server: ^Server, team: Team_ID) -> Lobby_Reject {
 	return .None
 }
 
-server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_ID) -> int {
+server_sanitize_name :: proc(raw_name: string) -> string {
+	if len(raw_name) == 0 {
+		return ""
+	}
+	buf: [MAX_PLAYER_NAME_LEN]u8
+	count := 0
+	for i in 0..<min(len(raw_name), MAX_PLAYER_NAME_LEN) {
+		c := raw_name[i]
+		if c >= 32 && c < 127 {
+			buf[count] = c
+			count += 1
+		}
+	}
+	return string(buf[:count])
+}
+
+server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_ID, raw_name: string) -> int {
 	if server.client_count >= MAX_CLIENTS {
 		return -1
 	}
@@ -485,6 +501,12 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 		return -1
 	}
 
+	clean_name := server_sanitize_name(raw_name)
+	if clean_name == "" {
+		clean_name = fmt.tprintf("Player-%02d", player_id)
+	}
+	entity_set_name(&server.world, player_id, clean_name)
+
 	idx := server.client_count
 	server.clients[idx] = Client_Slot{
 		addr        = addr,
@@ -494,8 +516,8 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 	}
 	server.client_count += 1
 
-	fmt.printf("[Server] Client %v joined %s as entity %d (%d clients)\n",
-		addr, team_name(team), player_id, server.client_count)
+	fmt.printf("[Server] Client %v joined %s as '%s' (entity %d, %d clients)\n",
+		addr, team_name(team), clean_name, player_id, server.client_count)
 
 	bots_rebalance(server)
 	return idx
@@ -605,6 +627,7 @@ server_send_snapshots :: proc(server: ^Server) {
 				slow_ticks    = char.slow_ticks,
 				channel_spell = spell_state.channel_spell,
 				channel_frac  = channel_frac,
+				name          = entity_get_name(&server.world, id),
 			}
 		}
 		snapshot.entity_count = u8(take)

@@ -49,7 +49,7 @@ $env:SERVER_IP = "127.0.0.1"
 .\bin\nexus_client.exe
 ```
 
-On connect the client shows a team-select screen with live player counts. Press `1` / `2` / `3` to join Ember / Tide / Verdant. You cannot join the team that currently has strictly the most players.
+On connect the client shows a team-select screen with live player counts. Type your name (optional, up to 16 characters), then press `1` / `2` / `3` to join Ember / Tide / Verdant. If you don't enter a name, you'll be assigned a default name based on your player ID. You cannot join the team that currently has strictly the most players.
 
 Headless prediction/network test (joins the least-populated team, walks around for 30 s, reports correction rate):
 

@@ -52,6 +52,7 @@ Entity_World :: struct {
 	inputs:       [MAX_ENTITIES]Input_State,
 	spell_states: [MAX_ENTITIES]Entity_Spell_State,
 	teams:        [MAX_ENTITIES]Team_ID,
+	names:        [MAX_ENTITIES]string, // player display names (server-validated)
 	next_id:      Entity_ID,
 	count:        int,
 }
@@ -140,10 +141,27 @@ entity_set_team :: proc(world: ^Entity_World, id: Entity_ID, team: Team_ID) {
 	world.teams[id] = team
 }
 
-// Label shown on the target HUD. Derived from the id rather than replicated so
-// names cost nothing per snapshot and can never disagree between clients. When
-// players eventually pick their own names this becomes a lookup.
-entity_display_name :: proc(id: Entity_ID, is_bot: bool) -> string {
+entity_get_name :: proc(world: ^Entity_World, id: Entity_ID) -> string {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return ""
+	}
+	return world.names[id]
+}
+
+entity_set_name :: proc(world: ^Entity_World, id: Entity_ID, name: string) {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return
+	}
+	world.names[id] = name
+}
+
+// Label shown on the target HUD. Uses the replicated server-validated name
+// when available, or generates one for bots.
+entity_display_name :: proc(world: ^Entity_World, id: Entity_ID, is_bot: bool) -> string {
+	name := entity_get_name(world, id)
+	if name != "" {
+		return name
+	}
 	return fmt.tprintf(is_bot ? "Wisp-%02d" : "Player-%02d", id)
 }
 

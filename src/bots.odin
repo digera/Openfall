@@ -123,6 +123,8 @@ bots_rebalance :: proc(server: ^Server) {
 			if id == INVALID_ENTITY {
 				break
 			}
+			bot_name := fmt.tprintf("Wisp-%02d", id)
+			entity_set_name(&server.world, id, bot_name)
 			b := &server.bots[slot]
 			b^ = Bot{active = true, id = id, team = team, think_offset = slot}
 			bot_reset_ai(b)

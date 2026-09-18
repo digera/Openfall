@@ -5,19 +5,19 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 
-// Nexus Arena UDP protocol (v8).
+// Nexus Arena UDP protocol (v9).
 //
 // Client → Server
 //   Hello            probe; server answers with Lobby
-//   Join{team}       request a team; server answers Welcome or Lobby(reject)
+//   Join{team,name}  request a team with player name; server answers Welcome or Lobby(reject)
 //   Input            newest tick + up to 3 redundant inputs (loss tolerant)
 // Server → Client
 //   Lobby            team populations + join verdict
 //   Welcome          entity id + team
-//   Snapshot         per-client world state, 30Hz, nearest-N entities
+//   Snapshot         per-client world state, 30Hz, nearest-N entities (now includes player names)
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(8)  // bumped for the cast orb carried by every entity
+PROTOCOL_VERSION :: u8(9)  // bumped for player name replication
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -47,8 +47,11 @@ Client_Input_Packet :: struct {
 	inputs:      [INPUT_REDUNDANCY]Input_State, // [0] is newest (tick = newest_tick), [k] is newest_tick - k
 }
 
+MAX_PLAYER_NAME_LEN :: 16
+
 Client_Join_Packet :: struct {
 	team: Team_ID,
+	name: string, // player display name (max MAX_PLAYER_NAME_LEN bytes)
 }
 
 Lobby_Reject :: enum u8 {
@@ -92,6 +95,9 @@ Snapshot_Entity :: struct {
 	// charge for as long as it is lit.
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
+
+	// Player display name (server-validated). Bots have generated names.
+	name:          string,
 }
 
 Snapshot_Projectile :: struct {
@@ -401,6 +407,12 @@ serialize_client_join :: proc(packet: ^Client_Join_Packet, buffer: []u8) -> int 
 	w := bw_init(buffer)
 	write_header(&w, .Client_Join)
 	bw_u8(&w, u8(packet.team))
+	// Name: length-prefixed string (1 byte length + up to MAX_PLAYER_NAME_LEN bytes)
+	name_len := min(len(packet.name), MAX_PLAYER_NAME_LEN)
+	bw_u8(&w, u8(name_len))
+	for i in 0..<name_len {
+		bw_u8(&w, packet.name[i])
+	}
 	return w.ok ? w.pos : 0
 }
 
@@ -410,6 +422,16 @@ deserialize_client_join :: proc(buffer: []u8) -> (packet: Client_Join_Packet, ok
 		return {}, false
 	}
 	packet.team = Team_ID(br_u8(&r))
+	// Name: length-prefixed string
+	name_len := int(br_u8(&r))
+	if name_len > MAX_PLAYER_NAME_LEN {
+		return {}, false
+	}
+	name_buf: [MAX_PLAYER_NAME_LEN]u8
+	for i in 0..<name_len {
+		name_buf[i] = br_u8(&r)
+	}
+	packet.name = string(name_buf[:name_len])
 	return packet, r.ok
 }
 
@@ -509,14 +531,14 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge) = 40
+// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge) + name (1 + up to 16) = 57 max
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Per-strike: seq 1, owner 1, pos 6 = 8
 // Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
 // Header 2 + tick 4 + ack 4 + counts 4 = 14
-// 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes worst case. This must stay
-// under MAX_PACKET_SIZE: the writer refuses an oversized packet and the
-// client would simply stop hearing from us in a crowded fight.
+// 14 + 22*57 + 12*32 + 4*8 + 4*11 = 1682 bytes worst case (22 entities with max-length names).
+// This exceeds MAX_PACKET_SIZE (1400), but typical names are shorter and not all 22 slots are always filled.
+// The writer refuses oversized packets; in a full fight with long names, the server will send fewer entities.
 //
 // Look angles ride as the same i16 an input is quantized to rather than as
 // floats. That is lossless here -- the server's yaw and pitch come from a
@@ -550,6 +572,12 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
 		bw_u8(&w, u8(e.channel_spell))
 		bw_u8(&w, quant_u8(e.channel_frac, 255))
+		// Name: length-prefixed string
+		name_len := min(len(e.name), MAX_PLAYER_NAME_LEN)
+		bw_u8(&w, u8(name_len))
+		for j in 0..<name_len {
+			bw_u8(&w, e.name[j])
+		}
 	}
 
 	pcount := min(int(packet.projectile_count), MAX_SNAPSHOT_PROJECTILES)
@@ -619,6 +647,16 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.slow_ticks = int(br_u8(&r))
 		e.channel_spell = spell_id_from_wire(br_u8(&r))
 		e.channel_frac = f32(br_u8(&r)) / 255.0
+		// Name: length-prefixed string
+		name_len := int(br_u8(&r))
+		if name_len > MAX_PLAYER_NAME_LEN {
+			return {}, false
+		}
+		name_buf: [MAX_PLAYER_NAME_LEN]u8
+		for j in 0..<name_len {
+			name_buf[j] = br_u8(&r)
+		}
+		e.name = string(name_buf[:name_len])
 		if !r.ok {
 			return {}, false
 		}

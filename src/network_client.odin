@@ -92,9 +92,9 @@ network_client_send_hello :: proc(client: ^Network_Client) -> bool {
 	return client_send_raw(client, buffer[:], serialize_client_hello(buffer[:]))
 }
 
-network_client_send_join :: proc(client: ^Network_Client, team: Team_ID) -> bool {
-	buffer: [16]u8
-	packet := Client_Join_Packet{team = team}
+network_client_send_join :: proc(client: ^Network_Client, team: Team_ID, name: string = "") -> bool {
+	buffer: [32]u8
+	packet := Client_Join_Packet{team = team, name = name}
 	return client_send_raw(client, buffer[:], serialize_client_join(&packet, buffer[:]))
 }
 

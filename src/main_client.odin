@@ -48,6 +48,10 @@ Game_Client :: struct {
 	reject_reason:  Lobby_Reject,
 	last_packet_time: f64,
 
+	// Player name input
+	player_name:    [MAX_PLAYER_NAME_LEN + 1]u8,
+	name_len:       int,
+
 	// Local cooldown mirror (server is authoritative; this drives the HUD)
 	cooldowns:      [Spell_ID]f32,
 	cast_pulse:     f32,
@@ -115,14 +119,34 @@ client_frame :: proc "c" () {
 			gc.hello_timer = LOBBY_REFRESH
 		}
 		gc.reject_timer = max(gc.reject_timer - dt, 0)
+
+		// Handle name input
+		chars, char_count := input_consume_chars()
+		for i in 0..<char_count {
+			c := chars[i]
+			if gc.name_len < MAX_PLAYER_NAME_LEN && c >= 32 && c < 127 {
+				gc.player_name[gc.name_len] = u8(c)
+				gc.name_len += 1
+			}
+		}
+		if input_consume_backspace() && gc.name_len > 0 {
+			gc.name_len -= 1
+		}
+
+		// Enter or number keys to join
+		enter_join := input_consume_enter()
 		for slot in 1..=TEAM_COUNT {
-			if input_consume_slot(slot) {
-				team := team_from_index(slot - 1)
-				if client_team_allowed(gc, team) {
+			if input_consume_slot(slot) || (enter_join && slot == 1) {
+				team := slot == 1 && enter_join ? gc.chosen_team : team_from_index(slot - 1)
+				if slot != 1 || !enter_join {
 					gc.chosen_team = team
-					network_client_send_join(&gc.network, team)
+				}
+				if client_team_allowed(gc, team) {
+					player_name := string(gc.player_name[:gc.name_len])
+					network_client_send_join(&gc.network, team, player_name)
 					gc.join_timer = JOIN_INTERVAL
 					gc.phase = .Joining
+					break
 				} else {
 					gc.reject_reason = .Team_Most_Populated
 					gc.reject_timer = 2.0
@@ -138,9 +162,14 @@ client_frame :: proc "c" () {
 		client_release_mouse()
 		gc.join_timer -= dt
 		if gc.join_timer <= 0 {
-			network_client_send_join(&gc.network, gc.chosen_team)
+			player_name := string(gc.player_name[:gc.name_len])
+			network_client_send_join(&gc.network, gc.chosen_team, player_name)
 			gc.join_timer = JOIN_INTERVAL
 		}
+		// Consume text input while joining to avoid it leaking
+		_ = input_consume_chars()
+		_ = input_consume_backspace()
+		_ = input_consume_enter()
 
 	case .Playing:
 		if gc.client_world.local_time - gc.last_packet_time > CONNECTION_LOSS_SEC {

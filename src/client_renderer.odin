@@ -711,7 +711,18 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	hud_center_text(cols, rows * 0.42, title)
 
 	if gc.phase == .Team_Select || gc.phase == .Joining {
-		base_row := rows * 0.42 + 3
+		// Name input field
+		if gc.phase == .Team_Select {
+			sdtx.color3f(0.75, 0.73, 0.68)
+			hud_center_text(cols, rows * 0.42 + 1.5, "Your name:")
+			player_name := string(gc.player_name[:gc.name_len])
+			cursor := gc.name_len < MAX_PLAYER_NAME_LEN ? "_" : ""
+			name_display := player_name == "" ? fmt.tprintf("(default)%s", cursor) : fmt.tprintf("%s%s", player_name, cursor)
+			sdtx.color3f(0.95, 0.93, 0.86)
+			hud_center_text(cols, rows * 0.42 + 2.5, name_display)
+		}
+
+		base_row := rows * 0.42 + 5
 		for i in 0..<TEAM_COUNT {
 			team := team_from_index(i)
 			allowed := client_team_allowed(gc, team)
@@ -727,7 +738,11 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 			hud_center_text(cols, base_row + f32(i) * 2, line)
 		}
 		sdtx.color3f(0.55, 0.53, 0.50)
-		hud_center_text(cols, base_row + 7, "press 1, 2 or 3 to join  -  you cannot join the most populated team")
+		if gc.phase == .Team_Select {
+			hud_center_text(cols, base_row + 7, "type your name (optional), then press 1, 2 or 3 to join a team")
+		} else {
+			hud_center_text(cols, base_row + 7, "you cannot join the most populated team")
+		}
 		if gc.reject_timer > 0 {
 			sdtx.color3f(1.0, 0.55, 0.45)
 			msg := "that team is full or the most populated - pick another"
@@ -960,7 +975,12 @@ hud_target_panel :: proc(world: ^Client_World, cols: f32, row: f32) {
 	remote := &world.remote_entities[world.target_id]
 
 	sdtx_color(team_color(remote.team))
-	hud_center_text(cols, row, entity_display_name(remote.id, remote.is_bot))
+	// Use the remote entity's replicated name, or generate one
+	display_name := remote.name
+	if display_name == "" {
+		display_name = fmt.tprintf(remote.is_bot ? "Wisp-%02d" : "Player-%02d", remote.id)
+	}
+	hud_center_text(cols, row, display_name)
 
 	hp := remote.display_state.health
 	frac := hp / HEALTH_MAX
