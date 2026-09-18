@@ -20,6 +20,12 @@ PROJECTILE_BOUNCE_MIN_SPEED :: f32(1.2)
 // leaving it lying around for the rest of its fuse.
 PROJECTILE_REST_SPEED :: f32(1.5)
 
+// Arcane Missile seek radius: when an Arcane Missile ricochets, it looks for
+// the nearest living enemy within this distance from the bounce point. If one
+// is found, the outgoing velocity is aimed toward them (with gravity
+// compensation); otherwise, it bounces normally off the surface.
+ARCANE_MISSILE_SEEK_RADIUS :: f32(30.0)
+
 Projectile_ID :: u32
 
 // Piercing uses one bit per entity to remember who has already been speared.
@@ -128,6 +134,42 @@ projectile_hits_character :: proc(p: vec3, radius: f32, char_pos: vec3) -> bool 
 	}
 	dz := p.z - char_pos.z
 	return dz >= -radius && dz <= CHARACTER_HEIGHT_M + radius
+}
+
+// Find the nearest living enemy to `from` within `max_range`, hostile to
+// `owner_team` and not `owner_id`. Returns INVALID_ENTITY when none found.
+@(private)
+projectile_find_nearest_enemy :: proc(
+	entity_world: ^Entity_World,
+	from: vec3,
+	owner_id: Entity_ID,
+	owner_team: Team_ID,
+	max_range: f32,
+) -> Entity_ID {
+	nearest := INVALID_ENTITY
+	nearest_dist_sq := max_range * max_range
+	
+	for entity_idx in 1..<MAX_ENTITIES {
+		id := Entity_ID(entity_idx)
+		if !entity_alive(entity_world, id) || id == owner_id {
+			continue
+		}
+		if !teams_are_enemies(owner_team, entity_world.teams[entity_idx]) {
+			continue
+		}
+		
+		target_pos := entity_world.characters[entity_idx].pos
+		center := target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		d := center - from
+		dist_sq := d.x * d.x + d.y * d.y + d.z * d.z
+		
+		if dist_sq < nearest_dist_sq {
+			nearest = id
+			nearest_dist_sq = dist_sq
+		}
+	}
+	
+	return nearest
 }
 
 projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32) {
@@ -242,9 +284,64 @@ projectile_surface_contact :: proc(
 			return false
 		}
 	} else {
+		// Actual ricochet: spend a bounce count.
 		proj.bounces_left -= 1
 		proj.pos = contact + n * (proj.radius * 0.25 + 0.01)
-		proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+		
+		// Arcane Missile: seek the nearest enemy on bounce.
+		if proj.spell_id == .Arcane_Missile {
+			target_id := projectile_find_nearest_enemy(
+				entity_world,
+				contact,
+				proj.owner_id,
+				proj.owner_team,
+				ARCANE_MISSILE_SEEK_RADIUS,
+			)
+			
+			if target_id != INVALID_ENTITY {
+				// Aim at the target with gravity compensation.
+				target_pos := entity_world.characters[target_id].pos
+				target_center := target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+				to_target := target_center - contact
+				dist := len_vec3(to_target)
+				
+				if dist > 0.01 {
+					// Keep the current speed (after restitution loss).
+					outgoing_speed := len_vec3(proj.vel) * proj.restitution
+					
+					// Compute gravity-compensated aim: solve for the angle that
+					// gets the projectile to the target. Using the same approach
+					// as bot aiming: estimate flight time, then lead with gravity.
+					flight_time := dist / max(outgoing_speed, 1)
+					
+					// The gravity drop over this flight.
+					gravity_drop := 0.5 * PROJECTILE_GRAVITY_Z * proj.gravity * flight_time * flight_time
+					
+					// Aim at target center, compensating for the drop.
+					aim_point := target_center
+					aim_point.z -= gravity_drop
+					
+					aim_dir := aim_point - contact
+					aim_dist := len_vec3(aim_dir)
+					if aim_dist > 0.01 {
+						aim_dir = aim_dir / aim_dist
+						proj.vel = aim_dir * outgoing_speed
+					} else {
+						// Target is at the bounce point: just bounce normally.
+						proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+					}
+				} else {
+					// Normal ricochet.
+					proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+				}
+			} else {
+				// No enemy in range: normal ricochet.
+				proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+			}
+		} else {
+			// Other projectiles bounce normally.
+			proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+		}
 	}
 
 	// Wedged into a corner: pop rather than sit inside geometry.
