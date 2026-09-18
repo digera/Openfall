@@ -33,7 +33,7 @@ Packet_Type :: enum u8 {
 
 INPUT_REDUNDANCY :: 3
 
-MAX_SNAPSHOT_ENTITIES    :: 18  // lowered from 22 due to stats adding 12 bytes per entity
+MAX_SNAPSHOT_ENTITIES    :: 17  // lowered from 22 due to stats adding 12 bytes per entity
 MAX_SNAPSHOT_PROJECTILES :: 12
 MAX_SNAPSHOT_STRIKES     :: 4
 MAX_SNAPSHOT_BEAMS       :: 4
@@ -521,7 +521,7 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
 // Header 2 + tick 4 + ack 4 + counts 4 = 14
 // Before: 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes (was at limit with MAX_ENTITIES=64, MAX_SNAPSHOT_ENTITIES=22)
-// After:  14 + 18*52 + 12*32 + 4*8 + 4*11 = 1394 bytes (MAX_ENTITIES=48, MAX_SNAPSHOT_ENTITIES=18)
+// After:  14 + 17*52 + 12*32 + 4*8 + 4*11 = 1358 bytes (MAX_ENTITIES=48, MAX_SNAPSHOT_ENTITIES=17)
 // This must stay under MAX_PACKET_SIZE (1400): the writer refuses an oversized packet and the client would simply stop hearing from us in a crowded fight.
 //
 // Look angles ride as the same i16 an input is quantized to rather than as
