@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(8)  // bumped for the cast orb carried by every entity
+PROTOCOL_VERSION :: u8(9)  // bumped for combat stats (kills, deaths, damage dealt/taken)
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -33,7 +33,7 @@ Packet_Type :: enum u8 {
 
 INPUT_REDUNDANCY :: 3
 
-MAX_SNAPSHOT_ENTITIES    :: 22
+MAX_SNAPSHOT_ENTITIES    :: 18  // lowered from 22 due to stats adding 12 bytes per entity
 MAX_SNAPSHOT_PROJECTILES :: 12
 MAX_SNAPSHOT_STRIKES     :: 4
 MAX_SNAPSHOT_BEAMS       :: 4
@@ -92,6 +92,12 @@ Snapshot_Entity :: struct {
 	// charge for as long as it is lit.
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
+
+	// Combat stats
+	kills:         u16,
+	deaths:        u16,
+	damage_dealt:  f32,
+	damage_taken:  f32,
 }
 
 Snapshot_Projectile :: struct {
@@ -509,14 +515,14 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge) = 40
+// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge), stats 12 (kills 2, deaths 2, dmg_dealt 4, dmg_taken 4) = 52
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Per-strike: seq 1, owner 1, pos 6 = 8
 // Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
 // Header 2 + tick 4 + ack 4 + counts 4 = 14
-// 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes worst case. This must stay
-// under MAX_PACKET_SIZE: the writer refuses an oversized packet and the
-// client would simply stop hearing from us in a crowded fight.
+// Before: 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes (was at limit with MAX_ENTITIES=64, MAX_SNAPSHOT_ENTITIES=22)
+// After:  14 + 18*52 + 12*32 + 4*8 + 4*11 = 1394 bytes (MAX_ENTITIES=48, MAX_SNAPSHOT_ENTITIES=18)
+// This must stay under MAX_PACKET_SIZE (1400): the writer refuses an oversized packet and the client would simply stop hearing from us in a crowded fight.
 //
 // Look angles ride as the same i16 an input is quantized to rather than as
 // floats. That is lossless here -- the server's yaw and pitch come from a
@@ -550,6 +556,10 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
 		bw_u8(&w, u8(e.channel_spell))
 		bw_u8(&w, quant_u8(e.channel_frac, 255))
+		// Combat stats
+		bw_u32(&w, u32(e.kills) | (u32(e.deaths) << 16))  // pack kills and deaths into one u32
+		bw_f32(&w, e.damage_dealt)
+		bw_f32(&w, e.damage_taken)
 	}
 
 	pcount := min(int(packet.projectile_count), MAX_SNAPSHOT_PROJECTILES)
@@ -619,6 +629,12 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.slow_ticks = int(br_u8(&r))
 		e.channel_spell = spell_id_from_wire(br_u8(&r))
 		e.channel_frac = f32(br_u8(&r)) / 255.0
+		// Combat stats
+		kd := br_u32(&r)
+		e.kills = u16(kd & 0xFFFF)
+		e.deaths = u16(kd >> 16)
+		e.damage_dealt = br_f32(&r)
+		e.damage_taken = br_f32(&r)
 		if !r.ok {
 			return {}, false
 		}

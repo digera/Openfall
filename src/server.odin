@@ -177,6 +177,7 @@ server_round_reset :: proc(server: ^Server) {
 	obelisk_world_reset(&server.obelisks)
 	projectile_clear_all(&server.projectiles)
 	server.strikes = {}
+	combat_reset_stats(&server.world)
 	entity_respawn_all(&server.world)
 	for i in 0..<MAX_BOTS {
 		if server.bots[i].active {
@@ -589,23 +590,27 @@ server_send_snapshots :: proc(server: ^Server) {
 			if spell_state.channel_spell != .None {
 				channel_frac = spell_charge_frac(&SPELL_DEFS[spell_state.channel_spell], spell_state.channel_time)
 			}
-			snapshot.entities[k] = Snapshot_Entity{
-				id            = id,
-				pos           = char.pos,
-				vel           = char.vel,
-				yaw           = char.yaw,
-				pitch         = char.pitch,
-				on_ground     = char.on_ground,
-				dead          = char.dead,
-				is_bot        = bot_ids[id],
-				health        = char.health,
-				mana          = char.mana,
-				stamina       = char.stamina,
-				team          = server.world.teams[id],
-				slow_ticks    = char.slow_ticks,
-				channel_spell = spell_state.channel_spell,
-				channel_frac  = channel_frac,
-			}
+		snapshot.entities[k] = Snapshot_Entity{
+			id            = id,
+			pos           = char.pos,
+			vel           = char.vel,
+			yaw           = char.yaw,
+			pitch         = char.pitch,
+			on_ground     = char.on_ground,
+			dead          = char.dead,
+			is_bot        = bot_ids[id],
+			health        = char.health,
+			mana          = char.mana,
+			stamina       = char.stamina,
+			team          = server.world.teams[id],
+			slow_ticks    = char.slow_ticks,
+			channel_spell = spell_state.channel_spell,
+			channel_frac  = channel_frac,
+			kills         = char.kills,
+			deaths        = char.deaths,
+			damage_dealt  = char.damage_dealt,
+			damage_taken  = char.damage_taken,
+		}
 		}
 		snapshot.entity_count = u8(take)
 

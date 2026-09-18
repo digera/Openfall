@@ -271,9 +271,11 @@ projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, target_id: Entity_ID) {
 	proj := &world.projectiles[slot]
 
-	// Copy out of the SOA array, mutate, store back.
+	// Apply damage and track stats
+	killed := combat_apply_damage(entity_world, proj.owner_id, target_id, proj.damage)
+
+	// Copy out of the SOA array for other effects
 	target := entity_world.characters[target_id]
-	target.health -= proj.damage
 	if proj.slow_ticks > 0 {
 		target.slow_ticks = max(target.slow_ticks, proj.slow_ticks)
 	}
@@ -281,9 +283,15 @@ projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_
 		character_apply_impulse(&target, proj.vel, proj.knockback)
 	}
 	entity_world.characters[target_id] = target
+
 	if SERVER_VERBOSE {
-		server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
-			SPELL_DEFS[proj.spell_id].short_name, proj.owner_id, target_id, proj.damage, target.health)
+		if killed {
+			server_log("[Combat] %s from %d killed %d with %.0f damage",
+				SPELL_DEFS[proj.spell_id].short_name, proj.owner_id, target_id, proj.damage)
+		} else {
+			server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
+				SPELL_DEFS[proj.spell_id].short_name, proj.owner_id, target_id, proj.damage, target.health)
+		}
 	}
 }
 
@@ -332,10 +340,11 @@ splash_damage :: proc(
 			continue
 		}
 		falloff := 1.0 - 0.5 * (dist / radius)
-		target.health -= damage * falloff
+		combat_apply_damage(entity_world, owner_id, id, damage * falloff)
 		if knockback > 0 {
+			target = entity_world.characters[entity_idx]  // refresh after damage
 			character_apply_impulse(&target, d, knockback * falloff)
+			entity_world.characters[entity_idx] = target
 		}
-		entity_world.characters[entity_idx] = target
 	}
 }

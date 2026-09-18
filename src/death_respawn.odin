@@ -13,7 +13,7 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 		char := entity_world.characters[i]
 
 		if char.health <= 0 && !char.dead {
-			char.dead = true
+			// combat_apply_damage already set dead=true and incremented deaths
 			char.health = 0
 			char.vel = {}
 			char.respawn_timer = RESPAWN_DELAY_SEC

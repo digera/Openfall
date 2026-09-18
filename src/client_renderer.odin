@@ -947,6 +947,133 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.color3f(0.7, 0.68, 0.62)
 		hud_center_text(cols, 5, "hold obelisks to gather essence - the center is worth double")
 	}
+
+	// Scoreboard (hold Tab)
+	if input.key_tab {
+		hud_scoreboard(world, cols, rows)
+	}
+}
+
+// Scoreboard: all active players grouped by team with their combat stats.
+// Shown only while Tab is held.
+@(private = "file")
+hud_scoreboard :: proc(world: ^Client_World, cols: f32, rows: f32) {
+	// Gather all active entities
+	type Player_Row :: struct {
+		id:           Entity_ID,
+		team:         Team_ID,
+		is_bot:       bool,
+		is_local:     bool,
+		kills:        u16,
+		deaths:       u16,
+		damage_dealt: f32,
+		damage_taken: f32,
+	}
+
+	players: [dynamic]Player_Row
+	defer delete(players)
+
+	// Add local player
+	if world.local_entity_id != INVALID_ENTITY {
+		append(&players, Player_Row{
+			id           = world.local_entity_id,
+			team         = world.local_team,
+			is_bot       = false,
+			is_local     = true,
+			kills        = world.prediction.kills,
+			deaths       = world.prediction.deaths,
+			damage_dealt = world.prediction.damage_dealt,
+			damage_taken = world.prediction.damage_taken_total,
+		})
+	}
+
+	// Add remote players
+	for i in 1..<MAX_ENTITIES {
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.id == world.local_entity_id {
+			continue
+		}
+		append(&players, Player_Row{
+			id           = remote.id,
+			team         = remote.team,
+			is_bot       = remote.is_bot,
+			is_local     = false,
+			kills        = remote.kills,
+			deaths       = remote.deaths,
+			damage_dealt = remote.damage_dealt,
+			damage_taken = remote.damage_taken,
+		})
+	}
+
+	if len(players) == 0 {
+		return
+	}
+
+	// Sort by team, then by kills descending
+	for i in 0..<len(players) {
+		for j in i+1..<len(players) {
+			a := &players[i]
+			b := &players[j]
+			if int(a.team) < int(b.team) || (a.team == b.team && a.kills > b.kills) {
+				players[i], players[j] = players[j], players[i]
+			}
+		}
+	}
+
+	// Draw backdrop
+	panel_width := f32(60)
+	panel_height := f32(len(players) + TEAM_COUNT + 4)
+	start_x := (cols - panel_width) * 0.5
+	start_y := (rows - panel_height) * 0.5
+
+	// Semi-transparent background (using repeated dark chars)
+	sdtx.color3f(0.1, 0.1, 0.12)
+	for dy in 0..<int(panel_height) {
+		sdtx.pos(start_x, start_y + f32(dy))
+		for dx in 0..<int(panel_width) {
+			sdtx.putc(' ')
+		}
+	}
+
+	// Title
+	sdtx.color3f(0.95, 0.93, 0.86)
+	sdtx.pos(start_x + panel_width * 0.5 - 5, start_y + 1)
+	sdtx.puts("SCOREBOARD")
+
+	// Column headers
+	sdtx.color3f(0.7, 0.68, 0.62)
+	sdtx.pos(start_x + 2, start_y + 3)
+	sdtx.puts("Name             K   D   Dealt  Taken")
+
+	// Draw players grouped by team
+	row := start_y + 4
+	last_team := Team_ID.None
+	for player in players {
+		// Team separator
+		if player.team != last_team {
+			if last_team != .None {
+				row += 1
+			}
+			sdtx_color(team_color(player.team))
+			sdtx.pos(start_x + 2, row)
+			sdtx.printf("--- %s ---", team_name(player.team))
+			row += 1
+			last_team = player.team
+		}
+
+		// Highlight local player
+		if player.is_local {
+			sdtx.color3f(1.0, 0.95, 0.6)
+		} else {
+			sdtx.color3f(0.85, 0.83, 0.78)
+		}
+
+		name := entity_display_name(player.id, player.is_bot)
+		sdtx.pos(start_x + 2, row)
+		sdtx.printf("%-16s %3d %3d %6.0f %6.0f",
+			name, player.kills, player.deaths, player.damage_dealt, player.damage_taken)
+		row += 1
+	}
 }
 
 // Who the crosshair is holding, under the crosshair: name in team colour over a

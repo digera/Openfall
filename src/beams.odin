@@ -98,7 +98,7 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 	if hit == INVALID_ENTITY {
 		return
 	}
-	beam_damage(world, hit, damage)
+	beam_damage(world, caster_id, hit, damage)
 
 	// Arcs: from the last body struck to the nearest hostile one not yet
 	// struck, within jump range and in the open. Each jump is worth a
@@ -132,7 +132,7 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 		if next == INVALID_ENTITY {
 			break
 		}
-		beam_damage(world, next, damage * def.beam_chain_frac)
+		beam_damage(world, caster_id, next, damage * def.beam_chain_frac)
 		out.chains[out.chain_count] = next
 		out.chain_count += 1
 		struck |= u64(1) << u64(next)
@@ -140,10 +140,8 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 	}
 }
 
-// Sixty small hits a second: no per-hit log line, the kill shows up in [Death].
+// Sixty small hits a second: no per-hit log line, kills show up in [Death].
 @(private = "file")
-beam_damage :: proc(world: ^Entity_World, target_id: Entity_ID, damage: f32) {
-	target := world.characters[target_id]
-	target.health -= damage
-	world.characters[target_id] = target
+beam_damage :: proc(world: ^Entity_World, caster_id, target_id: Entity_ID, damage: f32) {
+	combat_apply_damage(world, caster_id, target_id, damage)
 }

@@ -48,6 +48,12 @@ Client_Prediction :: struct {
 	died:         bool,
 	damage_taken: f32,
 	healed:       f32,
+
+	// Combat stats (from server, not predicted)
+	kills:         u16,
+	deaths:        u16,
+	damage_dealt:  f32,
+	damage_taken_total: f32,
 }
 
 Remote_Entity :: struct {
@@ -67,6 +73,12 @@ Remote_Entity :: struct {
 	// in it, and a telegraph that arrives early is fairer than one that is late.
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
+
+	// Combat stats (not interpolated, taken from the newest snapshot)
+	kills:         u16,
+	deaths:        u16,
+	damage_dealt:  f32,
+	damage_taken:  f32,
 }
 
 Client_Projectile :: struct {
@@ -396,6 +408,11 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 
 		if entity.id == world.local_entity_id {
 			world.local_team = entity.team
+			// Update local stats from server
+			world.prediction.kills = entity.kills
+			world.prediction.deaths = entity.deaths
+			world.prediction.damage_dealt = entity.damage_dealt
+			world.prediction.damage_taken_total = entity.damage_taken
 			client_prediction_reconcile(&world.prediction, snapshot.ack_input_tick, state)
 			continue
 		}
@@ -403,18 +420,22 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 		if entity.id >= MAX_ENTITIES {
 			continue
 		}
-		remote := &world.remote_entities[entity.id]
-		if !remote.active {
-			remote^ = {}
-			remote.id = entity.id
-			remote.active = true
-		}
-		remote.team = entity.team
-		remote.is_bot = entity.is_bot
-		remote.last_seen = world.local_time
-		remote.channel_spell = entity.channel_spell
-		remote.channel_frac = entity.channel_frac
-		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
+	remote := &world.remote_entities[entity.id]
+	if !remote.active {
+		remote^ = {}
+		remote.id = entity.id
+		remote.active = true
+	}
+	remote.team = entity.team
+	remote.is_bot = entity.is_bot
+	remote.last_seen = world.local_time
+	remote.channel_spell = entity.channel_spell
+	remote.channel_frac = entity.channel_frac
+	remote.kills = entity.kills
+	remote.deaths = entity.deaths
+	remote.damage_dealt = entity.damage_dealt
+	remote.damage_taken = entity.damage_taken
+	remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 	}
 
 	client_world_apply_projectiles(world, snapshot)

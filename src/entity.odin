@@ -6,7 +6,7 @@ import "core:fmt"
 
 Entity_ID :: u32
 INVALID_ENTITY :: Entity_ID(0)
-MAX_ENTITIES :: 64
+MAX_ENTITIES :: 48  // lowered from 64 to accommodate stats in snapshot (keeps worst-case packet <= 1400 bytes)
 
 // Networked character state. Everything here is replicated in snapshots and
 // stepped by the shared deterministic kernel in simulation.odin.
@@ -26,6 +26,12 @@ Character_State :: struct {
 
 	dead:           bool,
 	respawn_timer:  f32,
+
+	// Combat stats (server-authoritative, replicated)
+	kills:          u16,
+	deaths:         u16,
+	damage_dealt:   f32,
+	damage_taken:   f32,
 }
 
 // Input for one entity for one tick. Look angles are absolute so a dropped

@@ -16,6 +16,7 @@ Input :: struct {
 	key_d:          bool,
 	key_space:      bool,
 	key_shift:      bool,
+	key_tab:        bool,
 	jump:           bool,      // latched press
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
 	window_focused: bool,
@@ -34,6 +35,7 @@ input_clear_held :: proc() {
 	input.key_d = false
 	input.key_space = false
 	input.key_shift = false
+	input.key_tab = false
 	input.look_dx = 0
 	input.look_dy = 0
 	input.click_left = false
@@ -72,6 +74,7 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .S: input.key_s = true
 		case .D: input.key_d = true
 		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = true
+		case .TAB: input.key_tab = true
 		case .SPACE:
 			input.key_space = true
 			input.jump = true
@@ -91,6 +94,7 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .S: input.key_s = false
 		case .D: input.key_d = false
 		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = false
+		case .TAB: input.key_tab = false
 		case .SPACE: input.key_space = false
 		}
 	case .FOCUSED:
