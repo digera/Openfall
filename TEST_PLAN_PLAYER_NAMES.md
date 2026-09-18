@@ -214,8 +214,9 @@ Examples:
 ## Regression Tests
 
 - [ ] Protocol version mismatch: v8 client cannot join v9 server
-- [ ] Snapshot size: 15 entities with 10-char names → ~1100 bytes (OK)
-- [ ] Snapshot size: 22 entities with 16-char names → server sends fewer entities if >1400 bytes
+- [ ] Snapshot size: 12 entities with 10-char names → ~900 bytes (OK)
+- [ ] Snapshot size: 16 entities with 16-char names → 1386 bytes (under 1400 limit)
+- [ ] Entity visibility: only nearest 16 entities visible (reduced from 22)
 - [ ] Mouse lock/unlock still works
 - [ ] Team selection (1/2/3 keys) still works
 - [ ] Lobby refresh still works
@@ -235,14 +236,19 @@ Examples:
 ## Performance Notes
 
 **Snapshot Size**:
-- Old: ~1354 bytes worst-case (22 entities)
-- New: ~1682 bytes worst-case (22 entities, 16-char names each)
-- Typical: ~1100 bytes (15 entities, 8-char avg names)
+- Old: ~1354 bytes worst-case (22 entities, v8)
+- New: ~1386 bytes worst-case (16 entities with 16-char names, v9)
+- Typical: ~900 bytes (12 entities, 8-char avg names)
+
+**Entity Cap Reduction**:
+- `MAX_SNAPSHOT_ENTITIES` reduced from 22 → 16 to guarantee worst-case fits under 1400 bytes
+- In crowded fights (>16 nearby), server sends nearest 16
+- Typical fights have <12 entities in range
 
 **Bandwidth Impact**:
 - +17 bytes per entity per snapshot (1 length byte + avg 8-char name + 8 bytes margin)
 - At 30 Hz snapshots: +510 bytes/sec per entity replicated
-- For 15 entities: +7.5 KB/sec per client (negligible)
+- For 12 entities typical: +6 KB/sec per client (negligible)
 
 **CPU Impact**: Minimal (string copy per entity per snapshot)
 
