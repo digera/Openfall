@@ -134,6 +134,22 @@ Client_World :: struct {
 	// Sticky soft target. Drawn under the crosshair, and sent up with every
 	// input so a targeted spell lands on it once the server has validated it.
 	target_id:        Entity_ID,
+
+	// Combat log: recent damage/kill events for the local player
+	combat_events:    [MAX_SNAPSHOT_COMBAT_EVENTS]Client_Combat_Event,
+	seen_event_seqs:  [16]u8,  // ring buffer of seen event sequence numbers for deduplication
+	seen_seq_head:    int,
+}
+
+MAX_COMBAT_LOG_LINES :: 5
+COMBAT_LOG_FADE_SEC :: f32(3.0)
+
+Client_Combat_Event :: struct {
+	event_type: Combat_Event_Type,
+	other_id:   Entity_ID,
+	spell_id:   Spell_ID,
+	damage:     u8,
+	age:        f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +346,9 @@ client_world_init :: proc() -> Client_World {
 	world.local_entity_id = INVALID_ENTITY
 	world.target_id = INVALID_ENTITY
 	client_prediction_init(&world.prediction)
+	for i in 0..<MAX_SNAPSHOT_COMBAT_EVENTS {
+		world.combat_events[i].age = -1
+	}
 	return world
 }
 
@@ -346,6 +365,10 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.seen_strike_head = 0
 	world.beam_count = 0
 	world.have_server_tick = false
+	for i in 0..<MAX_SNAPSHOT_COMBAT_EVENTS {
+		world.combat_events[i].age = -1
+	}
+	world.seen_seq_head = 0
 	world.have_game_state = false
 	world.target_id = INVALID_ENTITY
 }
@@ -420,6 +443,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	client_world_apply_projectiles(world, snapshot)
 	client_world_apply_strikes(world, snapshot)
 	client_world_apply_beams(world, snapshot)
+	client_world_apply_combat_events(world, snapshot)
 }
 
 BEAM_STALE_SEC :: f64(0.2)
@@ -475,6 +499,48 @@ client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: 
 		}
 	}
 	return eye + look * reach, on_body
+}
+
+@(private = "file")
+client_world_apply_combat_events :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	for i in 0..<int(snapshot.combat_event_count) {
+		evt := &snapshot.combat_events[i]
+		
+		seen := false
+		for k in 0..<len(world.seen_event_seqs) {
+			if world.seen_event_seqs[k] == evt.seq {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		
+		world.seen_event_seqs[world.seen_seq_head] = evt.seq
+		world.seen_seq_head = (world.seen_seq_head + 1) % len(world.seen_event_seqs)
+		
+		slot := 0
+		oldest_age: f32 = -1
+		for k in 0..<MAX_SNAPSHOT_COMBAT_EVENTS {
+			if world.combat_events[k].age < 0 {
+				slot = k
+				break
+			}
+			if world.combat_events[k].age > oldest_age {
+				oldest_age = world.combat_events[k].age
+				slot = k
+			}
+		}
+		
+		world.combat_events[slot] = Client_Combat_Event{
+			event_type = evt.event_type,
+			other_id   = evt.other_id,
+			spell_id   = evt.spell_id,
+			damage     = evt.damage,
+			age        = 0,
+		}
+	}
 }
 
 @(private = "file")
@@ -650,6 +716,16 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	world.hit_marker = max(world.hit_marker - dt * 4.0, 0)
 	client_prediction_decay_offset(&world.prediction, dt)
+
+	for i in 0..<MAX_SNAPSHOT_COMBAT_EVENTS {
+		evt := &world.combat_events[i]
+		if evt.age >= 0 {
+			evt.age += dt
+			if evt.age >= COMBAT_LOG_FADE_SEC {
+				evt.age = -1
+			}
+		}
+	}
 
 	if !client_world_target_valid(world, world.target_id) {
 		world.target_id = INVALID_ENTITY

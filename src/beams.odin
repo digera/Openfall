@@ -8,7 +8,7 @@ package main
 // One tick of every lit beam. Runs after the world has moved so the trace
 // sees bodies where they are, not where they were. With `allowed` false (the
 // match is over) every beam is put out instead.
-beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
+beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool, combat_log: ^Combat_Log) {
 	for i in 1..<MAX_ENTITIES {
 		id := Entity_ID(i)
 		state := &world.spell_states[i]
@@ -39,7 +39,7 @@ beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
 		char.mana -= drain
 		world.characters[i] = char
 
-		beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
+		beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam, combat_log)
 	}
 }
 
@@ -72,7 +72,7 @@ beam_quench :: proc(world: ^Entity_World, id: Entity_ID) {
 // Trace one beam: the world clips it, the first hostile body along it takes
 // `damage`, and the arcs jump from body to body behind it. Writes where it
 // ended and who it touched into `out` for the snapshot.
-beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, origin, dir: vec3, damage: f32, out: ^Beam_State) {
+beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, origin, dir: vec3, damage: f32, out: ^Beam_State, combat_log: ^Combat_Log) {
 	caster_team := world.teams[caster_id]
 	reach := world_ray_hit(origin, dir, def.range)
 
@@ -98,7 +98,7 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 	if hit == INVALID_ENTITY {
 		return
 	}
-	beam_damage(world, hit, damage)
+	beam_damage(world, caster_id, hit, damage, def.id, combat_log)
 
 	// Arcs: from the last body struck to the nearest hostile one not yet
 	// struck, within jump range and in the open. Each jump is worth a
@@ -132,7 +132,7 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 		if next == INVALID_ENTITY {
 			break
 		}
-		beam_damage(world, next, damage * def.beam_chain_frac)
+		beam_damage(world, caster_id, next, damage * def.beam_chain_frac, def.id, combat_log)
 		out.chains[out.chain_count] = next
 		out.chain_count += 1
 		struck |= u64(1) << u64(next)
@@ -142,8 +142,9 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 
 // Sixty small hits a second: no per-hit log line, the kill shows up in [Death].
 @(private = "file")
-beam_damage :: proc(world: ^Entity_World, target_id: Entity_ID, damage: f32) {
+beam_damage :: proc(world: ^Entity_World, caster_id, target_id: Entity_ID, damage: f32, spell_id: Spell_ID, combat_log: ^Combat_Log) {
 	target := world.characters[target_id]
 	target.health -= damage
 	world.characters[target_id] = target
+	combat_log_record_damage(combat_log, world, caster_id, target_id, spell_id, damage)
 }

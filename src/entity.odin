@@ -24,8 +24,10 @@ Character_State :: struct {
 
 	slow_ticks: int,  // remaining ticks of Frost slow (0 = not slowed)
 
-	dead:           bool,
-	respawn_timer:  f32,
+	dead:             bool,
+	respawn_timer:    f32,
+	last_attacker:    Entity_ID,  // who dealt the most recent damage (for kill credit)
+	last_attack_spell: Spell_ID,   // which spell they used
 }
 
 // Input for one entity for one tick. Look angles are absolute so a dropped

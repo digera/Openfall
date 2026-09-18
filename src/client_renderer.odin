@@ -842,6 +842,9 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.puts("SLOWED")
 	}
 
+	// --- Combat log (bottom right) ---------------------------------------------
+	hud_combat_log(world, cols, rows)
+
 	// --- Hotbar (bottom center) ------------------------------------------------
 	slot_w: f32 = 14
 	start := cols * 0.5 - slot_w * f32(HOTBAR_SLOTS) * 0.5
@@ -987,4 +990,48 @@ draw_bar :: proc(value: f32, max_value: f32, width: int) {
 		sdtx.putc(' ')
 	}
 	sdtx.putc(']')
+}
+
+@(private = "file")
+hud_combat_log :: proc(world: ^Client_World, cols, rows: f32) {
+	line_count := 0
+	log_x := cols - 35
+	log_y := rows - 12
+
+	for i in 0..<MAX_SNAPSHOT_COMBAT_EVENTS {
+		evt := &world.combat_events[i]
+		if evt.age < 0 || line_count >= MAX_COMBAT_LOG_LINES {
+			continue
+		}
+
+		fade := 1.0 - evt.age / COMBAT_LOG_FADE_SEC
+		fade = clampf(fade, 0, 1)
+		
+		other_name := entity_display_name(evt.other_id, false)
+		spell_name := SPELL_DEFS[evt.spell_id].short_name
+		
+		text: string
+		col := vec3{0.7, 0.7, 0.7}
+		
+		switch evt.event_type {
+		case .Damage_Dealt:
+			text = fmt.tprintf("You hit %s for %d (%s)", other_name, evt.damage, spell_name)
+			col = vec3{1.0, 0.8, 0.3}
+		case .Damage_Taken:
+			text = fmt.tprintf("%s hit you for %d (%s)", other_name, evt.damage, spell_name)
+			col = vec3{1.0, 0.4, 0.3}
+		case .Kill:
+			text = fmt.tprintf("You defeated %s", other_name)
+			col = vec3{0.5, 1.0, 0.4}
+		case .Death:
+			text = fmt.tprintf("%s defeated you", other_name)
+			col = vec3{1.0, 0.3, 0.3}
+		}
+		
+		sdtx.pos(log_x, log_y + f32(line_count))
+		sdtx.color3f(col.x * fade, col.y * fade, col.z * fade)
+		sdtx_str(text)
+		
+		line_count += 1
+	}
 }

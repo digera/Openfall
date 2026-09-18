@@ -59,6 +59,9 @@ Server :: struct {
 	// snapshot until they age out so a lost packet does not lose the bolt.
 	strikes:       [MAX_STRIKES]Strike,
 	strike_seq:    u8,
+
+	// Combat log: damage/kill events for client HUD display
+	combat_log:    Combat_Log,
 }
 
 MAX_STRIKES       :: 16
@@ -81,6 +84,7 @@ server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 	server.lag_comp = lag_comp_init()
 	server.obelisks = obelisk_world_init()
 	server.match = match_init()
+	server.combat_log = combat_log_init()
 
 	server.bots_per_team = BOTS_PER_TEAM
 	{
@@ -140,12 +144,13 @@ server_tick :: proc(server: ^Server) {
 	bots_tick(server, SIMULATION_DT)
 
 	server_update_resources(server, SIMULATION_DT)
-	entity_tick_death_respawn(&server.world, SIMULATION_DT)
+	entity_tick_death_respawn(&server.world, SIMULATION_DT, &server.combat_log)
 
 	simulate_world_step(&server.world)
-	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
-	beams_tick(&server.world, SIMULATION_DT, server.match.state != .Ended)
+	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT, &server.combat_log)
+	beams_tick(&server.world, SIMULATION_DT, server.match.state != .Ended, &server.combat_log)
 	server_age_strikes(server, SIMULATION_DT)
+	combat_log_tick(&server.combat_log, SIMULATION_DT)
 
 	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
 	if match_tick(&server.match, &server.obelisks, SIMULATION_DT) {
@@ -714,6 +719,9 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 		snapshot.beam_count = u8(btake)
 
+		// Combat events for this client's entity
+		snapshot.combat_event_count = u8(combat_log_get_events(&server.combat_log, self_id, &snapshot.combat_events))
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
@@ -951,6 +959,7 @@ server_strike :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Sp
 	damage := def.damage * charge
 	target.health -= damage
 	server.world.characters[target_id] = target
+	combat_log_record_damage(&server.combat_log, &server.world, caster_id, target_id, def.id, damage)
 	if SERVER_VERBOSE {
 		server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
 			def.short_name, caster_id, target_id, damage, target.health)
@@ -958,7 +967,7 @@ server_strike :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Sp
 
 	at := strike_center(target.pos)
 	splash_damage(&server.world, at, caster_id, server.world.teams[caster_id], target_id,
-		damage * def.aoe_damage_frac, def.aoe_radius, def.knockback)
+		damage * def.aoe_damage_frac, def.aoe_radius, def.knockback, def.id, &server.combat_log)
 
 	// Record it where the bolt meets the ground: the target's feet.
 	slot := 0

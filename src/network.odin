@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(8)  // bumped for the cast orb carried by every entity
+PROTOCOL_VERSION :: u8(9)  // bumped for combat log events
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -37,6 +37,7 @@ MAX_SNAPSHOT_ENTITIES    :: 22
 MAX_SNAPSHOT_PROJECTILES :: 12
 MAX_SNAPSHOT_STRIKES     :: 4
 MAX_SNAPSHOT_BEAMS       :: 4
+MAX_SNAPSHOT_COMBAT_EVENTS :: 8
 
 // ---------------------------------------------------------------------------
 // Packet structs (host representation)
@@ -126,6 +127,23 @@ Snapshot_Beam :: struct {
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
 }
 
+// Combat events for the local player's combat log (outgoing hits, incoming hits, kills).
+// Per-client: only events where the client's entity is attacker or victim.
+Combat_Event_Type :: enum u8 {
+	Damage_Dealt = 0,
+	Damage_Taken = 1,
+	Kill         = 2,
+	Death        = 3,
+}
+
+Snapshot_Combat_Event :: struct {
+	seq:        u8,         // for deduplication across lost packets
+	event_type: Combat_Event_Type,
+	other_id:   Entity_ID,  // the other party: victim for dealt/kill, attacker for taken/death
+	spell_id:   Spell_ID,   // which spell did the work
+	damage:     u8,         // quantized 0-255, enough for up to 127 HP
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -137,6 +155,8 @@ Server_Snapshot_Packet :: struct {
 	strikes:          [MAX_SNAPSHOT_STRIKES]Snapshot_Strike,
 	beam_count:       u8,
 	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
+	combat_event_count: u8,
+	combat_events:    [MAX_SNAPSHOT_COMBAT_EVENTS]Snapshot_Combat_Event,
 }
 
 Snapshot_Obelisk :: struct {
@@ -589,6 +609,17 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 			bw_u8(&w, j < chains ? u8(b.chains[j]) : 0)
 		}
 	}
+
+	ccount := min(int(packet.combat_event_count), MAX_SNAPSHOT_COMBAT_EVENTS)
+	bw_u8(&w, u8(ccount))
+	for i in 0..<ccount {
+		c := &packet.combat_events[i]
+		bw_u8(&w, c.seq)
+		bw_u8(&w, u8(c.event_type))
+		bw_u8(&w, u8(c.other_id))
+		bw_u8(&w, u8(c.spell_id))
+		bw_u8(&w, c.damage)
+	}
 	return w.ok ? w.pos : 0
 }
 
@@ -674,6 +705,20 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.beam_count = u8(bcount)
+
+	ccount := min(int(br_u8(&r)), MAX_SNAPSHOT_COMBAT_EVENTS)
+	for i in 0..<ccount {
+		c := &packet.combat_events[i]
+		c.seq = br_u8(&r)
+		c.event_type = Combat_Event_Type(br_u8(&r))
+		c.other_id = entity_id_from_wire(br_u8(&r))
+		c.spell_id = spell_id_from_wire(br_u8(&r))
+		c.damage = br_u8(&r)
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.combat_event_count = u8(ccount)
 	return packet, r.ok
 }
 

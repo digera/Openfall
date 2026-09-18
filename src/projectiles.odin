@@ -130,7 +130,7 @@ projectile_hits_character :: proc(p: vec3, radius: f32, char_pos: vec3) -> bool 
 	return dz >= -radius && dz <= CHARACTER_HEIGHT_M + radius
 }
 
-projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32) {
+projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32, combat_log: ^Combat_Log) {
 	for i in 0..<MAX_PROJECTILES {
 		if !world.projectiles[i].active {
 			continue
@@ -139,7 +139,7 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 
 		proj.lifetime -= dt
 		if proj.lifetime <= 0 {
-			projectile_expire(world, entity_world, i)
+			projectile_expire(world, entity_world, i, combat_log)
 			continue
 		}
 
@@ -152,14 +152,14 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 		for s in 0..<steps {
 			new_pos := proj.pos + proj.vel * sub_dt
 
-			if !projectile_step_entities(world, entity_world, i, new_pos) {
+			if !projectile_step_entities(world, entity_world, i, new_pos, combat_log) {
 				break
 			}
 
 			// Walls, ceiling and cover.
 			if !world_point_free(new_pos, proj.radius) {
 				n := world_surface_normal(proj.pos, new_pos, proj.radius)
-				if !projectile_surface_contact(world, entity_world, i, proj.pos, n) {
+				if !projectile_surface_contact(world, entity_world, i, proj.pos, n, combat_log) {
 					break
 				}
 				continue
@@ -170,7 +170,7 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 			// which would let projectiles bury themselves before reacting.
 			if new_pos.z - proj.radius <= WORLD_FLOOR_Z {
 				contact := vec3{new_pos.x, new_pos.y, WORLD_FLOOR_Z + proj.radius}
-				if !projectile_surface_contact(world, entity_world, i, contact, {0, 0, 1}) {
+				if !projectile_surface_contact(world, entity_world, i, contact, {0, 0, 1}, combat_log) {
 					break
 				}
 				continue
@@ -184,7 +184,7 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 // Sweep one sub-step against enemies. Returns false when the projectile is
 // gone (detonated on a target).
 @(private)
-projectile_step_entities :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, at: vec3) -> bool {
+projectile_step_entities :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, at: vec3, combat_log: ^Combat_Log) -> bool {
 	proj := &world.projectiles[slot]
 
 	for entity_idx in 1..<MAX_ENTITIES {
@@ -206,11 +206,11 @@ projectile_step_entities :: proc(world: ^Projectile_World, entity_world: ^Entity
 			// Spear straight through: full damage, no detonation.
 			proj.pierce_left -= 1
 			proj.pierced_mask |= u64(1) << u64(entity_idx)
-			projectile_apply_direct(world, entity_world, slot, id)
+			projectile_apply_direct(world, entity_world, slot, id, combat_log)
 			continue
 		}
 
-		projectile_impact(world, entity_world, slot, at, id)
+		projectile_impact(world, entity_world, slot, at, id, combat_log)
 		return false
 	}
 	return true
@@ -224,12 +224,13 @@ projectile_surface_contact :: proc(
 	slot: int,
 	contact: vec3,
 	n: vec3,
+	combat_log: ^Combat_Log,
 ) -> bool {
 	proj := &world.projectiles[slot]
 	vn := dot_vec3(proj.vel, n)
 
 	if proj.bounces_left <= 0 {
-		projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY)
+		projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY, combat_log)
 		return false
 	}
 
@@ -238,7 +239,7 @@ projectile_surface_contact :: proc(
 		proj.pos = contact + n * 0.002
 		proj.vel -= n * vn
 		if len2_vec3(proj.vel) < PROJECTILE_REST_SPEED * PROJECTILE_REST_SPEED {
-			projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY)
+			projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY, combat_log)
 			return false
 		}
 	} else {
@@ -249,7 +250,7 @@ projectile_surface_contact :: proc(
 
 	// Wedged into a corner: pop rather than sit inside geometry.
 	if !world_point_free(proj.pos, proj.radius) {
-		projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY)
+		projectile_impact(world, entity_world, slot, contact, INVALID_ENTITY, combat_log)
 		return false
 	}
 	return true
@@ -257,10 +258,10 @@ projectile_surface_contact :: proc(
 
 // Fuse ran out. Anything with a splash still goes off where it stands.
 @(private)
-projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int) {
+projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, combat_log: ^Combat_Log) {
 	proj := &world.projectiles[slot]
 	if proj.aoe_radius > 0 && proj.aoe_frac > 0 {
-		projectile_impact(world, entity_world, slot, proj.pos, INVALID_ENTITY)
+		projectile_impact(world, entity_world, slot, proj.pos, INVALID_ENTITY, combat_log)
 		return
 	}
 	projectile_destroy(world, slot)
@@ -268,7 +269,7 @@ projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 
 // Damage, slow and knockback on a body the projectile ran into.
 @(private)
-projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, target_id: Entity_ID) {
+projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, target_id: Entity_ID, combat_log: ^Combat_Log) {
 	proj := &world.projectiles[slot]
 
 	// Copy out of the SOA array, mutate, store back.
@@ -281,6 +282,7 @@ projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_
 		character_apply_impulse(&target, proj.vel, proj.knockback)
 	}
 	entity_world.characters[target_id] = target
+	combat_log_record_damage(combat_log, entity_world, proj.owner_id, target_id, proj.spell_id, proj.damage)
 	if SERVER_VERBOSE {
 		server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
 			SPELL_DEFS[proj.spell_id].short_name, proj.owner_id, target_id, proj.damage, target.health)
@@ -288,13 +290,13 @@ projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_
 }
 
 // Resolve a projectile impact: direct hit, splash, then destroy.
-projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, at: vec3, direct: Entity_ID) {
+projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, at: vec3, direct: Entity_ID, combat_log: ^Combat_Log) {
 	proj := &world.projectiles[slot]
 
 	if direct != INVALID_ENTITY {
-		projectile_apply_direct(world, entity_world, slot, direct)
+		projectile_apply_direct(world, entity_world, slot, direct, combat_log)
 	}
-	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
+	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback, proj.spell_id, combat_log)
 	projectile_destroy(world, slot)
 }
 
@@ -308,6 +310,8 @@ splash_damage :: proc(
 	owner_team: Team_ID,
 	direct: Entity_ID,
 	damage, radius, knockback: f32,
+	spell_id: Spell_ID,
+	combat_log: ^Combat_Log,
 ) {
 	if radius <= 0 || damage <= 0 {
 		return
@@ -332,10 +336,12 @@ splash_damage :: proc(
 			continue
 		}
 		falloff := 1.0 - 0.5 * (dist / radius)
-		target.health -= damage * falloff
+		splash_dmg := damage * falloff
+		target.health -= splash_dmg
 		if knockback > 0 {
 			character_apply_impulse(&target, d, knockback * falloff)
 		}
 		entity_world.characters[entity_idx] = target
+		combat_log_record_damage(combat_log, entity_world, owner_id, id, spell_id, splash_dmg)
 	}
 }

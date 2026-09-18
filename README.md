@@ -145,6 +145,17 @@ The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ra
 
 Other players are wisps: a hooded robe with nothing inside it but light, and three motes orbiting it. The hood is an ellipsoid leaned back so its peak droops behind, with an opening cut toward the front; through it is the dark lining and a face - two eyes and a smile - drawn as light on a disc, which is also where the wisp's light comes from. The body is two stacked open cones, shoulder to waist to hem, with an elliptical cross-section and pleats that displace the surface so the silhouette scallops. The cloth is a two-link pendulum chain simulated on the CPU per entity in the wearer's frame (`robe_simulate`): drag from travel pushes the waist back a little and the hem more, a stop throws the body's momentum into the hem as one forward swing, ropes lift the rings as they swing out, and a swing limit stands in for the cloth meeting the body. The result does not depend on the frame rate. The shader draws the surface through those two rings with two ray-cone intersections per wisp refined onto the pleats by two Newton steps, twists the pleats between the body's yaw and a lagging hem yaw, runs ripples down them, flutters the hem edge with a travelling wave that speeds up with the wearer, and stitches team-coloured trim along the hem and the hood's rim. It is all analytic - no marching - and only evaluated for rays that pass the wisp's bounding sphere.
 
+## Combat Log
+
+A scrolling combat log in the lower right displays recent local combat events:
+
+- **Damage dealt**: "You hit Name for N (SPELL)" in yellow-gold
+- **Damage taken**: "Name hit you for N (SPELL)" in red
+- **Kills**: "You defeated Name" in green
+- **Deaths**: "Name defeated you" in bright red
+
+Up to 5 recent lines fade over 3 seconds. Server-authoritative: clients receive only their own events (attacker or victim), and damage numbers come from the server. Events are deduplicated across lost packets.
+
 ## Linux
 
 ```bash

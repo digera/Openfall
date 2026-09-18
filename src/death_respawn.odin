@@ -5,7 +5,7 @@ import "core:fmt"
 
 RESPAWN_DELAY_SEC :: f32(4.0)
 
-entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
+entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32, combat_log: ^Combat_Log) {
 	for i in 1..<MAX_ENTITIES {
 		if !entity_world.characters[i].active {
 			continue
@@ -17,6 +17,9 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			char.health = 0
 			char.vel = {}
 			char.respawn_timer = RESPAWN_DELAY_SEC
+			if char.last_attacker != INVALID_ENTITY && char.last_attacker != Entity_ID(i) {
+				combat_log_record_kill(combat_log, char.last_attacker, Entity_ID(i), char.last_attack_spell)
+			}
 			if SERVER_VERBOSE {
 				fmt.printf("[Death] Entity %d died\n", i)
 			}
@@ -44,6 +47,8 @@ entity_respawn :: proc(char: ^Character_State, team: Team_ID, slot: int) {
 	char.slow_ticks = 0
 	char.dead = false
 	char.respawn_timer = 0
+	char.last_attacker = INVALID_ENTITY
+	char.last_attack_spell = .None
 	// Face the center (look is client-authoritative, so this only sticks for bots)
 	if team != .None {
 		char.yaw = wrap_angle(team_angle(team) + 3.14159265)
