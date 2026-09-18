@@ -84,6 +84,7 @@ client_init :: proc "c" () {
 	camera_fx_init(&game_client.fx)
 
 	client_renderer_init(&game_client.renderer)
+	client_audio_init()
 	fmt.println("Client initialized, looking for server...")
 }
 
@@ -150,6 +151,7 @@ client_frame :: proc "c" () {
 		client_step_simulation(gc, dt)
 	}
 
+	client_audio_update(gc, dt)
 	client_world_update(&gc.client_world, dt)
 	client_update_target(gc)
 	camera_fx_update(&gc.fx, gc, dt)
@@ -166,6 +168,7 @@ client_cleanup :: proc "c" () {
 	context = runtime.default_context()
 	network_client_shutdown(&game_client.network)
 	client_renderer_shutdown(&game_client.renderer)
+	client_audio_shutdown()
 
 	rate, total := client_prediction_stats(&game_client.client_world.prediction)
 	fmt.printf("[Client] Prediction: %d ticks, %.1f%% corrected\n", total, rate * 100)
@@ -200,6 +203,7 @@ client_team_allowed :: proc(gc: ^Game_Client, team: Team_ID) -> bool {
 
 client_reset_to_lobby :: proc(gc: ^Game_Client) {
 	client_world_reset_session(&gc.client_world)
+	client_audio_reset()
 	gc.phase = .Connecting
 	gc.have_lobby = false
 	gc.hello_timer = 0
@@ -379,6 +383,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	// Dying, unlocking the mouse or the match ending drop the wind-up on the
 	// floor. Only letting go of the button fires.
 	if !alive || match_over || !sapp.mouse_locked() {
+		client_sfx_note_fizzle(gc)
 		client_drop_charge(gc)
 		return .None, .None
 	}
@@ -395,6 +400,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 			// spell up again once its cooldown ends is deliberate: holding
 			// through the cooldown starts the next wind-up automatically.
 			if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
+				client_sfx_note_fizzle(gc)
 				client_drop_charge(gc)
 				return .None, .None
 			}
@@ -404,6 +410,18 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 			if def.payload == .Strike {
 				target, ok := client_world_strike_target(&gc.client_world)
 				if !ok || !strike_target_in_range(def, eye, look, target.display_state.pos) {
+					client_sfx_note_fizzle(gc)
+					client_drop_charge(gc)
+					return .None, .None
+				}
+			}
+			// A heal can start on the caster alone. At full health it needs a
+			// wounded ally in range, the same way a strike needs a hostile.
+			if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
+				target, ok := client_world_heal_target(&gc.client_world)
+				if !ok || target.display_state.health >= HEALTH_MAX ||
+				   !strike_target_in_range(def, eye, look, target.display_state.pos) {
+					client_sfx_note_fizzle(gc)
 					client_drop_charge(gc)
 					return .None, .None
 				}
@@ -413,9 +431,19 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 		}
 		// Losing the target mid-hold (they died, or the crosshair moved on to
 		// a teammate) drops the charge so the player can start over at once
-		// rather than find out on release.
+		// rather than find out on release. A heal at full health is the same
+		// for its ally; a wounded caster keeps winding even if the ally is gone.
 		if def.payload == .Strike {
 			if _, ok := client_world_strike_target(&gc.client_world); !ok {
+				client_sfx_note_fizzle(gc)
+				client_drop_charge(gc)
+				return .None, .None
+			}
+		}
+		if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
+			target, ok := client_world_heal_target(&gc.client_world)
+			if !ok || target.display_state.health >= HEALTH_MAX {
+				client_sfx_note_fizzle(gc)
 				client_drop_charge(gc)
 				return .None, .None
 			}
@@ -444,7 +472,11 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	charge := spell_charge_frac(def, gc.charge_accum)
 	client_drop_charge(gc)
 	// Letting go of a beam just puts it out; there is nothing to cast.
-	if def.payload == .Beam || charge < SPELL_MIN_CHARGE {
+	if def.payload == .Beam {
+		return .None, .None
+	}
+	if charge < SPELL_MIN_CHARGE {
+		client_audio_play(.Fizzle)
 		return .None, .None
 	}
 	// A strike whose target is out of reach fizzles here for the same reason
@@ -452,6 +484,21 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	if def.payload == .Strike {
 		target, ok := client_world_strike_target(&gc.client_world)
 		if !ok || !strike_target_in_reach(def, eye, look, target.display_state.pos) {
+			client_audio_play(.Fizzle)
+			return .None, .None
+		}
+	}
+	// A heal with nobody missing health, or whose only ally has ducked out of
+	// reach, fizzles the same way.
+	if def.payload == .Heal {
+		self_ok := pred.predicted_char.health < HEALTH_MAX
+		ally_ok := false
+		if target, ok := client_world_heal_target(&gc.client_world); ok &&
+		   target.display_state.health < HEALTH_MAX {
+			ally_ok = strike_target_in_reach(def, eye, look, target.display_state.pos)
+		}
+		if !self_ok && !ally_ok {
+			client_audio_play(.Fizzle)
 			return .None, .None
 		}
 	}
@@ -460,6 +507,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	gc.cast_pulse = 1
 	gc.last_cast = spell
 	camera_fx_on_cast(&gc.fx, spell)
+	client_sfx_play_cast(spell)
 	return spell, .None
 }
 

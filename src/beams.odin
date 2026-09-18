@@ -1,10 +1,9 @@
 package main
 
 // Server-authoritative beams: spells that work on whoever is in front of them
-// for every tick they are held -- burning what the crosshair is on, or mending
-// an ally in a wider cone. There is no beam object; the beam is a state of its
-// caster. The wind-up bookkeeping in server_advance_channel decides whether a
-// beam is lit, this decides what it does while it is.
+// for every tick they are held. There is no beam object; the beam is a state
+// of its caster. The wind-up bookkeeping in server_advance_channel decides
+// whether a beam is lit, this decides what it does while it is.
 
 // One tick of every lit beam. Runs after the world has moved so the trace
 // sees bodies where they are, not where they were. With `allowed` false (the
@@ -26,18 +25,6 @@ beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
 		origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
 		dir := camera_forward(char.yaw, char.pitch)
 
-		// A heal beam picks who it mends before it is paid for. With nobody
-		// hurt in front of it there is nothing to buy, so it idles: lit, free,
-		// and pointing where the caster is looking until someone needs it.
-		mend := INVALID_ENTITY
-		if def.beam_heals {
-			mend = heal_beam_target(world, id, def, origin, dir, world.inputs[i].target_id)
-			if mend == INVALID_ENTITY {
-				state.beam = {end = origin + dir * world_ray_hit(origin, dir, def.range), hit = INVALID_ENTITY}
-				continue
-			}
-		}
-
 		// Running dry ends the beam and rests it. Without the rest, holding
 		// the button at zero mana would relight it every few ticks of regen.
 		drain := def.beam_mana_per_sec * dt
@@ -52,14 +39,7 @@ beams_tick :: proc(world: ^Entity_World, dt: f32, allowed: bool) {
 		char.mana -= drain
 		world.characters[i] = char
 
-		if def.beam_heals {
-			beam_mend(world, mend, def.beam_dps * dt)
-			// The beam bends to whoever it mends rather than running along the
-			// crosshair, so a player can see which ally it picked.
-			state.beam = {end = strike_center(world.characters[mend].pos), hit = mend}
-		} else {
-			beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
-		}
+		beam_trace(world, id, def, origin, dir, def.beam_dps * dt, &state.beam)
 	}
 }
 
@@ -158,74 +138,10 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 	}
 }
 
-// Who a heal beam mends this tick, in order of preference: the ally the
-// crosshair has picked out, the nearest wounded ally in the beam's cone, or the
-// caster themselves. INVALID_ENTITY means there is nobody to mend -- everyone
-// in front of the beam is already whole -- and the caller idles the beam rather
-// than spending mana on nothing. `sticky` is the caster's soft target, trusted
-// no further than any other client claim: it is re-checked here like a strike's.
-heal_beam_target :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, origin, dir: vec3, sticky: Entity_ID) -> Entity_ID {
-	// The crosshair's own pick wins, so with two wounded allies in the cone the
-	// player chooses which one the beam follows.
-	if heal_beam_can_mend(world, caster_id, sticky) &&
-	   heal_beam_in_reach(def, origin, dir, world.characters[sticky].pos) {
-		return sticky
-	}
-
-	best := INVALID_ENTITY
-	best_d2 := f32(0)
-	for i in 1..<MAX_ENTITIES {
-		id := Entity_ID(i)
-		if !heal_beam_can_mend(world, caster_id, id) {
-			continue
-		}
-		pos := world.characters[i].pos
-		if !heal_beam_in_reach(def, origin, dir, pos) {
-			continue
-		}
-		d2 := len2_vec3(strike_center(pos) - origin)
-		if best == INVALID_ENTITY || d2 < best_d2 {
-			best = id
-			best_d2 = d2
-		}
-	}
-	if best != INVALID_ENTITY {
-		return best
-	}
-
-	// Nobody in front of it: the beam curls back on the caster, which is all a
-	// player alone in a lane gets out of it.
-	if world.characters[caster_id].health < HEALTH_MAX {
-		return caster_id
-	}
-	return INVALID_ENTITY
-}
-
-// Is `target_id` someone this caster's heal beam has any business mending: a
-// living teammate other than themselves, with health missing to put back.
-@(private = "file")
-heal_beam_can_mend :: proc(world: ^Entity_World, caster_id, target_id: Entity_ID) -> bool {
-	if !entity_alive(world, target_id) {
-		return false
-	}
-	if !spell_target_valid_for_filter(.Friendly, caster_id, target_id, world.teams[caster_id], world.teams[target_id]) {
-		return false
-	}
-	return world.characters[target_id].health < HEALTH_MAX
-}
-
 // Sixty small hits a second: no per-hit log line, the kill shows up in [Death].
 @(private = "file")
 beam_damage :: proc(world: ^Entity_World, target_id: Entity_ID, damage: f32) {
 	target := world.characters[target_id]
 	target.health -= damage
-	world.characters[target_id] = target
-}
-
-// The same in reverse, and just as quiet: the health bar is the feedback.
-@(private = "file")
-beam_mend :: proc(world: ^Entity_World, target_id: Entity_ID, healing: f32) {
-	target := world.characters[target_id]
-	target.health = min(target.health + healing, HEALTH_MAX)
 	world.characters[target_id] = target
 }

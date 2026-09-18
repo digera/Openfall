@@ -84,7 +84,7 @@ $env:BOTS_PER_TEAM = "3"
 | Shift | Sprint (drains stamina) |
 | Space | Jump |
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
-| Hold LMB | Charge the selected spell (Heal and Thunderbolt run for as long as they are held) |
+| Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
 | Release LMB | Cast at the charge reached |
 | Esc | Unlock mouse |
 
@@ -94,20 +94,18 @@ Most spells are charge-cast: holding LMB winds them up over their cast time and 
 
 The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held. What it is holding is in every snapshot, so a wind-up is visible on the caster as a cast orb (below) rather than being something only they know about.
 
-Thunderbolt and Friendly Heal are the exceptions: they are held beams with no wind-up, and nothing happens on release. Holding one lights a beam that draws mana every tick it does work, until it is released or the caster runs dry.
+Thunderbolt is the exception: it is a held beam with no wind-up, and nothing happens on release. Holding it lights a beam that draws mana every tick it does work, until it is released or the caster runs dry.
 
 | Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
-| Friendly Heal | held | 3.0s after running dry | 20/s while mending | 30 health/s to an ally in a wide 18 m cone, or to yourself |
+| Friendly Heal | 1.0s | 14.0s | 40 | 20–50 to you and a targeted ally |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
-Friendly Heal is Thunderbolt in reverse: a held beam that mends instead of burns, and the only spell on the bar that does something for someone else. It restores 30 health a second for 20 mana a second, so a full pool buys five seconds and about 150 health — more than a full bar of mana is worth in damage, but only if there is someone to spend it on. Who it mends is decided in that order: the teammate under your crosshair, then the nearest wounded teammate inside a 60-degree cone out to 18 m, then yourself. The cone is much wider than a damage beam's because keeping a moving ally up should not be an aim test, and the beam visibly bends to whoever it picked. Cover breaks it: it only mends people it can see.
-
-It costs nothing to hold over a healthy team. With nobody hurt in front of it the beam idles — lit, green and drawing no mana — and starts mending the tick someone needs it, so there is no way to waste a pool by holding the button. It is still sustain and not an escape: you are standing in the open, lit up green, doing no damage while it runs, so trading into a healing opponent wins. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
+Friendly Heal is the only spell on the bar that does something for someone else: a 1.0s wind-up that restores 20–50 (scaling with charge, 50 at full) to you and, if you have a teammate under the crosshair within 18 m and in the open, to them as well. It costs 40 mana and rests for 14 s, so it is a planned mend rather than sustain you hold through a fight — half a bar each at full charge, less than one lance, and you are standing still while it winds. A heal at full health with nobody hurt in front of you is refused rather than eating the mana, so it cannot be pre-charged before a fight. Cover breaks the ally half: if they duck out of sight before it fires, you still mend yourself if you need it, and the whole cast fizzles only if nobody was missing health. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 
@@ -126,7 +124,7 @@ The shape of each tell is the shape of what is about to happen, so the spell is 
 | Frost Lance | cyan, tapered | the charge draws out into the spear it becomes, dead straight and the longest reach on the bar |
 | Call Lightning | white-blue | a crackling column climbing to the sky the bolt falls out of, plus the line to whose head it lands on |
 | Thunderbolt | electric blue | crackles in place for as long as the beam pouring out of it is lit |
-| Friendly Heal | soft green | breathes rather than crackling, the only orb that promises nobody harm |
+| Friendly Heal | soft green | a slow swell, the only orb that promises nobody harm |
 | Blink | white | a flash with nowhere aimed, since nothing is thrown (off the hotbar) |
 
 The last quarter of a wind-up runs white, so the moment before a release is unmistakable even at a range where the colour has washed out. Held beams never get that flash — there is no release to warn about — and they leave from the orb rather than from the middle of the robe. The orb lights its own caster too: a wisp charging a lance washes its own cloth and the stone under it cyan. Your own hand orb is the same object seen from the inside, so it takes the charging spell's colour and swells with it.
@@ -137,7 +135,7 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 
 **Context-aware targeting:** The sticky target respects the selected spell. Offensive spells (Missile, Orb, Lance, Call Lightning, Thunderbolt) only stick to enemies. Heal only sticks to teammates (not yourself). Switching spells clears an invalid target or retargets under the crosshair to a valid one, so the bar stays predictable when you swap slots mid-fight.
 
-The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. The heal beam reads it the same way: point at the teammate you mean to keep alive and the beam follows them rather than whoever happens to be nearest. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. Friendly Heal reads it the same way for the ally half: point at the teammate you mean to keep alive and they are mended with you. Without a teammate under the crosshair it still mends you. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 

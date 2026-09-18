@@ -410,16 +410,13 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		// A beam is held rather than released: light it, keep it on the target
 		// for a burst, and let go when the burst is up, the target is gone, or
 		// the server has already put it out for want of mana.
-		heals := SPELL_DEFS[b.charge_spell].beam_heals
 		if b.charge_time == 0 && !beam_light(&server.world, b.id, b.charge_spell) {
 			b.charge_spell = .None
 			b.cast_timer = 0.3
 		} else {
 			b.charge_time += dt
 			lit := spell_state_beaming(&server.world.spell_states[b.id])
-			// A heal beam mends the bot itself when there is nobody else, so
-			// losing the enemy it was fighting is no reason to put it out.
-			if (!have_target && !heals) || !lit || b.charge_time >= b.beam_hold {
+			if !have_target || !lit || b.charge_time >= b.beam_hold {
 				beam_quench(&server.world, b.id)
 				b.charge_spell = .None
 				b.charge_time = 0
@@ -427,9 +424,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			}
 		}
 	} else if b.charge_spell != .None {
-		// A wind-up needs something to throw the spell at, and settled aim to
-		// throw it with.
-		if !have_target {
+		// A self-cast needs neither a target nor settled aim, so a bot that is
+		// backing out of a fight can still finish the heal it started.
+		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
+		if !have_target && !self_cast {
 			b.charge_spell = .None
 			b.charge_time = 0
 			b.cast_timer = 0.2
@@ -438,7 +436,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			def := &SPELL_DEFS[b.charge_spell]
 			// The aim gate can't stall the release forever, or a bot that never
 			// settles would hold its charge for the rest of the match.
-			aimed := abs(yaw_diff) < 0.12
+			aimed := self_cast || abs(yaw_diff) < 0.12
 			if b.charge_time >= def.cast_time && (aimed || b.charge_time >= def.cast_time + 0.6) {
 				// The cast reads the entity's yaw/pitch, which the sim sets from
 				// input next tick; apply our aim now so the shot goes where we look.
@@ -454,11 +452,9 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 	} else if b.cast_timer <= 0 && bot_wants_heal(server, b, char) {
 		// Healing outranks shooting: a bot this low gets more out of the heal
-		// beam than out of one more missile, and it holds the beam longer than
-		// a damage one because the health only comes back while it is lit.
+		// than out of one more missile.
 		b.charge_spell = .Friendly_Heal
 		b.charge_time = 0
-		b.beam_hold = rand.float32_range(1.5, 3.0)
 	} else if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
 		spell := b.next_spell
 		if spell == .None {
@@ -590,9 +586,8 @@ bot_find_target :: proc(server: ^Server, b: ^Bot, eye: vec3) -> Entity_ID {
 	return best
 }
 
-// Hurt enough that a few seconds of mending is worth more than a few seconds
-// of shooting, and only while the beam would really light -- spell_castable
-// keeps bots off a heal they cannot pay for.
+// Hurt enough that a full heal is nearly all value, and only while the heal
+// would really land -- spell_castable keeps bots off a heal they cannot pay for.
 @(private = "file")
 bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool {
 	if char.health > HEALTH_MAX * 0.45 {
@@ -601,7 +596,7 @@ bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool 
 	return spell_castable(.Friendly_Heal, char, server.world.spell_states[b.id].cooldowns[.Friendly_Heal])
 }
 
-// Offence only: the chosen spell also drives the aim lead, so the heal beam has
+// Offence only: the chosen spell also drives the aim lead, so a self-cast has
 // no business in here.
 @(private = "file")
 bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f32) -> Spell_ID {

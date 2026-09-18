@@ -797,6 +797,11 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	if def.payload == .Strike && !server_strike_target_ok(server, caster_id, target_id, def, origin, direction) {
 		return false
 	}
+	// A heal with nobody missing health is the same: refused before the mana
+	// is spent, whether that is the caster, a reachable ally, or both.
+	if def.payload == .Heal && !server_heal_does_work(server, caster_id, target_id, def, origin, direction) {
+		return false
+	}
 
 	charge := clampf(charge_frac, SPELL_MIN_CHARGE, 1)
 
@@ -841,6 +846,25 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		// so the caster copy written back below stays authoritative.
 		server_strike(server, caster_id, target_id, def, charge)
 
+	case .Heal:
+		amount := spell_heal_amount(def, charge)
+		self_got := character_mend(&char, amount)
+		ally_got: f32 = 0
+		if server_heal_ally_ok(server, caster_id, target_id, def, origin, direction) {
+			ally := server.world.characters[target_id]
+			ally_got = character_mend(&ally, amount)
+			server.world.characters[target_id] = ally
+		}
+		if SERVER_VERBOSE {
+			if ally_got > 0 {
+				server_log("[Combat] %s mended %d for %.0f and %d for %.0f (%.0f HP)",
+					def.short_name, caster_id, self_got, target_id, ally_got, char.health)
+			} else {
+				server_log("[Combat] %s mended %d for %.0f (%.0f HP)",
+					def.short_name, caster_id, self_got, char.health)
+			}
+		}
+
 	case .Beam: // refused above
 	case .None:
 	}
@@ -861,6 +885,32 @@ server_strike_target_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID
 		return false
 	}
 	if !teams_are_enemies(server.world.teams[caster_id], server.world.teams[target_id]) {
+		return false
+	}
+	return strike_target_in_reach(def, eye, look, server.world.characters[target_id].pos)
+}
+
+// A heal is worth firing if the caster is missing health, or a reachable ally
+// is. Full bars on everyone is a refuse, not a spend.
+@(private = "file")
+server_heal_does_work :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, eye, look: vec3) -> bool {
+	if server.world.characters[caster_id].health < HEALTH_MAX {
+		return true
+	}
+	return server_heal_ally_ok(server, caster_id, target_id, def, eye, look)
+}
+
+// Everything the server demands of a heal's ally: alive, friendly, missing
+// health, and within the same reach test a strike uses.
+@(private = "file")
+server_heal_ally_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, eye, look: vec3) -> bool {
+	if !entity_alive(&server.world, target_id) {
+		return false
+	}
+	if server.world.characters[target_id].health >= HEALTH_MAX {
+		return false
+	}
+	if !spell_target_valid_for_filter(.Friendly, caster_id, target_id, server.world.teams[caster_id], server.world.teams[target_id]) {
 		return false
 	}
 	return strike_target_in_reach(def, eye, look, server.world.characters[target_id].pos)

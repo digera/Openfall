@@ -209,7 +209,7 @@ camera_fx_on_cast :: proc(fx: ^Camera_FX, spell: Spell_ID) {
 	case .Frost_Lance:    fx.cast_kick += 0.020
 	case .Call_Lightning: fx.cast_kick += 0.030; fx.fov_kick = max(fx.fov_kick, 0.40)
 	case .Blink:          // handled when the teleport lands
-	case .Friendly_Heal:  // handled when the health actually comes back
+	case .Friendly_Heal:  fx.cast_kick += 0.012
 	}
 }
 
@@ -577,11 +577,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				from = {fs_params.hand_pos.x, fs_params.hand_pos.y, fs_params.hand_pos.z}
 				trace_eye := base_pos + vec3{0, 0, PLAYER_EYE_M}
 				look := camera_forward(gc.view_yaw, gc.view_pitch)
-				if def.beam_heals {
-					to, on_body = client_world_heal_beam_end(world, def, trace_eye, look, base_pos)
-				} else {
-					to, on_body = client_world_beam_end(world, def, trace_eye, look)
-				}
+				to, on_body = client_world_beam_end(world, def, trace_eye, look)
 			} else {
 				remote := &world.remote_entities[int(b.owner_id)]
 				if !remote.active {
@@ -871,25 +867,18 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		if spell == gc.charging_spell && def.payload == .Beam {
 			// A beam has no wind-up to show; the bar crackles while the server
 			// keeps it lit and the mana drain, drawn to its right, is the
-			// thing to watch. A heal beam with nobody hurt in front of it is
-			// lit and paying nothing, which the bar says rather than promise a
-			// drain that is not happening.
-			beam, lit := client_world_local_beam(world)
-			idle := lit && def.beam_heals && !beam.hit
-			switch {
-			case !lit, idle:      sdtx.color3f(0.45, 0.5, 0.6)
-			case def.beam_heals:  sdtx.color3f(0.55, 0.95, 0.68)
-			case:                 sdtx.color3f(0.75, 0.88, 1.0)
+			// thing to watch.
+			_, lit := client_world_local_beam(world)
+			if !lit {
+				sdtx.color3f(0.45, 0.5, 0.6)
+			} else {
+				sdtx.color3f(0.75, 0.88, 1.0)
 			}
 			phase := int(world.local_time * 24)
 			for k in 0..<10 {
 				sdtx.putc((k + phase) % 3 == 0 ? '~' : '#')
 			}
-			if idle {
-				sdtx.puts(" nobody hurt")
-			} else {
-				sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
-			}
+			sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
 		} else if spell == gc.charging_spell {
 			// Wind-up: dim until the release would actually produce a cast,
 			// bright once it is past the minimum charge.
@@ -912,6 +901,10 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 				sdtx.putc(k < filled ? '=' : '.')
 			}
 			sdtx.printf(" %.1f", cd)
+		} else if def.payload == .Heal && !client_heal_has_work(world, local) {
+			// Nothing to mend: say so rather than blaming the mana.
+			sdtx.color3f(0.5, 0.7, 0.55)
+			sdtx.puts("at full hp")
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)

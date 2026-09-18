@@ -45,6 +45,7 @@ Client_Prediction :: struct {
 	// Events for the presentation layer (consumed each frame)
 	teleported:   bool,
 	respawned:    bool,
+	died:         bool,
 	damage_taken: f32,
 	healed:       f32,
 }
@@ -171,12 +172,16 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 	}
 
 	// Damage / heal / death events. Health coming back while dead is a respawn
-	// refilling the bar, which has its own flash, so it is not a heal.
-	if server_state.health < pred.last_server_health - 0.5 && !server_state.dead {
+	// refilling the bar, which has its own flash, so it is not a heal. The
+	// killing blow still counts as damage so the hurt flash (and SFX) fire.
+	if server_state.health < pred.last_server_health - 0.5 && !pred.last_server_dead {
 		pred.damage_taken += pred.last_server_health - server_state.health
 	}
 	if server_state.health > pred.last_server_health + 0.5 && !pred.last_server_dead {
 		pred.healed += server_state.health - pred.last_server_health
+	}
+	if !pred.last_server_dead && server_state.dead {
+		pred.died = true
 	}
 	if pred.last_server_dead && !server_state.dead {
 		pred.respawned = true
@@ -472,48 +477,6 @@ client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: 
 	return eye + look * reach, on_body
 }
 
-// The same for a heal beam, which bends to the ally it mends instead of running
-// along the crosshair. Mirrors heal_beam_target on the server -- the crosshair's
-// pick, then the nearest wounded ally in the cone, then the player themselves --
-// off the interpolated positions the player can actually see. With nobody to
-// mend the beam idles along the look direction, which is what the server draws.
-client_world_heal_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look, self_pos: vec3) -> (end: vec3, on_body: bool) {
-	best := INVALID_ENTITY
-	best_d2 := f32(0)
-	for i in 1..<MAX_ENTITIES {
-		id := Entity_ID(i)
-		remote := &world.remote_entities[i]
-		if !remote.active || remote.display_state.dead || id == world.local_entity_id {
-			continue
-		}
-		if !spell_target_valid_for_filter(.Friendly, world.local_entity_id, id, world.local_team, remote.team) {
-			continue
-		}
-		if remote.display_state.health >= HEALTH_MAX {
-			continue
-		}
-		pos := remote.display_state.pos
-		if !heal_beam_in_reach(def, eye, look, pos) {
-			continue
-		}
-		if id == world.target_id {
-			return strike_center(pos), true
-		}
-		d2 := len2_vec3(strike_center(pos) - eye)
-		if best == INVALID_ENTITY || d2 < best_d2 {
-			best = id
-			best_d2 = d2
-		}
-	}
-	if best != INVALID_ENTITY {
-		return strike_center(world.remote_entities[best].display_state.pos), true
-	}
-	if world.prediction.predicted_char.health < HEALTH_MAX {
-		return strike_center(self_pos), true
-	}
-	return eye + look * world_ray_hit(eye, look, def.range), false
-}
-
 @(private = "file")
 client_world_apply_strikes :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
 	for i in 0..<int(snapshot.strike_count) {
@@ -727,6 +690,28 @@ client_world_strike_target :: proc(world: ^Client_World) -> (remote: ^Remote_Ent
 	}
 	remote = &world.remote_entities[world.target_id]
 	return remote, teams_are_enemies(world.local_team, remote.team)
+}
+
+// The current target if it is someone a heal may land on: alive and friendly.
+// Missing health and reach are the caller's question, matching how a strike
+// leaves where they stand to the server.
+client_world_heal_target :: proc(world: ^Client_World) -> (remote: ^Remote_Entity, ok: bool) {
+	if !client_world_target_valid(world, world.target_id) {
+		return nil, false
+	}
+	remote = &world.remote_entities[world.target_id]
+	return remote, spell_target_valid_for_filter(
+		.Friendly, world.local_entity_id, world.target_id, world.local_team, remote.team)
+}
+
+// Is there anyone this heal would actually mend: the local player, or a
+// wounded teammate under the crosshair. Range and cover are firing's question.
+client_heal_has_work :: proc(world: ^Client_World, local: Character_State) -> bool {
+	if local.health < HEALTH_MAX {
+		return true
+	}
+	target, ok := client_world_heal_target(world)
+	return ok && target.display_state.health < HEALTH_MAX
 }
 
 // Entities are tested at their interpolated display position, so the selection

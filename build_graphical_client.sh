@@ -66,6 +66,7 @@ done
 $ODIN_BIN build "$TMP_SRC" \
     -out:"$OUT_DIR/nexus_client" \
     -collection:sokol="$SOKOL_PATH" \
+    -collection:game="$ROOT" \
     -extra-linker-flags:"-lGL -lX11 -lXi -lXcursor -lasound -lpthread -lm -ldl" \
     ${BUILD_FLAGS:--debug}
 

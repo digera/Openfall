@@ -91,7 +91,7 @@ function Build-OdinPackage {
 # Server-only files:     server.odin, bots.odin, main_server.odin, camera_minimal.odin
 $serverExclude = @(
     "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "main_test_client.odin", "main_combat_test.odin",
+    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_test_client.odin", "main_combat_test.odin",
     "postgres.odin", "persistence.odin"
 )
 
@@ -103,7 +103,7 @@ $clientExclude = @(
 
 $testClientExclude = @(
     "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "main_server.odin", "server.odin", "bots.odin",
+    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_server.odin", "server.odin", "bots.odin",
     "main_combat_test.odin",
     "postgres.odin", "persistence.odin"
 )
@@ -148,7 +148,7 @@ if ($Target -eq "client" -or $Target -eq "both") {
     Write-Host ">> Building graphical client..."
     $tmp = Join-Path $OutDir "gfx_client_src"
     Copy-StagedSources -Dest $tmp -Exclude $clientExclude
-    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client.exe") -ExtraArgs @("-collection:sokol=$Sokol")
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client.exe") -ExtraArgs @("-collection:sokol=$Sokol", "-collection:game=$Root")
     Remove-Item -Recurse -Force $tmp
     Write-Host ">> Built $(Join-Path $OutDir 'nexus_client.exe')"
 }

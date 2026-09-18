@@ -42,7 +42,7 @@ if [ "$BUILD_MODE" = "server" ] || [ "$BUILD_MODE" = "both" ]; then
         # Exclude client-only files, combat test, and persistence (unless ENABLE_PERSISTENCE=1)
         if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
               "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
-              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "main_test_client.odin" && \
+              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "client_audio.odin" && "$base" != "main_test_client.odin" && \
               "$base" != "main_combat_test.odin" && \
               "$base" != "postgres.odin" && "$base" != "persistence.odin" ]]; then
             cp "$f" "$TMP_SRC/"
@@ -71,7 +71,7 @@ if [ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ]; then
         # Exclude server and render files and combat test
         if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
               "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
-              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && \
+              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "client_audio.odin" && \
               "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" && \
               "$base" != "main_combat_test.odin" ]]; then
             cp "$f" "$TMP_SRC/"
