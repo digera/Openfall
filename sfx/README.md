@@ -1,10 +1,14 @@
 # SFX
 
-1999-era one-shot synths for Nexus Arena. Graphs are authored in the Wirebang dialect (oscillator, noise, filter, gain, shaper, panner, delay) and Live-exported to Odin.
+1999-era one-shot synths for Nexus Arena. Graphs are authored in the Wirebang dialect and **shipped as Live-export Odin scripts**. At engine init the client runs each script once and caches the PCM; playing a cue is a buffer copy, not a resynthesis.
 
-Each generated `*.odin` file is a self-contained `play_*` procedure plus the Wirebang DSP helpers. The game does not import Wirebang at runtime; it owns a miniaudio engine and calls `play_cue`.
+## Layout
 
-Charge and beam "loops" are overlapping one-shot grains retriggered by `src/client_audio.odin`.
+| Path | What it is |
+|---|---|
+| `tools/gen_sfx/patches.odin` | Node graphs |
+| `sfx/*.odin` (generated) | Wirebang `play_*` scripts |
+| `sfx/cue.odin` / `sfx/bank.odin` | Cue list, init-time cache, playback pool |
 
 ## Cues
 
@@ -22,6 +26,8 @@ Charge and beam "loops" are overlapping one-shot grains retriggered by `src/clie
 | `Fizzle` | Charge dropped under 20% or a strike/heal lost its target |
 | `Land` / `Jump` | Movement |
 
+Charge and beam "loops" are overlapping cached grains retriggered by `src/client_audio.odin`.
+
 ## Regenerate
 
 From the repo root, with Wirebang checked out locally:
@@ -30,4 +36,4 @@ From the repo root, with Wirebang checked out locally:
 odin run tools/gen_sfx -collection:wb=C:\Users\lusr\wirebang-odin
 ```
 
-`cue.odin` is handwritten and is not overwritten.
+`cue.odin` and `bank.odin` are handwritten and are not overwritten.

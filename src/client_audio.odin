@@ -49,13 +49,20 @@ client_audio_init :: proc() {
 		client_audio.ok = false
 		return
 	}
+	if !sfx.init(&client_audio.eng) {
+		fmt.eprintln("[Audio] failed to cache SFX scripts")
+		ma.engine_uninit(&client_audio.eng)
+		client_audio.ok = false
+		return
+	}
 	client_audio.ok = true
 	client_audio.prev_on_ground = true
-	fmt.println("[Audio] miniaudio engine ready")
+	fmt.println("[Audio] SFX scripts cached")
 }
 
 client_audio_shutdown :: proc() {
 	if client_audio.ok {
+		sfx.uninit()
 		ma.engine_uninit(&client_audio.eng)
 	}
 	client_audio = {}

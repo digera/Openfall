@@ -880,8 +880,8 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			}
 			sdtx.printf(" -%.0f/s", def.beam_mana_per_sec)
 		} else if spell == gc.charging_spell {
-			// Wind-up: dim until the release would actually produce a cast,
-			// bright once it is past the minimum charge.
+			// Wind-up: dim early, bright once the bar is well on its way.
+			// Letting go does not stop this — an early release still fills.
 			charge := spell_charge_frac(def, gc.charge_accum)
 			if charge < SPELL_MIN_CHARGE {
 				sdtx.color3f(0.45, 0.5, 0.6)

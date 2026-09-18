@@ -328,9 +328,11 @@ server_apply_client_inputs :: proc(server: ^Server) {
 	}
 }
 
-// Fold one input tick into the caster's wind-up, and fire when the input says
-// the button came up. The client only reports *which* spell it is holding; the
-// charge itself is timed here, so a client can never claim a hold it never did.
+// Fold one input tick into the caster's wind-up. The client reports which
+// spell it is winding and when it wants to fire; the server times the charge
+// and will not release until the wind-up is full, so a client can never claim
+// a hold it never did or fire a half-charged shot. An early `cast_spell` is a
+// commit: the channel keeps going and fires itself once it is full.
 @(private = "file")
 server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_State) {
 	spell_state := &server.world.spell_states[id]
@@ -338,41 +340,66 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 	if !entity_alive(&server.world, id) {
 		spell_state.channel_spell = .None
 		spell_state.channel_time = 0
+		spell_state.channel_committed = false
 		return
 	}
 
 	if input.cast_spell != .None {
-		charge := f32(0)
 		if spell_state.channel_spell == input.cast_spell {
-			charge = spell_charge_frac(&SPELL_DEFS[input.cast_spell], spell_state.channel_time)
+			def := &SPELL_DEFS[input.cast_spell]
+			if spell_charge_frac(def, spell_state.channel_time) >= 1 {
+				server_fire_channel(server, id, input)
+				return
+			}
+			// Released before the bar filled: keep winding, fire at full.
+			spell_state.channel_committed = true
+		} else {
+			return
 		}
-		spell_state.channel_spell = .None
-		spell_state.channel_time = 0
-		if charge >= SPELL_MIN_CHARGE {
-			server_handle_spell_cast(server, id, input.cast_spell, charge, server.tick_id, input.target_id)
-		}
-		return
 	}
 
-	// Swapping spells (or letting go without firing) restarts the wind-up.
+	// Swapping spells restarts the wind-up. Letting go of a charge-cast that
+	// has not been committed drops it; a committed one keeps going with no
+	// charge_spell on the wire.
 	if input.charge_spell != spell_state.channel_spell {
-		if SPELL_DEFS[input.charge_spell].payload == .Beam {
-			// Refused, a beam stays dark while the button is held and relights
-			// the tick it becomes castable, the way a held wind-up restarts
-			// after its cooldown.
-			beam_quench(&server.world, id)
-			if server.match.state != .Ended {
-				beam_light(&server.world, id, input.charge_spell)
-			}
+		if spell_state.channel_committed && input.charge_spell == .None {
+			// Keep the committed wind-up.
 		} else {
-			spell_state.channel_spell = input.charge_spell
-			spell_state.channel_time = 0
-			spell_state.beam = {}
+			spell_state.channel_committed = false
+			if SPELL_DEFS[input.charge_spell].payload == .Beam {
+				// Refused, a beam stays dark while the button is held and relights
+				// the tick it becomes castable, the way a held wind-up restarts
+				// after its cooldown.
+				beam_quench(&server.world, id)
+				if server.match.state != .Ended {
+					beam_light(&server.world, id, input.charge_spell)
+				}
+			} else {
+				spell_state.channel_spell = input.charge_spell
+				spell_state.channel_time = 0
+				spell_state.beam = {}
+			}
 		}
 	}
 	if spell_state.channel_spell != .None {
 		def := &SPELL_DEFS[spell_state.channel_spell]
 		spell_state.channel_time = min(spell_state.channel_time + FIXED_DT, def.cast_time)
+		if spell_state.channel_committed && def.payload != .Beam &&
+		   spell_charge_frac(def, spell_state.channel_time) >= 1 {
+			server_fire_channel(server, id, input)
+		}
+	}
+}
+
+@(private = "file")
+server_fire_channel :: proc(server: ^Server, id: Entity_ID, input: Input_State) {
+	spell_state := &server.world.spell_states[id]
+	spell := spell_state.channel_spell
+	spell_state.channel_spell = .None
+	spell_state.channel_time = 0
+	spell_state.channel_committed = false
+	if spell != .None {
+		server_handle_spell_cast(server, id, spell, 1.0, server.tick_id, input.target_id)
 	}
 }
 

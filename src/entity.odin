@@ -37,8 +37,9 @@ Input_State :: struct {
 	sprint:       bool,
 	yaw:          f32,  // absolute, wrapped to [-pi, pi]
 	pitch:        f32,  // absolute, clamped
-	// Charge-cast intent: `charge_spell` is whatever the player is holding this
-	// tick, `cast_spell` is set only on the tick they let go.
+	// Charge-cast intent: `charge_spell` is the spell being wound up this tick
+	// (still held, or already released and finishing), `cast_spell` is set only
+	// on the tick it actually fires.
 	charge_spell: Spell_ID,
 	cast_spell:   Spell_ID,
 	// The crosshair's sticky soft target. Targeted spells land on it, after the

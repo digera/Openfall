@@ -85,29 +85,29 @@ $env:BOTS_PER_TEAM = "3"
 | Space | Jump |
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
 | Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
-| Release LMB | Cast at the charge reached |
+| Release LMB | Commit the cast — it finishes charging to full power, then fires. Holding through the full wind-up still waits for the release. |
 | Esc | Unlock mouse |
 
 ## Combat
 
-Most spells are charge-cast: holding LMB winds them up over their cast time and releasing throws them; damage scales linearly with how far the wind-up got. Releasing under 20% fizzles, so tapping is not a substitute for committing to a cast. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
+Most spells are charge-cast: holding LMB winds them up over their cast time. Releasing early commits the remaining wind-up — the spell still charges to full power, then fires. Holding through the full bar still waits for the release, so a shot can be timed. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
 
-The server times the wind-up itself — the client only reports which spell it is holding — so a modified client cannot claim charge it never held. What it is holding is in every snapshot, so a wind-up is visible on the caster as a cast orb (below) rather than being something only they know about.
+The server times the wind-up itself — the client only reports which spell it is winding — so a modified client cannot claim charge it never held, and an early release cannot fire a half-charged shot. What it is winding is in every snapshot, so a wind-up is visible on the caster as a cast orb (below) rather than being something only they know about.
 
 Thunderbolt is the exception: it is a held beam with no wind-up, and nothing happens on release. Holding it lights a beam that draws mana every tick it does work, until it is released or the caster runs dry.
 
 | Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
-| Arcane Missile | 0.6s | 1.2s | 12 | 18 + splash |
+| Arcane Missile | 0.6s | 0.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
-| Friendly Heal | 1.0s | 14.0s | 40 | 20–50 to you and a targeted ally |
+| Friendly Heal | 1.0s | 14.0s | 40 | 50 to you and a targeted ally |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
-Friendly Heal is the only spell on the bar that does something for someone else: a 1.0s wind-up that restores 20–50 (scaling with charge, 50 at full) to you and, if you have a teammate under the crosshair within 18 m and in the open, to them as well. It costs 40 mana and rests for 14 s, so it is a planned mend rather than sustain you hold through a fight — half a bar each at full charge, less than one lance, and you are standing still while it winds. A heal at full health with nobody hurt in front of you is refused rather than eating the mana, so it cannot be pre-charged before a fight. Cover breaks the ally half: if they duck out of sight before it fires, you still mend yourself if you need it, and the whole cast fizzles only if nobody was missing health. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
+Friendly Heal is the only spell on the bar that does something for someone else: a 1.0s wind-up that restores 50 to you and, if you have a teammate under the crosshair within 18 m and in the open, to them as well. It costs 40 mana and rests for 14 s, so it is a planned mend rather than sustain you hold through a fight — half a bar each, less than one lance, and you are standing still while it winds. A heal at full health with nobody hurt in front of you is refused rather than eating the mana, so it cannot be pre-charged before a fight. Cover breaks the ally half: if they duck out of sight before it fires, you still mend yourself if you need it, and the whole cast fizzles only if nobody was missing health. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
-Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) the moment you release, from the sky, with the biggest mana bill and the longest wind-up on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. The *release* does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
+Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) from the sky when the wind-up completes, with the biggest mana bill and the longest charge on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. When it fires does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 
 Thunderbolt is the exception to charge-cast: there is no wind-up and nothing happens on release. Holding it lights a beam from your hand to whatever the crosshair is on, out to 26 m, clipped by the world, and every server tick the first hostile body on it takes damage and arcs jump from body to body behind it. It needs 10 mana to light and then drains 24 a second, so a full bar buys about four seconds of continuous fire, and a player standing in it from full health dies in 1.8 s. Running it dry rests it for two seconds, and the server, not the client, decides when it is lit: the client draws its own beam from its own crosshair for responsiveness but the damage is only ever traced on the server. It has no burst, no splash and no reach past a wall; it punishes people who stand in the open at mid range and pays nothing against someone who keeps moving between cover.
 

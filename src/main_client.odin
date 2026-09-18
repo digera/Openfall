@@ -52,8 +52,9 @@ Game_Client :: struct {
 	cooldowns:      [Spell_ID]f32,
 	cast_pulse:     f32,
 	last_cast:      Spell_ID,
-	charging_spell: Spell_ID,
-	charge_accum:   f32,
+	charging_spell:   Spell_ID,
+	charge_accum:     f32,
+	charge_committed: bool, // button came up; keep winding until a full-power fire
 }
 
 game_client: Game_Client
@@ -372,16 +373,19 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }
 
-// Hold LMB to wind the selected spell up, release to throw it at whatever
-// charge it reached. Mirrors the server's checks so the HUD stays responsive
-// and we don't spam rejected casts; the server still times the charge itself.
+// Hold LMB to wind the selected spell up. Letting go before the bar is full
+// commits the cast: it keeps charging and fires at full power once it is.
+// Holding through the full wind-up still waits for the release, so a shot can
+// be timed. Beams are unchanged — they run only while the button is down.
+// Mirrors the server's checks so the HUD stays responsive and we don't spam
+// rejected casts; the server still times the charge itself.
 client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_spell: Spell_ID) {
 	pred := &gc.client_world.prediction
 	alive := pred.initialized && !pred.predicted_char.dead
 	match_over := gc.client_world.have_game_state && Match_State(gc.client_world.game_state.match_state) == .Ended
 
 	// Dying, unlocking the mouse or the match ending drop the wind-up on the
-	// floor. Only letting go of the button fires.
+	// floor, committed or not.
 	if !alive || match_over || !sapp.mouse_locked() {
 		client_sfx_note_fizzle(gc)
 		client_drop_charge(gc)
@@ -391,9 +395,12 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	// The cast origin and look the server will judge a targeted spell by.
 	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
 	look := camera_forward(gc.view_yaw, gc.view_pitch)
+	holding := input.held_left
+	selected := HOTBAR[gc.selected_slot]
+	winding := gc.charging_spell != .None && SPELL_DEFS[gc.charging_spell].payload != .Beam
 
-	if input.held_left {
-		spell := HOTBAR[gc.selected_slot]
+	if holding {
+		spell := selected
 		def := &SPELL_DEFS[spell]
 		if gc.charging_spell != spell {
 			// A fresh hold, or the player swapped slots mid-charge. Picking the
@@ -405,8 +412,8 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 				return .None, .None
 			}
 			// A strike needs someone to call it on, in range, when it starts.
-			// Cover is not asked about until the release: the target is free
-			// to duck, and the caster is free to wait them out.
+			// Cover is not asked about until it fires: the target is free to
+			// duck, and the caster is free to wait them out.
 			if def.payload == .Strike {
 				target, ok := client_world_strike_target(&gc.client_world)
 				if !ok || !strike_target_in_range(def, eye, look, target.display_state.pos) {
@@ -428,57 +435,74 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 			}
 			gc.charging_spell = spell
 			gc.charge_accum = 0
+			gc.charge_committed = false
 		}
-		// Losing the target mid-hold (they died, or the crosshair moved on to
-		// a teammate) drops the charge so the player can start over at once
-		// rather than find out on release. A heal at full health is the same
-		// for its ally; a wounded caster keeps winding even if the ally is gone.
-		if def.payload == .Strike {
-			if _, ok := client_world_strike_target(&gc.client_world); !ok {
-				client_sfx_note_fizzle(gc)
-				client_drop_charge(gc)
-				return .None, .None
-			}
+	} else if winding {
+		// Button up on a charge-cast: swapping off it cancels, otherwise an
+		// early release commits the remaining wind-up.
+		if selected != gc.charging_spell {
+			client_sfx_note_fizzle(gc)
+			client_drop_charge(gc)
+			return .None, .None
 		}
-		if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
-			target, ok := client_world_heal_target(&gc.client_world)
-			if !ok || target.display_state.health >= HEALTH_MAX {
-				client_sfx_note_fizzle(gc)
-				client_drop_charge(gc)
-				return .None, .None
-			}
+		if !gc.charge_committed && spell_charge_frac(&SPELL_DEFS[gc.charging_spell], gc.charge_accum) < 1 {
+			gc.charge_committed = true
 		}
-		if def.payload == .Beam {
-			// A beam is firing for as long as this is held, so the hand stays
-			// lit. Mana reaching zero means the server has just put the beam
-			// to rest; mirror the rest so the bar shows it, and let go of the
-			// spell so holding through it relights the beam when it ends.
-			gc.cast_pulse = max(gc.cast_pulse, 0.7)
-			if pred.predicted_char.mana < 1 {
-				gc.cooldowns[spell] = def.cooldown_sec
-				client_drop_charge(gc)
-				return .None, .None
-			}
+	} else {
+		// Idle, or letting go of a beam (there is nothing to fire).
+		client_drop_charge(gc)
+		return .None, .None
+	}
+
+	def := &SPELL_DEFS[gc.charging_spell]
+	if def.payload == .Beam {
+		// A beam is firing for as long as this is held, so the hand stays
+		// lit. Mana reaching zero means the server has just put the beam
+		// to rest; mirror the rest so the bar shows it, and let go of the
+		// spell so holding through it relights the beam when it ends.
+		gc.cast_pulse = max(gc.cast_pulse, 0.7)
+		if pred.predicted_char.mana < 1 {
+			gc.cooldowns[gc.charging_spell] = def.cooldown_sec
+			client_drop_charge(gc)
+			return .None, .None
 		}
 		gc.charge_accum = min(gc.charge_accum + FIXED_DT, def.cast_time)
 		return .None, gc.charging_spell
 	}
 
+	// Losing the target mid-wind-up (they died, or the crosshair moved on to
+	// a teammate) drops the charge so the player can start over at once
+	// rather than find out when it fires. A heal at full health is the same
+	// for its ally; a wounded caster keeps winding even if the ally is gone.
+	if def.payload == .Strike {
+		if _, ok := client_world_strike_target(&gc.client_world); !ok {
+			client_sfx_note_fizzle(gc)
+			client_drop_charge(gc)
+			return .None, .None
+		}
+	}
+	if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
+		target, ok := client_world_heal_target(&gc.client_world)
+		if !ok || target.display_state.health >= HEALTH_MAX {
+			client_sfx_note_fizzle(gc)
+			client_drop_charge(gc)
+			return .None, .None
+		}
+	}
+
+	gc.charge_accum = min(gc.charge_accum + FIXED_DT, def.cast_time)
+	full := spell_charge_frac(def, gc.charge_accum) >= 1
+	if full && (!holding || gc.charge_committed) {
+		return client_finish_cast(gc, eye, look)
+	}
+	return .None, gc.charging_spell
+}
+
+client_finish_cast :: proc(gc: ^Game_Client, eye, look: vec3) -> (cast_spell: Spell_ID, charge_spell: Spell_ID) {
+	pred := &gc.client_world.prediction
 	spell := gc.charging_spell
-	if spell == .None {
-		return .None, .None
-	}
 	def := &SPELL_DEFS[spell]
-	charge := spell_charge_frac(def, gc.charge_accum)
 	client_drop_charge(gc)
-	// Letting go of a beam just puts it out; there is nothing to cast.
-	if def.payload == .Beam {
-		return .None, .None
-	}
-	if charge < SPELL_MIN_CHARGE {
-		client_audio_play(.Fizzle)
-		return .None, .None
-	}
 	// A strike whose target is out of reach fizzles here for the same reason
 	// the server would refuse it, and without pretending a cooldown started.
 	if def.payload == .Strike {
@@ -514,6 +538,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 client_drop_charge :: proc(gc: ^Game_Client) {
 	gc.charging_spell = .None
 	gc.charge_accum = 0
+	gc.charge_committed = false
 }
 
 main_client :: proc() {

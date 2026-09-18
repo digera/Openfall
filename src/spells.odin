@@ -37,7 +37,7 @@ Spell_Def :: struct {
 	short_name:    string,
 	mana_cost:     f32,
 	cooldown_sec:  f32,
-	cast_time:     f32,   // seconds of hold for a full-power cast
+	cast_time:     f32,   // seconds of wind-up before a full-power fire
 
 	payload:       Spell_Payload_Type,
 	target_filter: Spell_Target_Filter, // what may be sticky-targeted while this spell is selected
@@ -72,7 +72,7 @@ Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
-	Strike,     // lands on the targeted entity the moment it is released
+	Strike,     // lands on the targeted entity when the wind-up completes
 	Heal,       // restores health to the caster and a targeted ally
 	Beam,       // does its work every tick it is held; the release is nothing
 }
@@ -86,7 +86,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		name             = "Arcane Missile",
 		short_name       = "MISSILE",
 		mana_cost        = 12,
-		cooldown_sec     = 1.2,
+		cooldown_sec     = 0.2,
 		cast_time        = 0.6,
 		payload          = .Projectile,
 		target_filter    = .Enemy,
@@ -240,14 +240,14 @@ strike_target_in_range :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> 
 	return dot_vec3(to, look) >= STRIKE_AIM_COS * dist
 }
 
-// In reach: in range and in the open. This is what the release demands.
+// In reach: in range and in the open. This is what firing demands.
 strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
 	return strike_target_in_range(def, eye, look, target_pos) &&
 	       world_segment_clear(eye, strike_center(target_pos))
 }
 
-// Floor of a legal heal. Full charge restores `def.heal`; a minimum-charge
-// release still puts a real mend on the bar rather than a tap's worth.
+// Floor of a legal heal. Charge-cast spells fire at full power, so this is
+// the amount a full wind-up is worth when `def.heal` is read through charge.
 HEAL_MIN_HP :: f32(20)
 
 spell_heal_amount :: proc(def: ^Spell_Def, charge: f32) -> f32 {
@@ -262,8 +262,7 @@ character_mend :: proc(char: ^Character_State, amount: f32) -> f32 {
 	return char.health - before
 }
 
-// Releasing below this fraction of the cast time fizzles instead of casting,
-// so tapping the button can never stand in for a real wind-up.
+// HUD only: the charge bar stays dim until the wind-up has got this far.
 SPELL_MIN_CHARGE :: f32(0.2)
 
 // Does the target match the selected spell's targeting filter?
@@ -310,7 +309,7 @@ spell_castable :: proc(id: Spell_ID, char: Character_State, cooldown: f32) -> bo
 }
 
 // How much of a spell a given hold is worth. Spells with no cast time are
-// always full power.
+// always full power. Charge-cast spells only fire at 1; this is the HUD bar.
 spell_charge_frac :: proc(def: ^Spell_Def, held_sec: f32) -> f32 {
 	if def.cast_time <= 0 {
 		return 1
@@ -321,10 +320,13 @@ spell_charge_frac :: proc(def: ^Spell_Def, held_sec: f32) -> f32 {
 Entity_Spell_State :: struct {
 	cooldowns: [Spell_ID]f32,
 
-	// Server-owned wind-up. The client reports which spell it is holding, the
-	// server decides how long it has actually been held.
-	channel_spell: Spell_ID,
-	channel_time:  f32,
+	// Server-owned wind-up. The client reports which spell it is winding, the
+	// server decides how long it has actually been held. Once the button has
+	// come up, `channel_committed` keeps that wind-up going until a full-power
+	// fire — an early release is a commit, not a half-charged shot.
+	channel_spell:     Spell_ID,
+	channel_time:      f32,
+	channel_committed: bool,
 
 	// Where the held beam ended this tick, for the snapshot. Only meaningful
 	// while channel_spell is a beam.

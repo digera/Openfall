@@ -52,6 +52,7 @@ beam_light :: proc(world: ^Entity_World, id: Entity_ID, spell: Spell_ID) -> bool
 	}
 	state.channel_spell = spell
 	state.channel_time = 0
+	state.channel_committed = false
 	state.beam = {}
 	if SERVER_VERBOSE {
 		server_log("[Combat] Entity %d lit %s", id, SPELL_DEFS[spell].name)
@@ -64,6 +65,7 @@ beam_quench :: proc(world: ^Entity_World, id: Entity_ID) {
 	state := &world.spell_states[id]
 	state.channel_spell = .None
 	state.channel_time = 0
+	state.channel_committed = false
 	state.beam = {}
 }
 
