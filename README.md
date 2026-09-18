@@ -108,6 +108,12 @@ The selected entity goes up with every input, and targeted spells land on it —
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 
+## Rendering
+
+The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ray-traces the whole scene analytically: boxes for the arena, quadrics for everything else. There is no mesh pipeline. `build.ps1` regenerates `src/scene.odin` from the shader whenever it is newer.
+
+Other players are wisps: a hooded robe with nothing inside it but light, and three motes orbiting it. The hood is an ellipsoid leaned back so its peak droops behind, with an opening cut toward the front; through it is the dark lining and a face - two eyes and a smile - drawn as light on a disc, which is also where the wisp's light comes from. The body is two stacked open cones, shoulder to waist to hem, with an elliptical cross-section and pleats that displace the surface so the silhouette scallops. The cloth is a two-link pendulum chain simulated on the CPU per entity in the wearer's frame (`robe_simulate`): drag from travel pushes the waist back a little and the hem more, a stop throws the body's momentum into the hem as one forward swing, ropes lift the rings as they swing out, and a swing limit stands in for the cloth meeting the body. The result does not depend on the frame rate. The shader draws the surface through those two rings with two ray-cone intersections per wisp refined onto the pleats by two Newton steps, twists the pleats between the body's yaw and a lagging hem yaw, runs ripples down them, flutters the hem edge with a travelling wave that speeds up with the wearer, and stitches team-coloured trim along the hem and the hood's rim. It is all analytic - no marching - and only evaluated for rays that pass the wisp's bounding sphere.
+
 ## Linux
 
 ```bash
