@@ -52,7 +52,7 @@ echo ""
 # Quick smoke test
 echo -e "${YELLOW}[2/4] Running 5-second smoke test...${NC}"
 timeout 5 ./bin/nexus_server > /tmp/nexus_smoke.log 2>&1 || true
-if grep -q "Server initialized" /tmp/nexus_smoke.log; then
+if grep -q "Server ready" /tmp/nexus_smoke.log; then
     echo -e "${GREEN}✓ Server initialized successfully${NC}"
 else
     echo -e "${RED}✗ Server initialization failed${NC}"
@@ -60,10 +60,11 @@ else
     exit 1
 fi
 
-if grep -q "16 entities active" /tmp/nexus_smoke.log; then
-    echo -e "${GREEN}✓ 16 bots spawned${NC}"
+if grep -q "3 entities active" /tmp/nexus_smoke.log; then
+    echo -e "${GREEN}✓ 3 bots spawned (1 per team)${NC}"
 else
     echo -e "${RED}✗ Bot spawning failed${NC}"
+    cat /tmp/nexus_smoke.log
     exit 1
 fi
 echo ""
@@ -140,7 +141,7 @@ echo "All Phase 1 goals met:"
 echo "  ✓ Fixed 60Hz deterministic tick"
 echo "  ✓ Shared simulation kernel"
 echo "  ✓ Network protocol scaffold"
-echo "  ✓ 16 bot entities with movement"
+echo "  ✓ Bot entities with movement"
 echo "  ✓ Performance <0.2ms target"
 echo ""
 echo "Server logs available at:"

@@ -3,14 +3,16 @@ package main
 import "core:math"
 import "core:math/rand"
 
-// Server-side bots. Each team is filled up to TEAM_SIZE with bots; when a
-// human joins a team, one of that team's bots leaves.
+// Server-side bots. Each team spawns BOTS_PER_TEAM bots (default 1),
+// independent of how many humans have joined. Override at runtime with the
+// BOTS_PER_TEAM environment variable.
 //
 // Behaviour: pick an objective Obelisk, walk there through the lane graph
 // with local obstacle steering, capture it, and fight anything hostile with
 // line-of-sight on the way.
 
-MAX_BOTS :: TEAM_COUNT * TEAM_SIZE
+BOTS_PER_TEAM :: 1
+MAX_BOTS      :: TEAM_COUNT * TEAM_SIZE
 
 Bot_Mode :: enum u8 {
 	Travel,
@@ -76,14 +78,13 @@ bots_count_per_team :: proc(server: ^Server) -> [TEAM_COUNT]int {
 	return counts
 }
 
-// Make bots-per-team = TEAM_SIZE - humans-per-team.
+// Keep each team at server.bots_per_team bots, independent of human count.
 bots_rebalance :: proc(server: ^Server) {
-	humans := server_human_counts(server)
 	current := bots_count_per_team(server)
 
 	for team in TEAMS {
 		ti := team_index(team)
-		desired := max(0, TEAM_SIZE - humans[ti])
+		desired := server.bots_per_team
 
 		// Too many: retire bots on this team (prefer dead ones)
 		for current[ti] > desired {

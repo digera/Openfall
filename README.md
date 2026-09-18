@@ -2,7 +2,7 @@
 
 Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
 
-Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The centre obelisk is worth double essence. First team to 1500 essence (or the leader at 12 minutes) wins the round; rounds auto-reset. Teams are filled with bots up to `TEAM_SIZE`, and bots leave as humans join.
+Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The centre obelisk is worth double essence. First team to 1500 essence (or the leader at 12 minutes) wins the round; rounds auto-reset. By default each team has 1 bot. Humans can join up to `TEAM_SIZE` per team (currently 6), and bots stay in the match alongside them.
 
 ## Requirements (Windows)
 
@@ -57,7 +57,22 @@ Headless prediction/network test (joins the least-populated team, walks around f
 .\bin\nexus_client_test.exe
 ```
 
-Server tuning knobs (environment variables, for testing): `NEXUS_TEST_ESSENCE=50` sets the win threshold, `NEXUS_TEST_FAST=10` multiplies essence income. Build flags: `-define:NEXUS_VERBOSE=true` for combat logs, `-define:NEXUS_BOT_DEBUG=true` for bot positions in the stats line.
+## Configuration
+
+Server tuning knobs (environment variables):
+
+- `BOTS_PER_TEAM`: bots spawned per team (default: 1, range: 0–6)
+- `NEXUS_TEST_ESSENCE`: win threshold for testing (default: 1500)
+- `NEXUS_TEST_FAST`: essence income multiplier for faster testing (default: 1)
+
+Build flags: `-define:NEXUS_VERBOSE=true` for combat logs, `-define:NEXUS_BOT_DEBUG=true` for bot positions in the stats line.
+
+Example with more bots for testing:
+
+```powershell
+$env:BOTS_PER_TEAM = "3"
+.\bin\nexus_server.exe
+```
 
 ## Controls
 
