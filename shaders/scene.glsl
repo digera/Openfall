@@ -53,6 +53,7 @@ layout(binding=1) uniform fs_params {
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
     vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
+    vec4 target_bracket;    // xyz target pos, w = relationship (0=none, 1=enemy red, 2=friendly green)
 };
 
 in vec3 ray_origin;
@@ -270,6 +271,47 @@ vec3 arc_glow(vec3 ro, vec3 rd, float tmax, vec3 a, vec3 b, float radius, float 
     // Soft halo along the straight line under the crackle.
     sum += tint * segment_glow(ro, rd, tmax, a, b, radius * 5.0) * 0.45;
     return sum;
+}
+
+// Target brackets: four corner markers around the targeted wisp in world space.
+// Drawn as analytic lines at fixed screen-facing offsets from the target center.
+// Returns glow contribution along the ray.
+vec3 target_bracket_glow(vec3 ro, vec3 rd, float tmax, vec3 target_center, float relationship) {
+    if (relationship < 0.5) return vec3(0.0);
+    
+    // Bracket color: red for enemy (1), green for friendly (2)
+    vec3 bracket_color = (relationship < 1.5) ? vec3(1.0, 0.25, 0.15) : vec3(0.45, 1.0, 0.35);
+    
+    // Bracket geometry: four corner L-shapes at cardinal directions around the target
+    // Size scales with distance for readability, positioned around the robe
+    float bracket_offset = 0.65;   // distance from center to bracket corner
+    float bracket_arm = 0.28;      // length of each bracket arm
+    float bracket_thick = 0.032;   // bracket line thickness
+    
+    vec3 result = vec3(0.0);
+    
+    // Four corners: top-left, top-right, bottom-left, bottom-right
+    // Each corner is an L-shape made of two perpendicular segments
+    for (int corner = 0; corner < 4; corner++) {
+        float sx = (corner == 0 || corner == 2) ? -1.0 : 1.0;  // left/right
+        float sz = (corner < 2) ? 1.0 : -1.0;                   // top/bottom
+        
+        // Corner position offset from target center
+        vec3 corner_offset = vec3(sx * bracket_offset, 0.0, sz * bracket_offset);
+        vec3 corner_pos = target_center + corner_offset;
+        
+        // Horizontal arm (x direction)
+        vec3 h_start = corner_pos;
+        vec3 h_end = corner_pos - vec3(sx * bracket_arm, 0.0, 0.0);
+        result += bracket_color * segment_glow(ro, rd, tmax, h_start, h_end, bracket_thick) * 1.4;
+        
+        // Vertical arm (z direction)
+        vec3 v_start = corner_pos;
+        vec3 v_end = corner_pos - vec3(0.0, 0.0, sz * bracket_arm);
+        result += bracket_color * segment_glow(ro, rd, tmax, v_start, v_end, bracket_thick) * 1.4;
+    }
+    
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1241,9 @@ void main() {
             aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
         }
     }
+
+    // --- Target brackets: mark the sticky soft target ---
+    aura += target_bracket_glow(ro, rd, glow_tmax, target_bracket.xyz, target_bracket.w);
 
     // --- Lightning: a jagged bolt from well above the walls onto the target ---
     for (int i = 0; i < 4; i++) {

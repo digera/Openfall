@@ -608,6 +608,27 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		}
 	}
 
+	// --- Target brackets ------------------------------------------------------
+	// Draw brackets around the sticky soft target: red for enemy, green for friendly
+	fs_params.target_bracket = {0, 0, 0, 0}  // default: no target
+	if world.target_id != INVALID_ENTITY && world.target_id < MAX_ENTITIES {
+		remote := &world.remote_entities[world.target_id]
+		if remote.active && !remote.display_state.dead {
+			// Target position (center of the wisp, same as for robe rendering)
+			target_pos := remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.50}
+			
+			// Determine relationship: 1=enemy (red), 2=friendly (green)
+			relationship: f32 = 0
+			if teams_are_enemies(world.local_team, remote.team) {
+				relationship = 1  // enemy: red brackets
+			} else {
+				relationship = 2  // friendly: green brackets
+			}
+			
+			fs_params.target_bracket = {target_pos.x, target_pos.y, target_pos.z, relationship}
+		}
+	}
+
 	// --- Draw -----------------------------------------------------------------
 	client_renderer_overlay(r, gc)
 
