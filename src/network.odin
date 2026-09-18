@@ -5,7 +5,7 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 
-// Nexus Arena UDP protocol (v7).
+// Nexus Arena UDP protocol (v8).
 //
 // Client → Server
 //   Hello            probe; server answers with Lobby
@@ -17,7 +17,7 @@ import "core:mem"
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
 
-PROTOCOL_VERSION :: u8(7)  // bumped for the spell id carried by every beam
+PROTOCOL_VERSION :: u8(8)  // bumped for the cast orb carried by every entity
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -71,19 +71,27 @@ Server_Welcome_Packet :: struct {
 }
 
 Snapshot_Entity :: struct {
-	id:         Entity_ID,
-	pos:        vec3,
-	vel:        vec3,
-	yaw:        f32,
-	pitch:      f32,
-	on_ground:  bool,
-	dead:       bool,
-	is_bot:     bool,
-	health:     f32,
-	mana:       f32,
-	stamina:    f32,
-	team:       Team_ID,
-	slow_ticks: int,
+	id:            Entity_ID,
+	pos:           vec3,
+	vel:           vec3,
+	yaw:           f32,
+	pitch:         f32,
+	on_ground:     bool,
+	dead:          bool,
+	is_bot:        bool,
+	health:        f32,
+	mana:          f32,
+	stamina:       f32,
+	team:          Team_ID,
+	slow_ticks:    int,
+
+	// What is in this entity's hand: the spell it is winding up and how far the
+	// wind-up has come. This is the cast orb everyone else sees, so it is state
+	// rather than an event -- a player who looks away and back must find the
+	// same charge still building. A beam has no wind-up and reports a full
+	// charge for as long as it is lit.
+	channel_spell: Spell_ID,
+	channel_frac:  f32,
 }
 
 Snapshot_Projectile :: struct {
@@ -501,14 +509,20 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 4, pitch 4, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1 = 42
+// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge) = 40
 // Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
 // Per-strike: seq 1, owner 1, pos 6 = 8
-// Per-beam: owner 1, end 6, flags 1 (hit + chain count), chains 2 = 10
+// Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
 // Header 2 + tick 4 + ack 4 + counts 4 = 14
-// 14 + 22*42 + 12*32 + 4*8 + 4*10 = 1394 bytes worst case. This must stay
+// 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes worst case. This must stay
 // under MAX_PACKET_SIZE: the writer refuses an oversized packet and the
 // client would simply stop hearing from us in a crowded fight.
+//
+// Look angles ride as the same i16 an input is quantized to rather than as
+// floats. That is lossless here -- the server's yaw and pitch come from a
+// quantized input in the first place, so the client reconciles against exactly
+// the numbers it predicted with -- and the four bytes it frees pay for the cast
+// orb without costing anyone a body they could otherwise see.
 serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8) -> int {
 	w := bw_init(buffer)
 	write_header(&w, .Server_Snapshot)
@@ -522,8 +536,8 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(e.id))
 		bw_vec3(&w, e.pos)
 		bw_vec3(&w, e.vel)
-		bw_f32(&w, e.yaw)
-		bw_f32(&w, e.pitch)
+		bw_i16(&w, quant_angle(e.yaw))
+		bw_i16(&w, quant_angle(e.pitch))
 		flags: u8 = 0
 		if e.on_ground { flags |= 1 }
 		if e.dead      { flags |= 2 }
@@ -534,6 +548,8 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_f32(&w, e.stamina)
 		bw_u8(&w, u8(e.team))
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
+		bw_u8(&w, u8(e.channel_spell))
+		bw_u8(&w, quant_u8(e.channel_frac, 255))
 	}
 
 	pcount := min(int(packet.projectile_count), MAX_SNAPSHOT_PROJECTILES)
@@ -590,8 +606,8 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.id = Entity_ID(br_u8(&r))
 		e.pos = br_vec3(&r)
 		e.vel = br_vec3(&r)
-		e.yaw = br_f32(&r)
-		e.pitch = br_f32(&r)
+		e.yaw = dequant_angle(br_i16(&r))
+		e.pitch = dequant_angle(br_i16(&r))
 		flags := br_u8(&r)
 		e.on_ground = flags & 1 != 0
 		e.dead = flags & 2 != 0
@@ -601,6 +617,8 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.stamina = br_f32(&r)
 		e.team = Team_ID(br_u8(&r))
 		e.slow_ticks = int(br_u8(&r))
+		e.channel_spell = spell_id_from_wire(br_u8(&r))
+		e.channel_frac = f32(br_u8(&r)) / 255.0
 		if !r.ok {
 			return {}, false
 		}

@@ -170,6 +170,12 @@ Client_Renderer :: struct {
 	perf_frames:  int,
 
 	robes:        [MAX_ENTITIES]Robe_State,
+
+	// Where each wisp's cast orb ended up this frame. A beam pours out of the
+	// orb rather than out of the middle of the robe, and the beam pass runs
+	// after the wisps, so the positions have to outlive the loop that made them.
+	// w is 1 where there is an orb at all.
+	orbs:         [MAX_ENTITIES]vec4,
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +315,8 @@ client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 }
 
 // Render type codes for the shader's spell_tint; an appearance, not the
-// Spell_ID, so spells that share a look can share a code.
+// Spell_ID, so spells that share a look can share a code. Zero is nothing to
+// draw, which is what a cast orb asks about.
 @(private = "file")
 spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	#partial switch spell {
@@ -321,7 +328,23 @@ spell_type_code :: proc(spell: Spell_ID) -> f32 {
 	case .Thunderbolt:    return 6
 	case .Friendly_Heal:  return 7
 	}
-	return 1
+	return 0
+}
+
+// Where a wisp holds its cast orb: out past the right hand and carried along
+// the aim, so it rises when they look up and drops when they look down. Close
+// enough to the robe that the light spills onto the cloth, far enough out that
+// even the heaviest orb clears the cloth instead of sinking into it.
+CAST_ORB_SIDE_M  :: f32(0.28)   // out to the wisp's right of centre
+CAST_ORB_REACH_M :: f32(0.40)   // forward along the aim
+CAST_ORB_RISE_M  :: f32(0.14)   // above the wisp's centre
+
+@(private = "file")
+cast_orb_pos :: proc(center: vec3, yaw: f32, aim: vec3, scale: f32) -> vec3 {
+	return center +
+	       camera_right(yaw) * (CAST_ORB_SIDE_M * scale) +
+	       aim * (CAST_ORB_REACH_M * scale) +
+	       vec3{0, 0, CAST_ORB_RISE_M * scale}
 }
 
 @(private = "file")
@@ -396,10 +419,19 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	ended: f32 = (world.have_game_state && Match_State(world.game_state.match_state) == .Ended) ? 1 : 0
 	fs_params.fx2 = {world.hit_marker, dead, ended, fx.mend}
 
-	// Hand orb: lower right of the view, bobbing with the camera
+	// Hand orb: lower right of the view, bobbing with the camera. It is this
+	// player's end of the cast orb every opponent sees them holding, so it
+	// takes the charging spell's colour and swells with the wind-up. What the
+	// player reads in their own hand is what the arena reads on their wisp.
 	if playing && dead < 0.5 {
 		hand := eye + fwd * 0.62 + right * (0.27 + bob_r * 0.5) + up * (-0.25 + bob_z * 0.4 - fx.cast_kick * 1.5)
-		fs_params.hand_pos = {hand.x, hand.y, hand.z, 1.0 + gc.cast_pulse * 0.9}
+		code := spell_type_code(gc.charging_spell)
+		charge: f32 = 0
+		if code > 0 {
+			charge = spell_charge_frac(&SPELL_DEFS[gc.charging_spell], gc.charge_accum)
+		}
+		fs_params.hand_pos = {hand.x, hand.y, hand.z, 1.0 + gc.cast_pulse * 0.9 + charge * 0.35}
+		fs_params.hand_cast = {code, charge, 0, 0}
 	}
 
 	for i in 0..<NUM_FLOOR_BOXES {
@@ -433,6 +465,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 
 	// Nearest living remote players → wisps
 	{
+		r.orbs = {}
 		ids: [MAX_ENTITIES]int
 		dist: [MAX_ENTITIES]f32
 		n := 0
@@ -480,6 +513,19 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			fs_params.robes[k] = {hem.x, hem.y, hem.z, yaw}
 			fs_params.robe_waists[k] = {waist.x, waist.y, waist.z, robe.hem_yaw}
 			fs_params.robe_fx[k] = {robe.flutter, 0, 0, 0}
+
+			// The cast orb, held out along the aim so a glance says both what
+			// is coming and who it is coming for. Where a wisp is pointing is
+			// the only thing about it that carries down a lane, so the orb
+			// rides the look direction rather than sitting on the body.
+			code := spell_type_code(remote.channel_spell)
+			if code > 0 && remote.channel_frac > 0.01 {
+				aim := camera_forward(yaw, remote.display_state.pitch)
+				orb := cast_orb_pos(pos, yaw, aim, scale)
+				fs_params.wisp_cast[k] = {orb.x, orb.y, orb.z, code}
+				fs_params.wisp_aim[k] = {aim.x, aim.y, aim.z, clampf(remote.channel_frac, 0, 1)}
+				r.orbs[ids[k]] = {orb.x, orb.y, orb.z, 1}
+			}
 		}
 		// Wisps too far away to draw are not simulated either; their cloth
 		// starts at rest when they come back into view rather than from stale
@@ -541,7 +587,15 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				if !remote.active {
 					continue
 				}
-				from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
+				// Out of the orb in their hand, the same one the wind-up
+				// spells gather in. A beam owner too far away to be drawn as a
+				// wisp has no orb this frame, so the chest stands in.
+				orb := r.orbs[int(b.owner_id)]
+				if orb.w > 0.5 {
+					from = {orb.x, orb.y, orb.z}
+				} else {
+					from = remote.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.55}
+				}
 			}
 			fs_params.beams[i] = {from.x, from.y, from.z, spell_type_code(def.id)}
 			fs_params.beam_ends[i] = {to.x, to.y, to.z, on_body ? 1 : 0}

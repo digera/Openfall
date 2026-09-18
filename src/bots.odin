@@ -184,6 +184,10 @@ bots_tick :: proc(server: ^Server, dt: f32) {
 			server.world.inputs[b.id] = Input_State{yaw = char.yaw}
 			b.target = INVALID_ENTITY
 			b.mode = .Travel
+			// Dying drops the wind-up, and with it the orb in the hand.
+			b.charge_spell = .None
+			b.charge_time = 0
+			beam_quench(&server.world, b.id)
 			continue
 		}
 		bot_update(server, b, char, dt)
@@ -468,6 +472,17 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		} else {
 			b.cast_timer = 0.3
 		}
+	}
+
+	// A bot times its own wind-up rather than going through the input path a
+	// player's charge takes, but the orb a wisp holds up is read off the
+	// entity's channel state. Mirror it there or bots would be the only thing
+	// in the arena that casts without a telegraph. Beams keep their own
+	// channel (beam_light / beam_quench), so leave those alone.
+	if SPELL_DEFS[b.charge_spell].payload != .Beam {
+		spell_state := &server.world.spell_states[b.id]
+		spell_state.channel_spell = b.charge_spell
+		spell_state.channel_time = b.charge_time
 	}
 }
 
