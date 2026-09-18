@@ -219,8 +219,41 @@ server_process_packets :: proc(server: ^Server) {
 				continue
 			}
 			if slot >= 0 {
-				// Already in: idempotent welcome
-				server.clients[slot].last_packet = time.tick_now()
+				// Already in: handle team switch
+				client := &server.clients[slot]
+				if client.team != join.team {
+					// Team switch requested
+					reject := server_validate_join(server, join.team)
+					if reject != .None {
+						server_send_lobby(server, from, reject)
+						continue
+					}
+					// Destroy old entity if switching from a playing team
+					if client.entity_id != INVALID_ENTITY {
+						entity_destroy(&server.world, client.entity_id)
+					}
+					// Create new entity for the new team (unless spectating)
+					client.team = join.team
+					if join.team != .Spectator {
+						counts := server_human_counts(server)
+						spawn_slot := counts[team_index(join.team)]
+						spawn_pos := team_spawn_position(join.team, spawn_slot)
+						yaw := wrap_angle(team_angle(join.team) + 3.14159265)
+						client.entity_id = entity_spawn(&server.world, spawn_pos, join.team, yaw)
+						if client.entity_id == INVALID_ENTITY {
+							fmt.eprintln("[Server] Failed to spawn player entity on team switch")
+							server_send_lobby(server, from, .Server_Full)
+							continue
+						}
+						fmt.printf("[Server] Client %v switched to %s as entity %d\n",
+							from, team_name(join.team), client.entity_id)
+					} else {
+						client.entity_id = INVALID_ENTITY
+						fmt.printf("[Server] Client %v switched to spectator\n", from)
+					}
+					bots_rebalance(server)
+				}
+				client.last_packet = time.tick_now()
 				server_send_welcome(server, slot)
 				continue
 			}
@@ -457,11 +490,17 @@ server_validate_join :: proc(server: ^Server, team: Team_ID) -> Lobby_Reject {
 	if server.client_count >= MAX_CLIENTS {
 		return .Server_Full
 	}
-	if team_index(team) < 0 {
+	idx := team_index(team)
+	if idx < 0 {
 		return .Invalid_Team
 	}
+	// Spectator is always allowed
+	if team == .Spectator {
+		return .None
+	}
+	// Real teams need to pass population checks
 	counts := server_human_counts(server)
-	if counts[team_index(team)] >= TEAM_SIZE {
+	if counts[idx] >= TEAM_SIZE {
 		return .Team_Most_Populated
 	}
 	if !team_join_allowed(counts, team) {
@@ -474,15 +513,21 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 	if server.client_count >= MAX_CLIENTS {
 		return -1
 	}
-	counts := server_human_counts(server)
-	spawn_slot := counts[team_index(team)]
-	spawn_pos := team_spawn_position(team, spawn_slot)
-	yaw := wrap_angle(team_angle(team) + 3.14159265)
+	
+	player_id: Entity_ID = INVALID_ENTITY
+	
+	// Spectators don't get an entity
+	if team != .Spectator {
+		counts := server_human_counts(server)
+		spawn_slot := counts[team_index(team)]
+		spawn_pos := team_spawn_position(team, spawn_slot)
+		yaw := wrap_angle(team_angle(team) + 3.14159265)
 
-	player_id := entity_spawn(&server.world, spawn_pos, team, yaw)
-	if player_id == INVALID_ENTITY {
-		fmt.eprintln("[Server] Failed to spawn player entity")
-		return -1
+		player_id = entity_spawn(&server.world, spawn_pos, team, yaw)
+		if player_id == INVALID_ENTITY {
+			fmt.eprintln("[Server] Failed to spawn player entity")
+			return -1
+		}
 	}
 
 	idx := server.client_count
@@ -494,8 +539,13 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 	}
 	server.client_count += 1
 
-	fmt.printf("[Server] Client %v joined %s as entity %d (%d clients)\n",
-		addr, team_name(team), player_id, server.client_count)
+	if team == .Spectator {
+		fmt.printf("[Server] Client %v joined as spectator (%d clients)\n",
+			addr, server.client_count)
+	} else {
+		fmt.printf("[Server] Client %v joined %s as entity %d (%d clients)\n",
+			addr, team_name(team), player_id, server.client_count)
+	}
 
 	bots_rebalance(server)
 	return idx

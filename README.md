@@ -86,7 +86,17 @@ $env:BOTS_PER_TEAM = "3"
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
 | Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
 | Release LMB | Commit the cast — it finishes charging to full power, then fires. Holding through the full wind-up still waits for the release. |
-| Esc | Unlock mouse |
+| Esc | Open menu (while playing) or unlock mouse (in lobby) |
+
+### In-Game Menu
+
+Pressing Esc while playing opens the game menu and releases the mouse. From the menu you can:
+
+- **Join a team** (1/2/3): Switch to Ember, Tide, or Verdant. The same population lock applies — you cannot join the most populated team.
+- **Spectate** (4): Leave your playing body and observe the match. You can look around freely but cannot cast spells or interact.
+- **Resume**: Press Esc again to close the menu and return to the game (or to spectating).
+
+Opening the menu does not drop your current charge or target unless the existing unlock path already did so.
 
 ## Combat
 

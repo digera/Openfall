@@ -55,6 +55,10 @@ Game_Client :: struct {
 	charging_spell:   Spell_ID,
 	charge_accum:     f32,
 	charge_committed: bool, // button came up; keep winding until a full-power fire
+
+	// Menu state
+	menu_selected:  int, // selected menu item (0-based)
+	is_spectating:  bool, // spectator mode
 }
 
 game_client: Game_Client
@@ -150,6 +154,14 @@ client_frame :: proc "c" () {
 		}
 		client_handle_input(gc, dt)
 		client_step_simulation(gc, dt)
+
+	case .In_Menu:
+		client_release_mouse()
+		// Drop any active charges when menu is open
+		if gc.charging_spell != .None {
+			client_drop_charge(gc)
+		}
+		client_handle_menu_input(gc)
 	}
 
 	client_audio_update(gc, dt)
@@ -236,17 +248,43 @@ client_poll_network :: proc(gc: ^Game_Client) {
 			}
 
 		case .Server_Welcome:
-			if gc.phase != .Playing {
+			if gc.phase == .Playing {
+				// Team switch completed while already playing
+				old_team := gc.client_world.local_team
+				gc.client_world.local_entity_id = packet.welcome.your_entity_id
+				gc.client_world.local_team = packet.welcome.team
+				if packet.welcome.team != .Spectator {
+					gc.view_yaw = wrap_angle(team_angle(packet.welcome.team) + f32(math.PI))
+					gc.view_pitch = 0
+				}
+				gc.is_spectating = (packet.welcome.team == .Spectator)
+				fmt.printf("[Client] Switched from %s to %s", team_name(old_team), team_name(packet.welcome.team))
+				if packet.welcome.your_entity_id != INVALID_ENTITY {
+					fmt.printf(" as entity %d\n", packet.welcome.your_entity_id)
+				} else {
+					fmt.printf("\n")
+				}
+			} else if gc.phase != .Playing {
 				client_world_reset_session(&gc.client_world)
 				gc.client_world.local_entity_id = packet.welcome.your_entity_id
 				gc.client_world.local_team = packet.welcome.team
-				gc.view_yaw = wrap_angle(team_angle(packet.welcome.team) + f32(math.PI))
+				if packet.welcome.team != .Spectator {
+					gc.view_yaw = wrap_angle(team_angle(packet.welcome.team) + f32(math.PI))
+				} else {
+					gc.view_yaw = 0
+				}
 				gc.view_pitch = 0
 				gc.history_count = 0
 				gc.sim_accum = 0
 				gc.cooldowns = {}
+				gc.is_spectating = (packet.welcome.team == .Spectator)
 				gc.phase = .Playing
-				fmt.printf("[Client] Joined %s as entity %d\n", team_name(packet.welcome.team), packet.welcome.your_entity_id)
+				fmt.printf("[Client] Joined %s", team_name(packet.welcome.team))
+				if packet.welcome.your_entity_id != INVALID_ENTITY {
+					fmt.printf(" as entity %d\n", packet.welcome.your_entity_id)
+				} else {
+					fmt.printf("\n")
+				}
 			}
 
 		case .Server_Snapshot:
@@ -265,6 +303,27 @@ client_poll_network :: proc(gc: ^Game_Client) {
 // Mouse look is applied to the view immediately (not quantized to sim ticks);
 // movement keys are gathered into move_input for the next sim ticks.
 client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
+	// Spectators can still look around but don't send inputs to the server
+	if gc.is_spectating {
+		if input_consume_click() && input.window_focused {
+			sapp.lock_mouse(true)
+		}
+		if sapp.mouse_locked() {
+			dx, dy := input_consume_look()
+			gc.view_yaw = wrap_angle(gc.view_yaw - dx * CAM_LOOK_SENS)
+			gc.view_pitch = clampf(gc.view_pitch - dy * CAM_LOOK_SENS, -CAM_PITCH_MAX, CAM_PITCH_MAX)
+		} else {
+			_, _ = input_consume_look()
+		}
+		gc.move_input = {}
+		_ = input_consume_jump()
+		// Clear slot presses
+		for slot in 1..=HOTBAR_SLOTS {
+			_ = input_consume_slot(slot)
+		}
+		return
+	}
+
 	if !sapp.mouse_locked() {
 		if input_consume_click() && input.window_focused {
 			sapp.lock_mouse(true)
@@ -311,7 +370,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 // under the crosshair if a valid one is there.
 client_update_target :: proc(gc: ^Game_Client) {
 	pred := &gc.client_world.prediction
-	if gc.phase != .Playing || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
+	if gc.phase != .Playing || gc.is_spectating || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
 		gc.client_world.target_id = INVALID_ENTITY
 		return
 	}
@@ -334,6 +393,11 @@ client_update_target :: proc(gc: ^Game_Client) {
 // Run as many 60Hz ticks as the accumulator allows, predicting locally and
 // sending each input (with two previous ones) to the server.
 client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
+	// Spectators don't simulate
+	if gc.is_spectating {
+		return
+	}
+
 	gc.sim_accum += dt
 	ticks := 0
 	for gc.sim_accum >= FIXED_DT && ticks < 5 {
@@ -539,6 +603,40 @@ client_drop_charge :: proc(gc: ^Game_Client) {
 	gc.charging_spell = .None
 	gc.charge_accum = 0
 	gc.charge_committed = false
+}
+
+// Handle menu input and actions
+client_handle_menu_input :: proc(gc: ^Game_Client) {
+	// Menu has 4 options: Join Alpha (1), Join Beta (2), Join Gamma (3), Spectate (4)
+	for slot in 1..=4 {
+		if input_consume_slot(slot) {
+			idx := slot - 1
+			if idx < TEAM_COUNT {
+				// Join a team
+				team := team_from_index(idx)
+				if client_team_allowed(gc, team) {
+					gc.chosen_team = team
+					gc.is_spectating = false
+					network_client_send_join(&gc.network, team)
+					gc.phase = .Playing
+					fmt.printf("[Client] Switching to team %s\n", team_name(team))
+				} else {
+					fmt.printf("[Client] Cannot join %s - most populated\n", team_name(team))
+				}
+			} else if idx == 3 {
+				// Spectate
+				gc.is_spectating = true
+				network_client_send_join(&gc.network, .Spectator)
+				gc.phase = .Playing
+				fmt.println("[Client] Entering spectator mode")
+			}
+		}
+	}
+	// Clear other slot presses
+	for slot in 5..=HOTBAR_SLOTS {
+		_ = input_consume_slot(slot)
+	}
+	_ = input_consume_click()
 }
 
 main_client :: proc() {
