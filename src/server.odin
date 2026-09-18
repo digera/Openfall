@@ -552,20 +552,32 @@ server_send_snapshots :: proc(server: ^Server) {
 			}
 			id := cand_ids[k]
 			char := server.world.characters[id]
+			// The wind-up in this entity's hand, for the cast orb the client
+			// draws on it. Timed here like the cast itself, so a telegraph is
+			// as authoritative as the spell it warns about. Spells with no
+			// cast time -- the beams -- come back at full: they are either lit
+			// or they are not.
+			spell_state := &server.world.spell_states[id]
+			channel_frac: f32 = 0
+			if spell_state.channel_spell != .None {
+				channel_frac = spell_charge_frac(&SPELL_DEFS[spell_state.channel_spell], spell_state.channel_time)
+			}
 			snapshot.entities[k] = Snapshot_Entity{
-				id         = id,
-				pos        = char.pos,
-				vel        = char.vel,
-				yaw        = char.yaw,
-				pitch      = char.pitch,
-				on_ground  = char.on_ground,
-				dead       = char.dead,
-				is_bot     = bot_ids[id],
-				health     = char.health,
-				mana       = char.mana,
-				stamina    = char.stamina,
-				team       = server.world.teams[id],
-				slow_ticks = char.slow_ticks,
+				id            = id,
+				pos           = char.pos,
+				vel           = char.vel,
+				yaw           = char.yaw,
+				pitch         = char.pitch,
+				on_ground     = char.on_ground,
+				dead          = char.dead,
+				is_bot        = bot_ids[id],
+				health        = char.health,
+				mana          = char.mana,
+				stamina       = char.stamina,
+				team          = server.world.teams[id],
+				slow_ticks    = char.slow_ticks,
+				channel_spell = spell_state.channel_spell,
+				channel_frac  = channel_frac,
 			}
 		}
 		snapshot.entity_count = u8(take)

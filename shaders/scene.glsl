@@ -35,6 +35,7 @@ layout(binding=1) uniform fs_params {
     vec4 fx;                // x hurt, y flash, z local team, w cast pulse
     vec4 fx2;               // x hit marker, y dead, z match ended, w mend
     vec4 hand_pos;          // xyz hand orb position, w scale
+    vec4 hand_cast;         // x spell render code being charged (0 = none), y charge 0..1
     vec4 floor_boxes[22];   // pairs: (center.xyz, sin yaw), (half.xyz, cos yaw)
     vec4 solid_boxes[30];   // pairs, same layout
     vec4 obelisks[7];       // xyz pos, w owner team
@@ -42,6 +43,8 @@ layout(binding=1) uniform fs_params {
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
+    vec4 wisp_cast[16];     // xyz cast orb centre, w = spell render code (0 = not casting)
+    vec4 wisp_aim[16];      // xyz aim direction (unit), w = charge 0..1
     vec4 robes[16];         // xyz hem ring centre, w = body yaw
     vec4 robe_waists[16];   // xyz waist ring centre, w = hem yaw (pleat twist)
     vec4 robe_fx[16];       // x flutter 0..1
@@ -70,6 +73,7 @@ const int MAT_WISP = 6;
 const int MAT_PROJ = 7;
 const int MAT_HAND = 8;
 const int MAT_ROBE = 9;
+const int MAT_CAST_ORB = 10;
 
 const vec3 MOON_DIR = normalize(vec3(0.35, -0.55, 0.75));
 
@@ -119,8 +123,34 @@ vec3 spell_tint(float type) {
 // of the two is lit on a teammate is clear from across a lane.
 bool beam_mends(float type) { return type > 6.5; }
 
+// Held rather than charged: the beams, Thunderbolt (6) and Friendly Heal (7).
+// A beam reports a full charge for as long as it is lit, so anything keyed to a
+// wind-up nearing its release -- the white flash at the top of one -- would be
+// stuck on for a whole beam and would burn its colour out. There is no release
+// to warn about: the beam is already happening.
+//
+// Keyed off the render code like beam_mends above, so a spell that changes
+// between a held beam and a wind-up has to be moved in both.
+bool spell_is_held(float type) { return type > 5.5; }
+
 vec3 beam_core(float type) {
     return beam_mends(type) ? vec3(0.55, 1.00, 0.70) : vec3(0.95, 0.98, 1.00);
+}
+
+// The orb in the player's own hand. It idles in the team's light, and turns
+// more and more into the charging spell's as the wind-up runs -- the same orb
+// every opponent sees on this wisp (wisp_cast), seen from the inside, so the
+// two must read as one object.
+float hand_cast_blend() {
+    return hand_cast.x < 0.5 ? 0.0 : (0.35 + 0.65 * hand_cast.y);
+}
+
+vec3 hand_tint() {
+    return mix(team_tint(fx.z), spell_tint(hand_cast.x), hand_cast_blend());
+}
+
+vec3 hand_core() {
+    return mix(team_core(fx.z), mix(spell_tint(hand_cast.x), vec3(1.0), 0.5), hand_cast_blend());
 }
 
 bool intersect_sphere(vec3 ro, vec3 rd, vec3 c, float r, float tmin, float tmax, out float t, out vec3 n) {
@@ -801,6 +831,70 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
 }
 
 // ---------------------------------------------------------------------------
+// Cast orbs: the spell in a wisp's hand
+//
+// Every wisp winding a spell up holds an orb out along its aim, and the orb is
+// the whole telegraph: its colour names the spell, its size and its heat say
+// how far the wind-up has come, and where it points is where the spell is
+// going. That is what makes a cast answerable -- an opponent who can read
+// "heavy orb, nearly full, pointed at me" has time to break line of sight,
+// and one who cannot is only guessing.
+//
+// The shapes are the spell's own, so the orb rehearses what is about to
+// happen: a lance tapers to a point along the aim, an orb swells round and
+// heavy, a bolt gathers a column toward the sky it falls out of. Held beams
+// keep an orb too, at full charge, and pour out of it.
+
+// How big the orb is: per spell at full charge, scaled back while it fills. The
+// floor is high enough that a wind-up is a thing in a hand from the first
+// frame -- an orb that starts as a speck is a tell nobody reads in time -- and
+// the growth from there is what says how much of it is left.
+float cast_orb_radius(float code, float charge) {
+    float base = 0.150;                     // friendly heal
+    if (code < 1.5)      base = 0.105;      // missile: small and quick
+    else if (code < 2.5) base = 0.215;      // orb: heavy enough to be read at range
+    else if (code < 3.5) base = 0.115;      // blink
+    else if (code < 4.5) base = 0.125;      // frost lance: the head of the spear
+    else if (code < 5.5) base = 0.155;      // call lightning
+    else if (code < 6.5) base = 0.130;      // thunderbolt
+    return base * (0.60 + 0.40 * charge);
+}
+
+bool cast_orb_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float code, out float charge) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    code = 0.0;
+    charge = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 16; i++) {
+        vec4 cs = wisp_cast[i];
+        if (cs.w < 0.5) continue;
+        float ch = wisp_aim[i].w;
+        vec3 aim = wisp_aim[i].xyz;
+        float r = cast_orb_radius(cs.w, ch);
+        // Bounds cover the orb and the spike a lance grows ahead of it
+        if (!bounds_hit(ro, rd, cs.xyz + aim * (r * 2.0), r * 4.0, t)) continue;
+        float et;
+        vec3 en;
+        if (intersect_sphere(ro, rd, cs.xyz, r, 0.04, t, et, en)) {
+            t = et; n = en; code = cs.w; charge = ch; hit = true;
+        }
+        // Frost lance: the charge tapers along the aim into the shape it is
+        // about to fly as, the same stack of shrinking spheres the projectile
+        // itself is drawn from.
+        if (cs.w > 3.5 && cs.w < 4.5) {
+            for (int k = 1; k < 4; k++) {
+                vec3 c = cs.xyz + aim * (r * 1.35 * float(k)) * (0.4 + 0.6 * ch);
+                if (intersect_sphere(ro, rd, c, r * (0.80 - 0.20 * float(k)), 0.04, t, et, en)) {
+                    t = et; n = en; code = cs.w; charge = ch; hit = true;
+                }
+            }
+        }
+    }
+    return hit;
+}
+
+// ---------------------------------------------------------------------------
 // Projectiles
 
 bool projectile_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float type) {
@@ -955,6 +1049,13 @@ void main() {
         best = pt; hit_n = pn; mat = MAT_PROJ;
     }
 
+    float cast_code = 0.0, cast_charge = 0.0;
+    float cot;
+    vec3 con;
+    if (cast_orb_trace(ro, rd, best, cot, con, cast_code, cast_charge)) {
+        best = cot; hit_n = con; mat = MAT_CAST_ORB;
+    }
+
     // Hand orb (first person focus)
     if (hand_pos.w > 0.001) {
         float ht;
@@ -985,6 +1086,76 @@ void main() {
         aura += team_tint(team) * g * (0.55 + 0.2 * sin(WORLD_T * 3.4 + float(i)));
         aura += team_core(team) * g * 0.18;
     }
+    // Cast orbs: the spell's light gathering in the hand, and the tell that
+    // says where it is pointed. Each tell is shaped like what the spell will
+    // do -- a missile's stutters, an orb's droops the way it will be lobbed, a
+    // lance's runs dead straight and far, a bolt's climbs to the sky -- so the
+    // spell is readable before the colour is, at any range the glow carries.
+    for (int i = 0; i < 16; i++) {
+        vec4 cs = wisp_cast[i];
+        if (cs.w < 0.5) continue;
+        float code = cs.w;
+        float charge = wisp_aim[i].w;
+        vec3 orb = cs.xyz;
+        vec3 aim = wisp_aim[i].xyz;
+        vec3 tint = spell_tint(code);
+        float r = cast_orb_radius(code, charge);
+        float t = WORLD_T + float(i) * 2.1;
+        // How far along the aim the tell reaches, and how far the halo throws
+        float reach = 0.6 + 2.4 * charge;
+        float halo = corona(ro, rd, glow_tmax, orb, r * 3.2 + charge * 0.22);
+        aura += tint * halo * (0.7 + 1.5 * charge);
+        // The last quarter of a wind-up runs white, so the moment before a
+        // release is unmistakable even when the colour has washed out. A held
+        // beam never gets it: it would be on for the whole beam and would cost
+        // the orb the colour that says which beam it is.
+        if (!spell_is_held(code)) {
+            aura += vec3(1.0) * halo * smoothstep(0.70, 1.0, charge) * 0.9;
+        }
+
+        if (code < 1.5) {
+            // Arcane Missile: a short dart, re-lit fourteen times a second
+            float flicker = 0.55 + 0.45 * step(0.5, fract(t * 14.0));
+            aura += tint * segment_glow(ro, rd, glow_tmax, orb, orb + aim * (reach * 0.55), r * 0.9) * charge * flicker * 1.3;
+        } else if (code < 2.5) {
+            // Arcane Orb: the lob it will fly, sagging under its own weight,
+            // and a slow heavy swell around the orb itself
+            vec3 prev = orb;
+            for (int k = 1; k <= 3; k++) {
+                float f = float(k) / 3.0;
+                vec3 node = orb + aim * (reach * f) - vec3(0.0, 0.0, reach * f * f * 0.55);
+                aura += tint * segment_glow(ro, rd, glow_tmax, prev, node, r * 1.1) * charge * 0.7;
+                prev = node;
+            }
+            aura += tint * corona(ro, rd, glow_tmax, orb, r * (4.2 + 1.4 * sin(t * 3.2))) * charge * 0.45;
+        } else if (code < 3.5) {
+            // Blink: nothing thrown and nowhere aimed, just a flash winding up
+            aura += vec3(1.0) * halo * charge * 1.2;
+        } else if (code < 4.5) {
+            // Frost Lance: dead straight and the longest reach on the bar,
+            // with the air shivering along it
+            float shimmer = 0.75 + 0.25 * sin(t * 11.0) * sin(t * 7.3);
+            aura += tint * segment_glow(ro, rd, glow_tmax, orb, orb + aim * (reach * 1.5), r * 0.75) * charge * shimmer * 1.5;
+        } else if (code < 5.5) {
+            // Call Lightning: a column reaching for the sky the bolt comes out
+            // of, crackling as it fills, plus the line that says whose head it
+            // is going to land on
+            vec3 top = orb + vec3(0.0, 0.0, 1.6 + 6.0 * charge);
+            float crackle = 0.6 + 0.4 * step(0.5, fract(t * 9.0 + hash13(orb) * 10.0));
+            aura += tint * segment_glow(ro, rd, glow_tmax, orb, top, 0.11 + 0.10 * charge) * charge * crackle * 1.1;
+            aura += tint * segment_glow(ro, rd, glow_tmax, orb, orb + aim * reach, r * 0.6) * charge * 0.55;
+        } else if (code < 6.5) {
+            // Thunderbolt: no wind-up to show, so the orb simply crackles for
+            // as long as the beam pouring out of it is lit
+            float crackle = 0.7 + 0.3 * sin(t * 18.0) * sin(t * 13.0);
+            aura += tint * halo * charge * crackle * 0.9;
+        } else {
+            // Friendly Heal: the only orb that promises nobody harm, so it
+            // breathes instead of crackling
+            float breathe = 0.65 + 0.35 * sin(t * 5.0);
+            aura += tint * corona(ro, rd, glow_tmax, orb, r * 4.2) * charge * breathe * 0.6;
+        }
+    }
     for (int i = 0; i < 12; i++) {
         vec4 p = projectiles[i];
         if (p.w < 0.5) continue;
@@ -1014,8 +1185,8 @@ void main() {
         aura += vec3(1.0) * g * age * 0.6;
     }
     if (hand_pos.w > 0.001) {
-        vec3 ht = mix(team_core(fx.z), team_tint(fx.z), 0.5);
-        aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w);
+        vec3 ht = mix(hand_core(), hand_tint(), 0.5);
+        aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w + 0.35 * hand_cast.y);
     }
     for (int i = 0; i < NOBELISK; i++) {
         vec3 c = obelisk_crystal_center(i);
@@ -1210,12 +1381,22 @@ void main() {
             emissive *= 0.8 + 0.3 * abs(sin(hp.x * 40.0 + hp.z * 33.0));
         }
         albedo = vec3(0.0);
-    } else if (mat == MAT_HAND) {
-        vec3 tint = team_tint(fx.z);
-        vec3 core = team_core(fx.z);
+    } else if (mat == MAT_CAST_ORB) {
+        // The orb burns in the spell's own colour and goes white-hot at the
+        // top of the wind-up: the last tell before the release.
+        vec3 tint = spell_tint(cast_code);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
         float fres = pow(1.0 - ndv, 2.0);
-        emissive = mix(core, tint, 0.5 + 0.5 * fres) * (0.9 + 1.6 * fx.w) + core * pow(ndv, 6.0) * 0.6;
+        float hot = smoothstep(0.65, 1.0, cast_charge);
+        emissive = mix(tint, vec3(1.0), hot * 0.55) * (0.85 + 1.5 * cast_charge + 1.1 * fres);
+        emissive += vec3(1.0) * pow(ndv, 8.0) * (0.5 + 1.1 * hot);
+        albedo = vec3(0.0);
+    } else if (mat == MAT_HAND) {
+        vec3 tint = hand_tint();
+        vec3 core = hand_core();
+        float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
+        float fres = pow(1.0 - ndv, 2.0);
+        emissive = mix(core, tint, 0.5 + 0.5 * fres) * (0.9 + 1.6 * fx.w + 0.5 * hand_cast.y) + core * pow(ndv, 6.0) * 0.6;
         albedo = vec3(0.0);
     } else if (mat == MAT_ROBE) {
         vec4 w = wisps[robe_idx];
@@ -1290,6 +1471,13 @@ void main() {
             float hpv = fract(w.w);
             color += albedo * point_light(hp, hit_n, wisp_glow_center(w), team_tint(team), 2.4 + 1.2 * hpv, 10.0);
         }
+        // A charging orb lights its own robe and the stone under it, so the
+        // caster is lit by the spell they are about to throw.
+        for (int i = 0; i < 16; i++) {
+            vec4 cs = wisp_cast[i];
+            if (cs.w < 0.5) continue;
+            color += albedo * point_light(hp, hit_n, cs.xyz, spell_tint(cs.w), 0.8 + 3.2 * wisp_aim[i].w, 8.0);
+        }
         for (int i = 0; i < NOBELISK; i++) {
             vec3 c = obelisk_crystal_center(i);
             color += albedo * point_light(hp, hit_n, c, team_tint(obelisks[i].w), 14.0, 24.0);
@@ -1306,7 +1494,7 @@ void main() {
             color += albedo * point_light(hp, hit_n, im.xyz, spell_tint(floor(im.w)), 9.0 * age * age, 9.0);
         }
         if (hand_pos.w > 0.001) {
-            color += albedo * point_light(hp, hit_n, hand_pos.xyz, team_tint(fx.z), 0.9 + 1.4 * fx.w, 6.0);
+            color += albedo * point_light(hp, hit_n, hand_pos.xyz, hand_tint(), 0.9 + 1.4 * fx.w + 0.6 * hand_cast.y, 6.0);
         }
         for (int i = 0; i < 4; i++) {
             float code = beams[i].w;
@@ -1318,7 +1506,7 @@ void main() {
 
     // Distance fog toward the horizon color
     float fog = 1.0 - exp(-hit_t * 0.0066);
-    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND || mat == MAT_ROBE) fog *= 0.5;
+    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND || mat == MAT_ROBE || mat == MAT_CAST_ORB) fog *= 0.5;
     color = mix(color, sky_here * 1.15, fog);
     color += aura;
 

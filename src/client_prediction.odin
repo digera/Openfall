@@ -59,6 +59,13 @@ Remote_Entity :: struct {
 	display_state: Character_State,
 	active:    bool,
 	last_seen: f64,
+
+	// What they are winding up, for the orb drawn in their hand. Taken from the
+	// newest snapshot rather than interpolated with the body: a wind-up runs
+	// for the better part of a second, so the interpolation delay is invisible
+	// in it, and a telegraph that arrives early is fairer than one that is late.
+	channel_spell: Spell_ID,
+	channel_frac:  f32,
 }
 
 Client_Projectile :: struct {
@@ -400,6 +407,8 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 		remote.team = entity.team
 		remote.is_bot = entity.is_bot
 		remote.last_seen = world.local_time
+		remote.channel_spell = entity.channel_spell
+		remote.channel_frac = entity.channel_frac
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 	}
 
