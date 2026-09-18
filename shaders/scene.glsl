@@ -42,10 +42,9 @@ layout(binding=1) uniform fs_params {
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
-    vec4 wisp_yaws[16];     // x = yaw (radians), yzw unused
-    vec4 cloak_hem[16];     // xyzw = 4 packed hem control points (x: 2×fp16)
-    vec4 cloak_hem2[16];    // xyzw = continuation (y: 2×fp16)
-    vec4 cloak_hem3[16];    // xyzw = continuation (z: 2×fp16)
+    vec4 robes[16];         // xyz hem ring centre, w = body yaw
+    vec4 robe_waists[16];   // xyz waist ring centre, w = hem yaw (pleat twist)
+    vec4 robe_fx[16];       // x flutter 0..1
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
@@ -70,7 +69,7 @@ const int MAT_OBELISK = 5;
 const int MAT_WISP = 6;
 const int MAT_PROJ = 7;
 const int MAT_HAND = 8;
-const int MAT_CLOAK = 9;
+const int MAT_ROBE = 9;
 
 const vec3 MOON_DIR = normalize(vec3(0.35, -0.55, 0.75));
 
@@ -403,33 +402,30 @@ bool obelisk_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out in
 // ---------------------------------------------------------------------------
 // Wisps (players)
 
-// Wisp positions arrive pre-animated (bob applied on the CPU once per frame).
+// A wisp is a hooded robe with nothing inside it but light (robe_trace) and
+// three motes orbiting it. Positions arrive pre-animated (bob applied on the
+// CPU once per frame); `c` is the centre of the 1.72 m character.
 vec3 wisp_center(vec4 w, float phase) {
     return w.xyz;
 }
 
+// Where the light comes from: the face inside the hood.
+vec3 wisp_glow_center(vec4 w) {
+    return w.xyz + vec3(0.0, 0.0, 0.52 * (0.82 + 0.18 * fract(w.w)));
+}
+
+// The motes only; the cloth and the face are the robe's.
 bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax, out float t, out vec3 n, out float part) {
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
-    part = 0.0;
+    part = 2.0;
     float scale = 0.82 + 0.18 * life;
-
-    // Sized to the 1.72 m character capsule (eye 1.56 m) so other players
-    // read as the same height instead of chest-high orbs.
-    if (!bounds_hit(ro, rd, c, 1.05 * scale, tmax)) return false;
+    if (!bounds_hit(ro, rd, c, 0.55 * scale, tmax)) return false;
 
     bool hit = false;
     float best = tmax;
     float et;
     vec3 en;
-    vec3 mantle = vec3(0.30, 0.30, 0.84) * scale;
-    if (intersect_ellipsoid(ro, rd, c, mantle, tmin, best, et, en)) {
-        best = et; n = en; part = 0.0; hit = true;
-    }
-    vec3 core_c = c + vec3(0.0, 0.0, 0.14 * scale);
-    if (intersect_sphere(ro, rd, core_c, 0.13 * scale, tmin, best, et, en)) {
-        best = et; n = en; part = 1.0; hit = true;
-    }
     float a1 = WORLD_T * 2.55 + c.x * 3.1;
     float a2 = WORLD_T * 1.85 + c.y * 2.4;
     float a3 = WORLD_T * 3.15 + c.z * 1.7;
@@ -441,87 +437,6 @@ bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax
     if (intersect_sphere(ro, rd, m3, 0.042 * scale, tmin, best, et, en)) { best = et; n = en; part = 2.0; hit = true; }
     t = best;
     return hit;
-}
-
-// Distance from point p to line segment (a, b)
-float dist_to_segment(vec3 p, vec3 a, vec3 b) {
-    vec3 ab = b - a;
-    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-    vec3 closest = a + ab * t;
-    return length(p - closest);
-}
-
-// Cloak SDF: union of thin capsules from attach point to each hem control point
-// Simple and robust: 4 capsules forming a flared shape
-float cloak_sdf(vec3 p, vec3 attach, vec3[4] hem_points) {
-    float min_dist = 1e5;
-    
-    // Direct segments from attachment to each hem point
-    for (int i = 0; i < 4; i++) {
-        float d = dist_to_segment(p, attach, hem_points[i]);
-        min_dist = min(min_dist, d);
-    }
-    
-    // Connect hem points to form the lower edge loop
-    for (int i = 0; i < 4; i++) {
-        vec3 a = hem_points[i];
-        vec3 b = hem_points[(i + 1) % 4];
-        float d = dist_to_segment(p, a, b);
-        min_dist = min(min_dist, d);
-    }
-    
-    // Capsule radius (thin ribbon)
-    return min_dist - 0.015;
-}
-
-bool cloak_trace(vec3 ro, vec3 rd, vec3 wisp_pos, float wisp_yaw, int wisp_idx, float tmin, float tmax, out float t, out vec3 n) {
-    t = tmax;
-    n = vec3(0.0, 0.0, 1.0);
-    
-    // Bounding sphere check
-    vec3 bound_center = wisp_pos + vec3(0.0, 0.0, 0.0);
-    if (!bounds_hit(ro, rd, bound_center, 1.2, tmax)) return false;
-    
-    // Unpack hem control points from uniforms
-    vec4 h1 = cloak_hem[wisp_idx];
-    vec4 h2 = cloak_hem2[wisp_idx];
-    vec4 h3 = cloak_hem3[wisp_idx];
-    vec3 hem_points[4];
-    hem_points[0] = vec3(h1.x, h1.y, h1.z);
-    hem_points[1] = vec3(h1.w, h2.x, h2.y);
-    hem_points[2] = vec3(h2.z, h2.w, h3.x);
-    hem_points[3] = vec3(h3.y, h3.z, h3.w);
-    
-    // Attachment point
-    float cy = cos(wisp_yaw);
-    float sy = sin(wisp_yaw);
-    vec3 forward = vec3(cy, sy, 0.0);
-    vec3 attach = wisp_pos + vec3(0.0, 0.0, 0.65) - forward * 0.12;
-    
-    // Sphere-trace the cloak SDF
-    float ray_t = tmin;
-    for (int step = 0; step < 32; step++) {
-        vec3 p = ro + rd * ray_t;
-        float d = cloak_sdf(p, attach, hem_points);
-        
-        if (d < 0.008) {
-            // Hit: estimate normal via gradient
-            float eps = 0.01;
-            vec3 grad = vec3(
-                cloak_sdf(p + vec3(eps, 0.0, 0.0), attach, hem_points) - d,
-                cloak_sdf(p + vec3(0.0, eps, 0.0), attach, hem_points) - d,
-                cloak_sdf(p + vec3(0.0, 0.0, eps), attach, hem_points) - d
-            );
-            n = normalize(grad + vec3(1e-6));
-            t = ray_t;
-            return true;
-        }
-        
-        ray_t += max(d, 0.02);
-        if (ray_t > tmax) break;
-    }
-    
-    return false;
 }
 
 bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float team, out float hp, out float part) {
@@ -542,6 +457,345 @@ bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float
         if (wisp_hit_parts(ro, rd, c, whp, 0.04, t, wt, wn, wp)) {
             t = wt; n = wn; part = wp; team = wteam; hp = whp; hit = true;
         }
+    }
+    return hit;
+}
+
+// ---------------------------------------------------------------------------
+// Robes: every wisp is a hooded robe with nothing inside it but light.
+//
+// The body is two stacked open frusta, shoulder -> waist -> hem, so the profile
+// bells out rather than tilting like a lampshade. The waist and hem ring
+// centres are simulated on the CPU as a chain of pendulums (robe_waists[i].xyz,
+// robes[i].xyz): motion reaches the waist first and the hem later, so the cloth
+// bends and flows rather than tilting whole. The wall slopes are blended across
+// the waist so the bend shades smoothly.
+//
+// The hood is an ellipsoid leaned back so its peak droops behind, draped over
+// the shoulder ring, with an opening cut toward the front. Through it is the
+// dark lining and, floating in the dark, the face: two eyes and a smile drawn
+// as light on a disc, the only thing in there.
+//
+// The cross-section is an ellipse, narrower front-to-back like cloth on a body:
+// the frusta are traced in a space stretched along the wearer's facing. The
+// cloth is pleated into ridges that displace the surface, so the silhouette
+// scallops; they are pinned to the body's yaw at the shoulder and to a lagging
+// yaw at the hem, so a turn twists them, and ripples travel down them so the
+// cloth is never still. The analytic frustum hit is bent onto the pleats with
+// two Newton steps. The hem edge is cut by a travelling wave so it flutters.
+// Two quadratics and a handful of refinements per wisp: no marching.
+
+const float ROBE_SHOULDER_Z = 0.45;   // shoulder ring above the wisp centre, x scale
+const float ROBE_R_SHOULDER = 0.24;   // side-to-side radii; front-to-back is x ROBE_DEPTH
+const float ROBE_R_WAIST    = 0.37;
+const float ROBE_R_HEM      = 0.55;
+const float ROBE_DEPTH      = 0.82;
+const float ROBE_WAIST_F    = 0.44;   // the waist ring's share of the drop (0.55 of 1.25 m)
+const float ROBE_PLEATS     = 7.0;
+const float ROBE_TMIN       = 0.04;
+
+const vec3  HOOD_CENTER     = vec3(-0.03, 0.0, 0.58);   // body frame, x scale
+const vec3  HOOD_RADII      = vec3(0.27, 0.30, 0.38);   // deep, wide, tall, in the leaned frame
+const float HOOD_LEAN       = 0.38;                     // radians the peak leans back
+const vec3  HOOD_OPEN_AXIS  = normalize(vec3(1.0, 0.0, -0.30));  // body frame: forward, a little down
+const float HOOD_OPEN_COS   = 0.62;                     // half-angle ~52 degrees
+const vec3  FACE_CENTER     = vec3(0.04, 0.0, 0.50);    // body frame, x scale; the disc faces forward
+
+const float ROBE_PART_CLOTH = 0.0;
+const float ROBE_PART_HOOD  = 1.0;
+const float ROBE_PART_FACE  = 2.0;
+
+// Into the space where the robe's cross-section is circular: stretched along
+// the wearer's facing by 1 / ROBE_DEPTH about the wisp centre.
+vec3 robe_space(vec3 p, vec3 c, vec3 fwd) {
+    return p + fwd * (dot(p - c, fwd) * (1.0 / ROBE_DEPTH - 1.0));
+}
+
+// Body frame: x forward, y left, z up. Rotation only, so lengths are kept.
+vec3 to_body(vec3 v, vec3 fwd) {
+    return vec3(dot(v, fwd), dot(v, vec3(-fwd.y, fwd.x, 0.0)), v.z);
+}
+vec3 from_body(vec3 v, vec3 fwd) {
+    return fwd * v.x + vec3(-fwd.y, fwd.x, 0.0) * v.y + vec3(0.0, 0.0, v.z);
+}
+
+// Hood frame: the body frame leaned back about the sideways axis, so the
+// hood's tall axis runs up and behind.
+vec3 to_hood(vec3 v) {
+    float c = cos(HOOD_LEAN), s = sin(HOOD_LEAN);
+    return vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
+}
+vec3 from_hood(vec3 v) {
+    float c = cos(HOOD_LEAN), s = sin(HOOD_LEAN);
+    return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
+}
+
+// Both roots of a ray against an axis-aligned ellipsoid at the origin, near
+// then far. A miss reports both as -1. NaN-free (see intersect_sphere).
+vec2 ellipsoid_roots(vec3 o, vec3 d, vec3 rad) {
+    vec3 oo = o / rad;
+    vec3 dd = d / rad;
+    float a = dot(dd, dd);
+    float b = dot(oo, dd);
+    float cc = dot(oo, oo) - 1.0;
+    float h = b * b - a * cc;
+    float s = sqrt(max(h, 0.0));
+    float ia = 1.0 / max(a, 1e-8);
+    return (h < 0.0) ? vec2(-1.0) : vec2((-b - s) * ia, (-b + s) * ia);
+}
+
+// The face as light on a forward-facing disc: two eyes and a smile, 0..1.
+// uv is sideways, up from the face centre, in metres at full size.
+float robe_face(vec2 uv) {
+    // Happy eyes: narrow ellipses set a little apart, tilted up at the outer corners
+    vec2 e = vec2(abs(uv.x) - 0.075, uv.y - 0.035 - abs(uv.x) * 0.25);
+    float eye = 1.0 - smoothstep(0.80, 1.0, length(e / vec2(0.048, 0.030)));
+    // Smile: an arc below, thicker at the middle
+    vec2 m = uv - vec2(0.0, 0.02);
+    float r = length(m);
+    float below = smoothstep(0.30, 0.55, -m.y / max(r, 1e-4));
+    float arc = 1.0 - smoothstep(0.012, 0.026, abs(r - 0.105));
+    return max(eye, arc * below);
+}
+
+// Pleat depth as a fraction of radius: shallow at the shoulder where the cloth
+// is pulled tight, deeper toward the hem where it hangs loose, and swelling in
+// ripples that run down the cloth, faster when the wearer moves.
+float robe_pleat_amp(float f, float flutter) {
+    float ripple = 0.75 + 0.25 * sin(f * 7.0 - WORLD_T * (2.2 + 4.0 * flutter));
+    return (0.012 + 0.045 * f) * ripple;
+}
+
+// Angle around the wearer and the pleat phase there: the pleats follow the
+// body's yaw at the shoulder and the hem's lagging yaw at the bottom.
+float robe_pleat_phase(vec3 p, vec3 c, float f, float yaw, float hem_yaw) {
+    float around = atan(p.y - c.y, p.x - c.x);
+    return (around - mix(yaw, hem_yaw, f)) * ROBE_PLEATS;
+}
+
+// Both roots of a ray against the open frustum from centre pa (radius ra) to
+// centre pb (radius rb): t along the ray, y the axial fraction (0 at pa, 1 at
+// pb; outside [0, 1] is off the finite surface). Roots are ordered near, far.
+// NaN-free on all paths (see intersect_sphere): a miss reports y = -1.
+void frustum_roots(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, out vec2 t, out vec2 y) {
+    vec3 ba = pb - pa;
+    vec3 oa = ro - pa;
+    float m0 = dot(ba, ba);
+    float m1 = dot(oa, ba);
+    float m2 = dot(rd, ba);
+    float m3 = dot(rd, oa);
+    float m5 = dot(oa, oa);
+    float rr = ra - rb;
+    float hy = m0 + rr * rr;
+    float k2 = m0 * m0 - m2 * m2 * hy;
+    float k1 = m0 * m0 * m3 - m1 * m2 * hy + m0 * ra * rr * m2;
+    float k0 = m0 * m0 * m5 - m1 * m1 * hy + m0 * ra * (rr * m1 * 2.0 - m0 * ra);
+    float h = k1 * k1 - k2 * k0;
+    float s = sqrt(max(h, 0.0));
+    // A ray running along a generatrix makes the quadratic linear; nudge it
+    // rather than divide by zero. Sign-preserving so the roots keep their order.
+    if (abs(k2) < 1e-7) k2 = (k2 < 0.0) ? -1e-7 : 1e-7;
+    float ik2 = 1.0 / k2;
+    float t0 = (-k1 - s) * ik2;
+    float t1 = (-k1 + s) * ik2;
+    t = vec2(min(t0, t1), max(t0, t1));
+    y = (h < 0.0) ? vec2(-1.0) : (m1 + t * m2) / max(m0, 1e-6);
+}
+
+// Outward normal of a frustum wall at p: the radial direction tipped along the
+// axis by `slope`, the wall's change of radius per unit length. Passing a slope
+// blended between neighbouring frusta shades their junction as one bend.
+vec3 frustum_normal(vec3 p, vec3 pa, vec3 pb, float slope) {
+    vec3 ba = pb - pa;
+    vec3 axis = ba * inversesqrt(max(dot(ba, ba), 1e-8));
+    vec3 q = p - pa;
+    vec3 radial = q - axis * dot(q, axis);
+    radial *= inversesqrt(max(dot(radial, radial), 1e-8));
+    return normalize(radial - axis * slope);
+}
+
+float frustum_slope(vec3 pa, vec3 pb, float ra, float rb) {
+    return (rb - ra) * inversesqrt(max(dot(pb - pa, pb - pa), 1e-8));
+}
+
+// How far up from the hem the flutter wave has cut the cloth at this angle
+// around the hem, as a fraction of the lower frustum's drop. The wave is
+// anchored to the cloth's own yaw and runs faster and deeper the faster the
+// wearer moves.
+float robe_hem_cut(float around, float hem_yaw, float flutter) {
+    float phase = around * 3.0 - hem_yaw;
+    float wave = 0.5 + 0.5 * sin(phase + WORLD_T * (2.5 + 7.0 * flutter));
+    wave += 0.35 * sin(around * 5.0 + hem_yaw * 2.0 - WORLD_T * (3.7 + 5.0 * flutter));
+    return 1.0 - (0.04 + 0.16 * flutter) * clamp(wave, 0.0, 1.0);
+}
+
+// Signed distance of p from the pleated cloth of one segment, measured radially
+// (positive outside). Also reports where along the segment p sits.
+float robe_cloth(vec3 p, vec3 pa, vec3 ba, float m0, float ra, float rb, float f0, float f1,
+                 vec3 c, float yaw, float hem_yaw, float flutter) {
+    vec3 q = p - pa;
+    float yk = dot(q, ba) / m0;
+    vec3 radial = q - ba * yk;
+    float f = mix(f0, f1, yk);
+    float r = mix(ra, rb, yk) * (1.0 + robe_pleat_amp(f, flutter) * sin(robe_pleat_phase(p, c, f, yaw, hem_yaw)));
+    return length(radial) - r;
+}
+
+// Nearest hit on one open frustum of the robe, bent onto the pleats. Works in
+// robe space (see robe_space); `t` is in that space's ray parameter. f0..f1 is
+// the span of the shoulder-to-hem fraction this segment covers, slope_a/b the
+// wall slopes to shade with at each end. The hem segment is cut by the flutter
+// wave, and `f` is stretched so 1 lands on the cut edge.
+bool robe_segment(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra, float rb, float f0, float f1,
+                  float slope_a, float slope_b, vec3 c, float yaw, float hem_yaw, float flutter,
+                  bool is_hem, inout float t, inout vec3 n, inout float f) {
+    vec3 ba = pb - pa;
+    float m0 = max(dot(ba, ba), 1e-6);
+    vec2 tt, yy;
+    frustum_roots(ro, rd, pa, pb, ra, rb, tt, yy);
+    bool hit = false;
+    for (int k = 0; k < 2; k++) {
+        float tk = (k == 0) ? tt.x : tt.y;
+        float yk = (k == 0) ? yy.x : yy.y;
+        // Slack on the span: the pleats move the surface a little either way
+        if (yk < -0.06 || yk > 1.06 || tk < ROBE_TMIN || tk >= t) continue;
+        // Two Newton steps from the smooth frustum onto the pleated cloth. A
+        // grazing ray has no usable slope; it keeps the smooth hit.
+        for (int it = 0; it < 2; it++) {
+            float d0 = robe_cloth(ro + rd * tk, pa, ba, m0, ra, rb, f0, f1, c, yaw, hem_yaw, flutter);
+            float d1 = robe_cloth(ro + rd * (tk + 0.01), pa, ba, m0, ra, rb, f0, f1, c, yaw, hem_yaw, flutter);
+            float dd = (d1 - d0) * 100.0;
+            tk += (abs(dd) > 0.15) ? clamp(-d0 / dd, -0.06, 0.06) : 0.0;
+        }
+        vec3 p = ro + rd * tk;
+        yk = dot(p - pa, ba) / m0;
+        if (yk < 0.0 || yk > 1.0 || tk < ROBE_TMIN || tk >= t) continue;
+        float span = 1.0;
+        if (is_hem) {
+            vec2 rel = p.xy - pb.xy;
+            span = robe_hem_cut(atan(rel.y, rel.x), hem_yaw, flutter);
+            // Cut away below the wave; a notch shows the lining of the far wall.
+            if (yk > span) continue;
+        }
+        t = tk;
+        n = frustum_normal(p, pa, pb, mix(slope_a, slope_b, yk));
+        f = mix(f0, f1, yk / span);
+        hit = true;
+    }
+    return hit;
+}
+
+// The hood and the face inside it, in the body frame (origin at the wisp
+// centre, x forward). `aux` is how close to the opening's rim a hood hit is
+// (the cosine to the opening axis) or the brightness of the face pattern.
+bool hood_trace(vec3 bro, vec3 brd, float scale, inout float t, inout vec3 bn, inout float part, inout float aux) {
+    bool hit = false;
+    vec3 hc = HOOD_CENTER * scale;
+    vec3 hrad = HOOD_RADII * scale;
+    vec3 hro = to_hood(bro - hc);
+    vec3 hrd = to_hood(brd);
+    vec2 tt = ellipsoid_roots(hro, hrd, hrad);
+    for (int k = 0; k < 2; k++) {
+        float tk = (k == 0) ? tt.x : tt.y;
+        if (tk < ROBE_TMIN || tk >= t) continue;
+        vec3 p = hro + hrd * tk;
+        // The opening: a cone from the hood's centre toward the front. What it
+        // cuts from the near wall leaves the far wall's lining to be seen.
+        float open = dot(from_hood(p * inversesqrt(max(dot(p, p), 1e-8))), HOOD_OPEN_AXIS);
+        if (open > HOOD_OPEN_COS) continue;
+        t = tk;
+        vec3 g = p / (hrad * hrad);
+        bn = from_hood(g * inversesqrt(max(dot(g, g), 1e-12)));
+        part = ROBE_PART_HOOD;
+        aux = open;
+        hit = true;
+    }
+    // The face: light on a disc facing forward inside the hood. Where the
+    // pattern is dark the ray passes through.
+    vec3 fc = FACE_CENTER * scale;
+    if (abs(brd.x) > 1e-4) {
+        float tf = (fc.x - bro.x) / brd.x;
+        if (tf > ROBE_TMIN && tf < t) {
+            vec3 q = bro + brd * tf;
+            float face = robe_face((q.yz - fc.yz) / scale);
+            if (face > 0.02) {
+                t = tf;
+                bn = vec3(1.0, 0.0, 0.0);
+                part = ROBE_PART_FACE;
+                aux = face;
+                hit = true;
+            }
+        }
+    }
+    return hit;
+}
+
+// Nearest robe surface along the ray. For cloth, `aux` runs 0 at the shoulder
+// ring to 1 at the (fluttering) hem edge, for the shading pass to place seams
+// and pleats; see hood_trace for the hood and face.
+bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out float part, out float aux) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    idx = 0;
+    part = ROBE_PART_CLOTH;
+    aux = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 16; i++) {
+        vec4 w = wisps[i];
+        if (w.w < 0.5) continue;
+        float scale = 0.82 + 0.18 * fract(w.w);
+        vec3 c = w.xyz;
+        // Hood peak to a hem trailing its full reach, x scale
+        if (!bounds_hit(ro, rd, c, 1.3 * scale, t)) continue;
+
+        float yaw = robes[i].w;
+        vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
+
+        vec3 bn = vec3(0.0, 0.0, 1.0);
+        float bpart = ROBE_PART_CLOTH;
+        float baux = 0.0;
+        if (hood_trace(to_body(ro - c, fwd), to_body(rd, fwd), scale, t, bn, bpart, baux)) {
+            n = from_body(bn, fwd);
+            idx = i;
+            part = bpart;
+            aux = baux;
+            hit = true;
+        }
+        // Trace in the space where the cross-section is round; the ray is no
+        // longer unit length there, so parameters convert by its length.
+        vec3 sro = robe_space(ro, c, fwd);
+        vec3 srd = rd + fwd * (dot(rd, fwd) * (1.0 / ROBE_DEPTH - 1.0));
+        float slen = length(srd);
+        srd /= slen;
+
+        vec3 shoulder = c + vec3(0.0, 0.0, ROBE_SHOULDER_Z * scale);
+        vec3 waist = robe_space(robe_waists[i].xyz, c, fwd);
+        vec3 hem = robe_space(robes[i].xyz, c, fwd);
+        float r_sh = ROBE_R_SHOULDER * scale;
+        float r_wa = ROBE_R_WAIST * scale;
+        float r_he = ROBE_R_HEM * scale;
+        float hem_yaw = robe_waists[i].w;
+        float flutter = robe_fx[i].x;
+        // The two walls meet at the waist with the mean of their slopes
+        float slope_up = frustum_slope(shoulder, waist, r_sh, r_wa);
+        float slope_lo = frustum_slope(waist, hem, r_wa, r_he);
+        float slope_mid = 0.5 * (slope_up + slope_lo);
+
+        float st = t * slen;
+        vec3 sn = n;
+        float sf = 0.0;
+        bool seg = robe_segment(sro, srd, shoulder, waist, r_sh, r_wa, 0.0, ROBE_WAIST_F,
+                                slope_up, slope_mid, c, yaw, hem_yaw, flutter, false, st, sn, sf);
+        seg = robe_segment(sro, srd, waist, hem, r_wa, r_he, ROBE_WAIST_F, 1.0,
+                           slope_mid, slope_lo, c, yaw, hem_yaw, flutter, true, st, sn, sf) || seg;
+        if (!seg) continue;
+        t = st / slen;
+        // Normals come back through the inverse transpose of the stretch
+        n = normalize(sn + fwd * (dot(sn, fwd) * (ROBE_DEPTH - 1.0)));
+        idx = i;
+        part = ROBE_PART_CLOTH;
+        aux = sf;
+        hit = true;
     }
     return hit;
 }
@@ -686,18 +940,12 @@ void main() {
         best = wt; hit_n = wn; mat = MAT_WISP;
     }
 
-    // Cloak trace: check all visible wisps
-    float cloak_team = 0.0;
-    for (int i = 0; i < 16; i++) {
-        vec4 w = wisps[i];
-        if (w.w < 0.5) continue;
-        float ct;
-        vec3 cn;
-        float yaw = wisp_yaws[i].x;
-        if (cloak_trace(ro, rd, w.xyz, yaw, i, 0.04, best, ct, cn)) {
-            best = ct; hit_n = cn; mat = MAT_CLOAK;
-            cloak_team = floor(w.w);
-        }
+    int robe_idx = 0;
+    float robe_part = 0.0, robe_aux = 0.0;
+    float rt;
+    vec3 rn;
+    if (robe_trace(ro, rd, best, rt, rn, robe_idx, robe_part, robe_aux)) {
+        best = rt; hit_n = rn; mat = MAT_ROBE;
     }
 
     float proj_type = 0.0;
@@ -718,7 +966,9 @@ void main() {
 
     hit_t = best;
     vec3 hp = ro + rd * hit_t;
-    if (dot(hit_n, rd) > 0.0) hit_n = -hit_n;
+    // Surfaces are two-sided; remember which side we are on for the robe lining.
+    float backface = (dot(hit_n, rd) > 0.0) ? 1.0 : 0.0;
+    if (backface > 0.5) hit_n = -hit_n;
 
     float glow_tmax = (mat == MAT_SKY) ? 400.0 : hit_t;
 
@@ -729,8 +979,9 @@ void main() {
         if (w.w < 0.5) continue;
         float team = floor(w.w);
         float hpv = fract(w.w);
-        vec3 c = wisp_center(w, float(i) * 2.21);
-        float g = corona(ro, rd, glow_tmax, c, 0.88 + 0.18 * hpv) * (0.5 + 0.5 * hpv);
+        // The face lights the air around the hood
+        vec3 c = wisp_glow_center(w);
+        float g = corona(ro, rd, glow_tmax, c, 0.55 + 0.15 * hpv) * (0.5 + 0.5 * hpv);
         aura += team_tint(team) * g * (0.55 + 0.2 * sin(WORLD_T * 3.4 + float(i)));
         aura += team_core(team) * g * 0.18;
     }
@@ -943,20 +1194,11 @@ void main() {
             spec_amt = 0.2;
         }
     } else if (mat == MAT_WISP) {
+        // Motes: sparks of the team's light orbiting the robe
         vec3 tint = team_tint(wisp_team);
         vec3 core = team_core(wisp_team);
-        float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
-        float fres = pow(1.0 - ndv, 2.4);
         float pulse = 0.62 + 0.38 * sin(WORLD_T * (3.1 + 6.0 * (1.0 - wisp_hp)));
-        vec3 body = mix(core, tint, 0.42 + 0.40 * (1.0 - ndv));
-        if (wisp_part > 1.5) {
-            emissive = mix(core, tint, 0.18) * (1.15 + 0.55 * pulse);
-        } else if (wisp_part > 0.5) {
-            emissive = core * (1.05 + 0.35 * pulse) + tint * fres * 0.35;
-        } else {
-            emissive = body * (0.72 + 0.38 * pulse) + tint * fres * 0.95 + core * pow(ndv, 5.0) * 0.55;
-        }
-        emissive *= 0.55 + 0.45 * wisp_hp;
+        emissive = mix(core, tint, 0.18) * (1.15 + 0.55 * pulse) * (0.55 + 0.45 * wisp_hp);
         albedo = vec3(0.0);
     } else if (mat == MAT_PROJ) {
         vec3 tint = spell_tint(proj_type);
@@ -975,19 +1217,58 @@ void main() {
         float fres = pow(1.0 - ndv, 2.0);
         emissive = mix(core, tint, 0.5 + 0.5 * fres) * (0.9 + 1.6 * fx.w) + core * pow(ndv, 6.0) * 0.6;
         albedo = vec3(0.0);
-    } else if (mat == MAT_CLOAK) {
-        vec3 tint = team_tint(cloak_team);
-        float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
-        // Fabric: darker than the wisp body, soft shading
-        albedo = tint * 0.25;
-        // Subtle fold shading via fresnel and vertical gradients
-        float fres = pow(1.0 - ndv, 1.8);
-        float vertical_shade = 0.7 + 0.3 * clamp(hit_n.z, -1.0, 1.0);
-        albedo *= vertical_shade;
-        // Soft rim light from team color
-        emissive = tint * fres * 0.15;
-        spec_pow = 4.0;
-        spec_amt = 0.02;
+    } else if (mat == MAT_ROBE) {
+        vec4 w = wisps[robe_idx];
+        float team = floor(w.w);
+        float whp = fract(w.w);
+        vec3 tint = team_tint(team);
+        vec3 core = team_core(team);
+        float pulse = 0.62 + 0.38 * sin(WORLD_T * (3.1 + 6.0 * (1.0 - whp)));
+        // Heavy matte cloth in the team's hue
+        vec3 cloth = mix(tint, vec3(0.40, 0.38, 0.50), 0.45) * 0.28;
+        if (robe_part > 1.5) {
+            // The face: light in the dark, a little brighter as it pulses
+            emissive = (core * (2.0 + 0.5 * pulse) + tint * 0.6) * robe_aux * (0.6 + 0.4 * whp);
+            albedo = vec3(0.0);
+        } else if (robe_part > 0.5) {
+            // The hood: smooth cloth outside, and inside a lining lit only by
+            // the face, with the team's trim stitched around the opening.
+            float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
+            float fres = pow(1.0 - ndv, 3.0);
+            albedo = cloth * (1.0 - 0.6 * backface);
+            emissive = mix(tint, core, 0.3) * (0.025 * fres + backface * 0.10);
+            float rim = smoothstep(HOOD_OPEN_COS - 0.10, HOOD_OPEN_COS - 0.03, robe_aux);
+            emissive += tint * rim * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
+            spec_pow = 3.0;
+            spec_amt = 0.012;
+        } else {
+            // Pleats: the surface was displaced by amp * sin(phase) radially, so
+            // the normal tilts around the body by the derivative, -amp * N *
+            // cos(phase). Measured in robe space so the lighting lines up with
+            // the silhouette.
+            float f = robe_aux;
+            float yaw = robes[robe_idx].w;
+            vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
+            float phase = robe_pleat_phase(robe_space(hp, w.xyz, fwd), w.xyz, f, yaw, robe_waists[robe_idx].w);
+            float ridge = cos(phase);
+            vec3 tangent = cross(vec3(0.0, 0.0, 1.0), hit_n);
+            tangent *= inversesqrt(max(dot(tangent, tangent), 1e-6));
+            hit_n = normalize(hit_n - tangent * ridge * robe_pleat_amp(f, robe_fx[robe_idx].x) * ROBE_PLEATS);
+            float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
+            float fres = pow(1.0 - ndv, 3.0);
+            // The folds between ridges sit deeper in shadow than the lighting
+            // alone would put them.
+            albedo = cloth * (0.80 + 0.20 * sin(phase));
+            // The light inside reaches the lining, brightest up near the face;
+            // the outside only catches the faintest rim of it.
+            emissive = mix(tint, core, 0.3) * (0.025 * fres + backface * (0.35 - 0.25 * f));
+            // An embroidered seam follows the fluttering hem edge and reads as
+            // the team's colour from across a lane.
+            float seam = smoothstep(0.90, 0.975, f);
+            emissive += tint * seam * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
+            spec_pow = 3.0;
+            spec_amt = 0.012;
+        }
     }
 
     vec3 color = emissive;
@@ -1007,8 +1288,7 @@ void main() {
             if (w.w < 0.5) continue;
             float team = floor(w.w);
             float hpv = fract(w.w);
-            vec3 c = wisp_center(w, float(i) * 2.21);
-            color += albedo * point_light(hp, hit_n, c, team_tint(team), 2.4 + 1.2 * hpv, 10.0);
+            color += albedo * point_light(hp, hit_n, wisp_glow_center(w), team_tint(team), 2.4 + 1.2 * hpv, 10.0);
         }
         for (int i = 0; i < NOBELISK; i++) {
             vec3 c = obelisk_crystal_center(i);
@@ -1038,7 +1318,7 @@ void main() {
 
     // Distance fog toward the horizon color
     float fog = 1.0 - exp(-hit_t * 0.0066);
-    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND || mat == MAT_CLOAK) fog *= 0.5;
+    if (mat == MAT_WISP || mat == MAT_PROJ || mat == MAT_HAND || mat == MAT_ROBE) fog *= 0.5;
     color = mix(color, sky_here * 1.15, fog);
     color += aura;
 

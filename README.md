@@ -4,8 +4,6 @@ Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Soko
 
 Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The centre obelisk is worth double essence. First team to 1500 essence (or the leader at 12 minutes) wins the round; rounds auto-reset. Teams are filled with bots up to `TEAM_SIZE`, and bots leave as humans join.
 
-**New:** Wisps now wear flowing procedural cloaks that trail motion, swing with turns, and sway when idle—all rendered via fragment shader SDF raymarching. See [PR #13](https://github.com/digera/odinfpstemplate/pull/13) for details.
-
 ## Requirements (Windows)
 
 - [Odin](https://odin-lang.org/) (dev-2026-07 or newer)
@@ -109,6 +107,12 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. The heal beam reads it the same way: point at the teammate you mean to keep alive and the beam follows them rather than whoever happens to be nearest. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
+
+## Rendering
+
+The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ray-traces the whole scene analytically: boxes for the arena, quadrics for everything else. There is no mesh pipeline. `build.ps1` regenerates `src/scene.odin` from the shader whenever it is newer.
+
+Other players are wisps: a hooded robe with nothing inside it but light, and three motes orbiting it. The hood is an ellipsoid leaned back so its peak droops behind, with an opening cut toward the front; through it is the dark lining and a face - two eyes and a smile - drawn as light on a disc, which is also where the wisp's light comes from. The body is two stacked open cones, shoulder to waist to hem, with an elliptical cross-section and pleats that displace the surface so the silhouette scallops. The cloth is a two-link pendulum chain simulated on the CPU per entity in the wearer's frame (`robe_simulate`): drag from travel pushes the waist back a little and the hem more, a stop throws the body's momentum into the hem as one forward swing, ropes lift the rings as they swing out, and a swing limit stands in for the cloth meeting the body. The result does not depend on the frame rate. The shader draws the surface through those two rings with two ray-cone intersections per wisp refined onto the pleats by two Newton steps, twists the pleats between the body's yaw and a lagging hem yaw, runs ripples down them, flutters the hem edge with a travelling wave that speeds up with the wearer, and stitches team-coloured trim along the hem and the hood's rim. It is all analytic - no marching - and only evaluated for rays that pass the wisp's bounding sphere.
 
 ## Linux
 
