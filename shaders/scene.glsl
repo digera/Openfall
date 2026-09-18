@@ -47,7 +47,7 @@ layout(binding=1) uniform fs_params {
     vec4 wisp_aim[16];      // xyz aim direction (unit), w = charge 0..1
     vec4 robes[16];         // xyz hem ring centre, w = body yaw
     vec4 robe_waists[16];   // xyz waist ring centre, w = hem yaw (pleat twist)
-    vec4 robe_fx[16];       // x flutter 0..1
+    vec4 robe_fx[16];       // x flutter 0..1, y death_anim (0 = alive, 0..inflate_sec inflate, inflate_sec+ pop)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
@@ -479,6 +479,9 @@ bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float
     for (int i = 0; i < 16; i++) {
         vec4 w = wisps[i];
         if (w.w < 0.5) continue;
+        float death_anim = robe_fx[i].y;
+        // Hide motes after inflate completes (during pop and after)
+        if (death_anim > DEATH_INFLATE_SEC) continue;
         float wteam = floor(w.w);
         float whp = fract(w.w);
         vec3 c = wisp_center(w, float(i) * 2.21);
@@ -523,6 +526,9 @@ const float ROBE_DEPTH      = 0.82;
 const float ROBE_WAIST_F    = 0.44;   // the waist ring's share of the drop (0.55 of 1.25 m)
 const float ROBE_PLEATS     = 7.0;
 const float ROBE_TMIN       = 0.04;
+
+const float DEATH_INFLATE_SEC = 0.40;   // how long the balloon swells
+const float DEATH_POP_SEC     = 0.12;   // how long the pop flash lasts
 
 const vec3  HOOD_CENTER     = vec3(-0.03, 0.0, 0.58);   // body frame, x scale
 const vec3  HOOD_RADII      = vec3(0.27, 0.30, 0.38);   // deep, wide, tall, in the leaned frame
@@ -775,8 +781,21 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         if (w.w < 0.5) continue;
         float scale = 0.82 + 0.18 * fract(w.w);
         vec3 c = w.xyz;
+
+        float death_anim = robe_fx[i].y;
+        // After inflate completes, the robe is gone (popped) until respawn
+        if (death_anim > DEATH_INFLATE_SEC) continue;
+
+        // During inflate, swell the robe like a balloon
+        float inflate_scale = 1.0;
+        if (death_anim > 0.0) {
+            float inflate_frac = death_anim / DEATH_INFLATE_SEC;
+            // Ease out for a smooth swell, then pop
+            inflate_scale = 1.0 + inflate_frac * inflate_frac * 0.8;
+        }
+
         // Hood peak to a hem trailing its full reach, x scale
-        if (!bounds_hit(ro, rd, c, 1.3 * scale, t)) continue;
+        if (!bounds_hit(ro, rd, c, 1.3 * scale * inflate_scale, t)) continue;
 
         float yaw = robes[i].w;
         vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
@@ -784,7 +803,7 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         vec3 bn = vec3(0.0, 0.0, 1.0);
         float bpart = ROBE_PART_CLOTH;
         float baux = 0.0;
-        if (hood_trace(to_body(ro - c, fwd), to_body(rd, fwd), scale, t, bn, bpart, baux)) {
+        if (hood_trace(to_body(ro - c, fwd), to_body(rd, fwd), scale * inflate_scale, t, bn, bpart, baux)) {
             n = from_body(bn, fwd);
             idx = i;
             part = bpart;
@@ -801,9 +820,9 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         vec3 shoulder = c + vec3(0.0, 0.0, ROBE_SHOULDER_Z * scale);
         vec3 waist = robe_space(robe_waists[i].xyz, c, fwd);
         vec3 hem = robe_space(robes[i].xyz, c, fwd);
-        float r_sh = ROBE_R_SHOULDER * scale;
-        float r_wa = ROBE_R_WAIST * scale;
-        float r_he = ROBE_R_HEM * scale;
+        float r_sh = ROBE_R_SHOULDER * scale * inflate_scale;
+        float r_wa = ROBE_R_WAIST * scale * inflate_scale;
+        float r_he = ROBE_R_HEM * scale * inflate_scale;
         float hem_yaw = robe_waists[i].w;
         float flutter = robe_fx[i].x;
         // The two walls meet at the waist with the mean of their slopes
@@ -1080,6 +1099,22 @@ void main() {
         if (w.w < 0.5) continue;
         float team = floor(w.w);
         float hpv = fract(w.w);
+
+        float death_anim = robe_fx[i].y;
+        // Death pop flash: a bright expanding sphere during the pop phase
+        if (death_anim > DEATH_INFLATE_SEC && death_anim < DEATH_INFLATE_SEC + DEATH_POP_SEC) {
+            float pop_frac = (death_anim - DEATH_INFLATE_SEC) / DEATH_POP_SEC;
+            float flash_age = 1.0 - pop_frac;
+            vec3 pop_center = w.xyz + vec3(0.0, 0.0, 0.5);
+            float pop_rad = 0.8 + 1.2 * pop_frac;
+            float pop_glow = corona(ro, rd, glow_tmax, pop_center, pop_rad) * flash_age * flash_age;
+            aura += team_tint(team) * pop_glow * 3.5;
+            aura += vec3(1.0) * pop_glow * flash_age * 1.2;
+        }
+
+        // Skip normal glow if dead (after inflate starts)
+        if (death_anim > 0.0) continue;
+
         // The face lights the air around the hood
         vec3 c = wisp_glow_center(w);
         float g = corona(ro, rd, glow_tmax, c, 0.55 + 0.15 * hpv) * (0.5 + 0.5 * hpv);
@@ -1407,9 +1442,20 @@ void main() {
         float pulse = 0.62 + 0.38 * sin(WORLD_T * (3.1 + 6.0 * (1.0 - whp)));
         // Heavy matte cloth in the team's hue
         vec3 cloth = mix(tint, vec3(0.40, 0.38, 0.50), 0.45) * 0.28;
+
+        // Death animation: brighten as it inflates
+        float death_anim = robe_fx[robe_idx].y;
+        float death_brighten = 0.0;
+        if (death_anim > 0.0 && death_anim <= DEATH_INFLATE_SEC) {
+            float inflate_frac = death_anim / DEATH_INFLATE_SEC;
+            // Brighten near the end of inflation as it's about to pop
+            death_brighten = inflate_frac * inflate_frac * 1.5;
+        }
+
         if (robe_part > 1.5) {
             // The face: light in the dark, a little brighter as it pulses
             emissive = (core * (2.0 + 0.5 * pulse) + tint * 0.6) * robe_aux * (0.6 + 0.4 * whp);
+            emissive += tint * death_brighten;
             albedo = vec3(0.0);
         } else if (robe_part > 0.5) {
             // The hood: smooth cloth outside, and inside a lining lit only by
@@ -1420,6 +1466,7 @@ void main() {
             emissive = mix(tint, core, 0.3) * (0.025 * fres + backface * 0.10);
             float rim = smoothstep(HOOD_OPEN_COS - 0.10, HOOD_OPEN_COS - 0.03, robe_aux);
             emissive += tint * rim * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
+            emissive += tint * death_brighten;
             spec_pow = 3.0;
             spec_amt = 0.012;
         } else {
@@ -1447,6 +1494,7 @@ void main() {
             // the team's colour from across a lane.
             float seam = smoothstep(0.90, 0.975, f);
             emissive += tint * seam * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
+            emissive += tint * death_brighten;
             spec_pow = 3.0;
             spec_amt = 0.012;
         }

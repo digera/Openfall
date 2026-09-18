@@ -52,6 +52,8 @@ Robe_State :: struct {
 	hem_yaw:   f32,    // the yaw the pleats have caught up to
 	flutter:   f32,    // 0..1 smoothed travel speed; drives the hem ripple
 	settled:   bool,   // false until the entity has been drawn once
+	death_anim: f32,   // death animation: 0 = alive, 0..1 inflate, 1+ pop
+	was_dead:   bool,  // to detect the death transition
 }
 
 ROBE_SHOULDER_Z_M   :: f32(0.45)   // shoulder ring above the wisp centre, at full size; matches the shader
@@ -70,6 +72,9 @@ ROBE_HEM_DAMPING    :: f32(5.0)
 ROBE_JOLT_MAX_MPS   :: f32(8.0)    // most the wearer's velocity may change in one frame, for the cloth's purposes
 ROBE_SIM_DT_MIN     :: f32(1.0 / 1000.0)
 ROBE_SIM_DT_MAX     :: f32(1.0 / 30.0)
+
+DEATH_INFLATE_SEC   :: f32(0.40)   // how long the balloon swells before popping
+DEATH_POP_SEC       :: f32(0.12)   // how long the pop flash lasts
 
 // Drag from moving through the air, pushing the cloth back against travel, up
 // to what the rope allows.
@@ -112,8 +117,8 @@ robe_link :: proc(off, vel: ^vec3, target, inertial: vec3, rope, swing, spring, 
 
 // One frame of cloth motion. `vel` is the wearer's velocity (server-
 // authoritative, interpolated), `yaw` its facing, `scale` the wisp's size (it
-// shrinks as it is hurt).
-robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt: f32) {
+// shrinks as it is hurt), `dead` whether the wisp is dead this frame.
+robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt: f32, dead: bool) {
 	waist_rope := ROBE_WAIST_ROPE_M * scale
 	hem_rope := ROBE_HEM_ROPE_M * scale
 	if !st.settled {
@@ -125,6 +130,19 @@ robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt
 		st.hem_yaw = yaw
 		st.flutter = 0
 		st.settled = true
+		st.death_anim = 0
+		st.was_dead = false
+	}
+
+	// Death animation: on the frame a wisp becomes dead, start inflating
+	if dead && !st.was_dead {
+		st.death_anim = 0
+	}
+	st.was_dead = dead
+
+	// Advance death animation if playing
+	if dead && st.death_anim < (DEATH_INFLATE_SEC + DEATH_POP_SEC) {
+		st.death_anim += dt
 	}
 
 	// The wearer speeding up throws the cloth back; stopping throws it forward.
@@ -507,12 +525,12 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			scale := 0.82 + 0.18 * hp
 			robe := &r.robes[ids[k]]
 			yaw := remote.display_state.yaw
-			robe_simulate(robe, remote.display_state.vel, yaw, scale, r.world_t, phase, robe_dt)
+			robe_simulate(robe, remote.display_state.vel, yaw, scale, r.world_t, phase, robe_dt, remote.display_state.dead)
 			waist := pos + vec3{0, 0, ROBE_SHOULDER_Z_M * scale} + robe.waist_off
 			hem := waist + robe.hem_off
 			fs_params.robes[k] = {hem.x, hem.y, hem.z, yaw}
 			fs_params.robe_waists[k] = {waist.x, waist.y, waist.z, robe.hem_yaw}
-			fs_params.robe_fx[k] = {robe.flutter, 0, 0, 0}
+			fs_params.robe_fx[k] = {robe.flutter, robe.death_anim, 0, 0}
 
 			// The cast orb, held out along the aim so a glance says both what
 			// is coming and who it is coming for. Where a wisp is pointing is
