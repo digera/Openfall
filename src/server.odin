@@ -648,15 +648,16 @@ server_send_snapshots :: proc(server: ^Server) {
 				bidx[k], bidx[best] = bidx[best], bidx[k]
 				bdist[k], bdist[best] = bdist[best], bdist[k]
 			}
-			beam := &server.world.spell_states[bidx[k]].beam
-			sb := Snapshot_Beam{
+			spell_state := &server.world.spell_states[bidx[k]]
+			beam := &spell_state.beam
+			snapshot.beams[k] = Snapshot_Beam{
 				owner_id    = Entity_ID(bidx[k]),
+				spell_id    = spell_state.channel_spell,
 				end         = beam.end,
 				hit         = beam.hit != INVALID_ENTITY,
 				chain_count = u8(beam.chain_count),
 				chains      = beam.chains,
 			}
-			snapshot.beams[k] = sb
 		}
 		snapshot.beam_count = u8(btake)
 
@@ -808,15 +809,6 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 		char.pos = best
 		char.vel.x = blink_dir.x * 3.0
 		char.vel.y = blink_dir.y * 3.0
-
-	case .Heal:
-		// Cut short and you get a fraction of the heal for the whole cost.
-		before := char.health
-		char.health = min(char.health + def.heal * charge, HEALTH_MAX)
-		if SERVER_VERBOSE {
-			server_log("[Combat] %s mended %d for %.0f (%.0f HP)",
-				def.short_name, caster_id, char.health - before, char.health)
-		}
 
 	case .Strike:
 		// Touches the target and bystanders only; the splash skips its owner,

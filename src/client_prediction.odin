@@ -445,7 +445,7 @@ client_world_local_beam :: proc(world: ^Client_World) -> (beam: ^Snapshot_Beam, 
 // look the server will use against the bodies the player is looking at. The
 // server decides whether the beam is lit at all; drawing its far end from a
 // round-trip-old snapshot would have it trail the crosshair.
-client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> vec3 {
+client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: vec3) -> (end: vec3, on_body: bool) {
 	reach := world_ray_hit(eye, look, def.range)
 	for i in 1..<MAX_ENTITIES {
 		remote := &world.remote_entities[i]
@@ -457,9 +457,52 @@ client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: 
 		}
 		if dist, hit := ray_cylinder_hit(eye, look, remote.display_state.pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, reach); hit {
 			reach = dist
+			on_body = true
 		}
 	}
-	return eye + look * reach
+	return eye + look * reach, on_body
+}
+
+// The same for a heal beam, which bends to the ally it mends instead of running
+// along the crosshair. Mirrors heal_beam_target on the server -- the crosshair's
+// pick, then the nearest wounded ally in the cone, then the player themselves --
+// off the interpolated positions the player can actually see. With nobody to
+// mend the beam idles along the look direction, which is what the server draws.
+client_world_heal_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look, self_pos: vec3) -> (end: vec3, on_body: bool) {
+	best := INVALID_ENTITY
+	best_d2 := f32(0)
+	for i in 1..<MAX_ENTITIES {
+		id := Entity_ID(i)
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead || id == world.local_entity_id {
+			continue
+		}
+		if !spell_target_valid_for_filter(.Friendly, world.local_entity_id, id, world.local_team, remote.team) {
+			continue
+		}
+		if remote.display_state.health >= HEALTH_MAX {
+			continue
+		}
+		pos := remote.display_state.pos
+		if !heal_beam_in_reach(def, eye, look, pos) {
+			continue
+		}
+		if id == world.target_id {
+			return strike_center(pos), true
+		}
+		d2 := len2_vec3(strike_center(pos) - eye)
+		if best == INVALID_ENTITY || d2 < best_d2 {
+			best = id
+			best_d2 = d2
+		}
+	}
+	if best != INVALID_ENTITY {
+		return strike_center(world.remote_entities[best].display_state.pos), true
+	}
+	if world.prediction.predicted_char.health < HEALTH_MAX {
+		return strike_center(self_pos), true
+	}
+	return eye + look * world_ray_hit(eye, look, def.range), false
 }
 
 @(private = "file")
@@ -656,6 +699,15 @@ client_world_target_valid :: proc(world: ^Client_World, id: Entity_ID) -> bool {
 	return remote.active && !remote.display_state.dead
 }
 
+// Is the current sticky target valid for the given spell's targeting filter?
+client_world_target_valid_for_spell :: proc(world: ^Client_World, id: Entity_ID, filter: Spell_Target_Filter) -> bool {
+	if !client_world_target_valid(world, id) {
+		return false
+	}
+	remote := &world.remote_entities[id]
+	return spell_target_valid_for_filter(filter, world.local_entity_id, id, world.local_team, remote.team)
+}
+
 // The current target if it is someone a strike may land on: alive and
 // hostile. Where they stand is the caller's question; the server asks the same
 // things of its own state, this only keeps the client from winding up or
@@ -670,12 +722,20 @@ client_world_strike_target :: proc(world: ^Client_World) -> (remote: ^Remote_Ent
 
 // Entities are tested at their interpolated display position, so the selection
 // follows what the player can actually see rather than the newer server state.
-client_world_acquire_target :: proc(world: ^Client_World, eye: vec3, look_dir: vec3) {
+// `filter` determines which entities may be selected: enemies, friendlies, or any.
+client_world_acquire_target :: proc(world: ^Client_World, eye: vec3, look_dir: vec3, filter: Spell_Target_Filter) {
 	best_dist := TARGET_RANGE_M
 	best_id := INVALID_ENTITY
 	for i in 1..<MAX_ENTITIES {
 		remote := &world.remote_entities[i]
 		if !remote.active || remote.display_state.dead {
+			continue
+		}
+		if Entity_ID(i) == world.local_entity_id {
+			continue
+		}
+		// Apply the spell's target filter
+		if !spell_target_valid_for_filter(filter, world.local_entity_id, Entity_ID(i), world.local_team, remote.team) {
 			continue
 		}
 		dist, hit := ray_cylinder_hit(
