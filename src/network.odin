@@ -727,8 +727,8 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
 SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 8   // version+type, tick, ack, eight counts
-SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2
-                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast
+SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 1 + 4
+                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, ore, ore_amt
 // Projectiles used to carry full f32 position and velocity, which they never
 // needed: the server owns them outright and nobody reconciles a prediction
 // against one. Centimetres and cm/s inside the arena are visually identical and

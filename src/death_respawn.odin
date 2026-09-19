@@ -22,7 +22,7 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			// never saw, or three people at once is counted here exactly once.
 			combat_record_death(entity_world, Entity_ID(i))
 			// Drop carried ore on death
-			if char.carrying_ore != .None && char.carrying_ore_amount > 0 {
+			if char.carrying_ore != .None && char.carrying_ore_amount > 0 && g_ore_chunks != nil {
 				ore_chunk_spawn_loose(g_ore_chunks, char.carrying_ore, char.pos + vec3{0, 0, 0.35}, char.carrying_ore_amount)
 				if SERVER_VERBOSE {
 					fmt.printf("[Death] Entity %d dropped %.0f %s\n", i, char.carrying_ore_amount, ore_name(char.carrying_ore))

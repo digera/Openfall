@@ -68,6 +68,10 @@ Remote_Entity :: struct {
 	// in it, and a telegraph that arrives early is fairer than one that is late.
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
+
+	// Ore carry state, taken from newest snapshot (not interpolated)
+	carrying_ore:        Ore_Kind,
+	carrying_ore_amount: f32,
 }
 
 Client_Projectile :: struct {
@@ -509,6 +513,8 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 			stamina    = entity.stamina,
 			slow_ticks = entity.slow_ticks,
 			dead       = entity.dead,
+			carrying_ore        = entity.carrying_ore,
+			carrying_ore_amount = entity.carrying_ore_amount,
 		}
 
 		if entity.id == world.local_entity_id {
@@ -531,6 +537,8 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 		remote.last_seen = world.local_time
 		remote.channel_spell = entity.channel_spell
 		remote.channel_frac = entity.channel_frac
+		remote.carrying_ore = entity.carrying_ore
+		remote.carrying_ore_amount = entity.carrying_ore_amount
 		remote_entity_add_snapshot(remote, snapshot.tick_id, state)
 	}
 

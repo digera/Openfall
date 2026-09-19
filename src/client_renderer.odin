@@ -1115,6 +1115,13 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.puts("SLOWED")
 	}
 
+	// Carry state
+	if local.carrying_ore != .None && local.carrying_ore_amount > 0 {
+		sdtx.pos(0, hud_y + 4)
+		sdtx_color(ore_color(local.carrying_ore))
+		sdtx.printf("CARRY: %s %.0f", ore_name(local.carrying_ore), local.carrying_ore_amount)
+	}
+
 	// --- Hotbar (bottom center) ------------------------------------------------
 	slot_w: f32 = 14
 	start := cols * 0.5 - slot_w * f32(HOTBAR_SLOTS) * 0.5
@@ -1218,7 +1225,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	if world.have_game_state && Match_State(gs.match_state) == .Waiting {
 		sdtx.color3f(0.7, 0.68, 0.62)
-		hud_center_text(cols, 6, "walk over the ore to bank it - your own rock thickens the next wave")
+		hud_center_text(cols, 6, "carry ore back to your base dump to bank it - your own rock thickens the next wave")
 		hud_center_text(cols, 7, "bring the golden tower down, then build it back: most rock in the stump wins")
 	}
 
