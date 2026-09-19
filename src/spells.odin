@@ -80,7 +80,8 @@ Spell_Payload_Type :: enum u8 {
 SPELL_DEFS := [Spell_ID]Spell_Def{
 	.None = {},
 
-	// Ricochets down lanes and around cover; the pop is what does the work.
+	// Ricochets down lanes and around cover. A bounce leans toward a nearby
+	// visible enemy without replacing the bank; the pop is what does the work.
 	.Arcane_Missile = {
 		id               = .Arcane_Missile,
 		name             = "Arcane Missile",
