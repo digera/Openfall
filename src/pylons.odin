@@ -3,14 +3,11 @@ package main
 import "core:fmt"
 import "core:math"
 
-// Ore pylons: the seven mineable towers that replace the old capture points.
-//
-// A pylon is a standing stack of coarse ore cells. You break it with spells,
-// remaining cells fall down their column, and minions can stack cells back up
-// to -- never past -- the original height of that column. Six belong to teams,
-// two per team, one near the lane mouth and one far down it. The seventh is
-// the golden pylon in the centre plaza: much tougher, owned by nobody, and the
-// only source of gold. The pretty rock is a client SDF of this occupancy.
+// Ore pylons: the seven mineable towers. Gameplay authority is the spiral
+// shield-node system in tower_nodes.odin. This file keeps the shared ore
+// vocabulary (kinds, colours, toughness, placement helpers) and the old
+// occupancy-grid implementation, which is no longer on the collision or
+// mining path.
 //
 // You cannot mine your own team's pylons. That is the whole shape of the mode:
 // your towers are your ore reserve and someone else has to come take it.
@@ -19,10 +16,6 @@ import "core:math"
 // in the character sense, which is exactly why targeted spells cannot touch
 // them -- Call Lightning has nothing to lock onto and needs no special case.
 // Only positional damage carves ore.
-//
-// Occupancy plus PYLON_COLLIDE_SLACK is collision. Beams go through
-// pylon_raycast; projectiles through world_point_free → pylon_blocks_point.
-// The client SDF is the picture, not the hit.
 
 Pylon_ID :: u8
 MAX_PYLONS :: 7

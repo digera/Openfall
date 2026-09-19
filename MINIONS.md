@@ -1,6 +1,6 @@
 # Minions and ore
 
-Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly pylon is missing rock, they hop onto the **nearest** one and donate a chunk of rebuild. A flattened lane tower takes about three waves to stand again. The team that rebuilds the centre after the gold pylon is gone wins.
+Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that rebuilds the centre after the gold pylon is gone wins.
 
 Ore is banked the instant a player walks over it. There is no personal carry, no death-drop, no trip home: the wallets are the team's, so whoever reaches the lump first has already decided where it goes. Essence is just the scoreboard; the wallets are what the wave actually reads.
 
@@ -51,9 +51,9 @@ Players mining pylons still knock chunks out of the tower itself. That is not mi
 
 ## Rebuild
 
-Fodder (and only fodder) jump into a damaged friendly pylon and call `pylon_build`. When two friendly towers are hurt, they take the **nearest** one: chip on the far pylon must not vacuum the wave that should be saving the inner one. A tower is "hurt" below `PYLON_REBUILD_FRAC` (not a 2% graze).
+Fodder (and only fodder) jump into a damaged friendly tower and call `tower_build`. When two friendly towers are hurt, they take the **nearest** one: chip on the far pylon must not vacuum the wave that should be saving the inner one. A tower is "hurt" below `PYLON_REBUILD_FRAC` (not a 2% graze).
 
-Own-ore buffs make the donation larger, so a team that has been farming its own dead is the team that puts a tower back in one or two waves instead of three.
+An unbuffed hop restores two shield nodes. Own-ore buffs add up to two more, so a team that has been farming its own dead is the team that puts a tower back in one or two waves instead of three.
 
 Flattening a lane tower does **not** open a super-minion push. It turns that team's next waves into a repair crew for about ninety seconds. The siege is camping the stump.
 
@@ -61,4 +61,4 @@ Flattening a lane tower does **not** open a super-minion push. It turns that tea
 
 Essence does not end the round. The clock (12 minutes) is the backstop: highest essence, or a draw.
 
-While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. Same silhouette for everyone; first team to have laid most of the rock when it closes (`CENTRE_CLAIM_FRAC` of the original) wins.
+While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when it closes (`CENTRE_CLAIM_FRAC` of the original) wins.

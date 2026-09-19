@@ -132,7 +132,7 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 // whether a point is solid comes through this one proc -- movement, projectile
 // sweeps, `world_segment_clear` for line of sight, `world_ray_hit` for beam
 // reach -- so a tower becomes cover, stops spells and blocks sight in one move
-// instead of four. `pylon_blocks_point` rejects on a bound cylinder first, so a
+// instead of four. `tower_blocks_point` rejects on a bound cylinder first, so a
 // point nowhere near a tower costs seven distance compares and no occupancy.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
 	in_floor := false
@@ -150,7 +150,7 @@ world_point_free :: proc(p: vec3, pad: f32) -> bool {
 			return false
 		}
 	}
-	if g_pylons != nil && pylon_blocks_point(g_pylons, p, pad) {
+	if g_towers != nil && tower_blocks_point(g_towers, p, pad) {
 		return false
 	}
 	return true
@@ -174,9 +174,9 @@ box_exit_depth :: proc(b: ^World_Box, p: vec3, pad: f32) -> vec3 {
 world_surface_normal :: proc(from, blocked: vec3, pad: f32) -> vec3 {
 	// Ore first, from the occupied cell face, so a spell that glances off a
 	// tower leaves along the rock it actually hit.
-	if g_pylons != nil {
-		if n, ok := pylon_surface_normal(g_pylons, blocked, pad); ok {
-			return n
+	if g_towers != nil {
+		if id, ok := tower_at_point(g_towers, blocked, pad); ok {
+			return tower_normal_world(g_towers, id, blocked)
 		}
 	}
 
