@@ -60,6 +60,29 @@ The client unpacks HP, re-sorts locally, and paints the occupancy atlas from
 the resulting spiral. Collision on the client uses the same node spheres as
 the server.
 
+## Damage visualization
+
+The occupancy atlas is 1 m cells. Node spheres are ~1.1–1.7 m. HP-scaling
+those radii either does nothing the grid can show, or drops a low-HP node
+below the 0.5 march iso while the raycast still hits the full sphere. The
+HP-sort spiral makes it worse: a chipped node rises, a healthy one takes its
+slot, and the face you are mining stays full-size.
+
+So paint and collision stay in lockstep — every live node is the collision
+sphere, dead nodes are omitted, core height is `live_count * stack_step`.
+Chip damage is a **scar** stamped at the bite (the outward face of the node
+that just lost HP). The scar survives the re-sort, so the beam's impact
+powders and lights up even as that node climbs the spiral. Repeated bites
+on the same face merge into one growing scar.
+
+Lane light, apron dust, and the HUD use **mass** (`sum(hp) / sum(max_hp)`),
+not `intact`. `intact` is still `live_count / max_count` for scoring and
+minion rebuild. Lighting and the percent readout therefore move on the
+first chip, not the first kill.
+
+`g_pylons` / `Pylon_World` in `pylons.odin` are unused leftovers from the
+occupancy-grid era. Gameplay authority is `g_towers`.
+
 ## Out of scope
 
 Smooth node morphing between ranks, a custom node mesh, and bot pathing that
