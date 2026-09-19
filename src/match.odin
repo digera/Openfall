@@ -25,10 +25,16 @@ Match :: struct {
 	// centre. Which ore you are holding is what decides what your next minion
 	// wave can do, so they are tracked separately rather than summed.
 	wallets:        [TEAM_COUNT][ORE_COUNT]f32,
-	// Score. For now the sum of everything a team has brought home, which is
-	// what ends a round; the wave economy that actually spends the wallets is
-	// the next phase.
+	// Scoreboard. The sum of everything a team has banked, spent or not. It
+	// settles a round that runs out of clock and nothing else: what ends a
+	// round early is the centre.
 	essence:        [TEAM_COUNT]f32,
+
+	// The golden pylon has been flattened and the stump is up for rebuilding.
+	// `centre_build` is the voxels each team's waves have put back into it
+	// since; whoever has laid the most when the silhouette closes wins.
+	centre_open:    bool,
+	centre_build:   [TEAM_COUNT]f32,
 
 	match_time:     f32,
 	match_duration: f32,
@@ -38,12 +44,15 @@ Match :: struct {
 	rounds_played:  int,
 }
 
-ESSENCE_WIN_THRESHOLD  :: f32(1500.0)
 DEFAULT_MATCH_DURATION :: f32(12 * 60)
 WARMUP_DURATION        :: f32(8.0)
 ENDED_DURATION         :: f32(12.0)
 
-test_essence_threshold := ESSENCE_WIN_THRESHOLD
+// Zero, and off. Essence is a scoreboard: a team that mines gold all match
+// without ever touching the centre has a fine score and has not won anything.
+// NEXUS_TEST_ESSENCE puts a threshold back so a test can finish a round in
+// seconds without waiting for the golden pylon to come down.
+test_essence_threshold := f32(0)
 test_essence_multiplier := f32(1.0)
 
 match_configure_test_mode :: proc(win_threshold: f32, essence_multiplier: f32) {
@@ -74,12 +83,16 @@ match_tick :: proc(match: ^Match, dt: f32) -> (restarted: bool) {
 	case .Active:
 		match.match_time += dt
 
-		for i in 0..<TEAM_COUNT {
-			if match.essence[i] >= test_essence_threshold {
-				match_end(match, .Team_Wins, team_from_index(i))
-				return false
+		if test_essence_threshold > 0 {
+			for i in 0..<TEAM_COUNT {
+				if match.essence[i] >= test_essence_threshold {
+					match_end(match, .Team_Wins, team_from_index(i))
+					return false
+				}
 			}
 		}
+		// The clock is the backstop, not the game: a stalemate over a half-built
+		// centre has to end some time, and when it does the scoreboard settles it.
 		if match.match_duration > 0 && match.match_time >= match.match_duration {
 			best := 0
 			tie := false
@@ -108,7 +121,7 @@ match_tick :: proc(match: ^Match, dt: f32) -> (restarted: bool) {
 	return false
 }
 
-// Bank ore a player carried home. The only way essence moves.
+// Bank ore a player walked over. Instant, no carry. The only way essence moves.
 //
 // Gold is worth more than ore because there is one source of it and everyone has
 // to fight in the open for it.
@@ -141,14 +154,66 @@ match_spend_ore :: proc(match: ^Match, team: Team_ID, kind: Ore_Kind, amount: f3
 	return true
 }
 
+// The golden pylon is the round.
+//
+// While it stands it is only the richest rock in the arena. The moment it is
+// gone the centre is a stump every team's wave will hop, and the first team to
+// have laid most of the silhouette back when it closes takes the round. That is
+// the one win condition that belongs to this map: three teams fighting over who
+// gets to finish the tower they all just knocked down.
+match_centre_tick :: proc(match: ^Match, pylons: ^Pylon_World) {
+	if match.state != .Active {
+		return
+	}
+	g := pylon_grid(pylons, 0)
+	p := pylon_get(pylons, 0)
+	if g == nil || p == nil {
+		return
+	}
+	if !match.centre_open {
+		if g.solid == 0 {
+			match.centre_open = true
+			match.centre_build = {}
+			fmt.println("[Match] The golden pylon is down. Rebuild the centre to win the round.")
+		}
+		return
+	}
+	if p.intact < CENTRE_CLAIM_FRAC {
+		return
+	}
+	best := 0
+	for i in 1..<TEAM_COUNT {
+		if match.centre_build[i] > match.centre_build[best] {
+			best = i
+		}
+	}
+	// Somebody has to have built it. A centre that filled itself is a bug, not
+	// a winner.
+	if match.centre_build[best] <= 0 {
+		return
+	}
+	match_end(match, .Team_Wins, team_from_index(best))
+}
+
+// Rock one team's wave has put back into the centre stump.
+match_credit_centre :: proc(match: ^Match, team: Team_ID, voxels: int) {
+	idx := team_index(team)
+	if idx < 0 || voxels <= 0 || !match.centre_open {
+		return
+	}
+	match.centre_build[idx] += f32(voxels)
+}
+
 match_start :: proc(match: ^Match) {
 	match.state = .Active
 	match.match_time = 0
 	match.essence = {}
 	match.wallets = {}
+	match.centre_open = false
+	match.centre_build = {}
 	match.result = .None
 	match.winner = .None
-	fmt.printf("[Match] Round %d started (win at %.0f essence)\n", match.round_number, test_essence_threshold)
+	fmt.printf("[Match] Round %d started (bring the centre down, then build it back)\n", match.round_number)
 }
 
 match_end :: proc(match: ^Match, result: Match_Result, winner: Team_ID) {
@@ -173,6 +238,8 @@ match_reset :: proc(match: ^Match) {
 	match.winner = .None
 	match.essence = {}
 	match.wallets = {}
+	match.centre_open = false
+	match.centre_build = {}
 	match.match_time = 0
 	match.ended_time = 0
 	match.round_number += 1

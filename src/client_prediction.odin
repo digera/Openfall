@@ -132,19 +132,23 @@ Client_World :: struct {
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
 
-	// The client's own copy of the ore pylons, rebuilt from the bite stream
-	// rather than replicated. Cosmetic: the server decides what broke and what
-	// it collides with, so a brief disagreement is a wrong-looking crater and
-	// nothing more. `pylon_sync` is what notices and repairs one.
+	// The client's own copy of the ore pylons, occupancy only. GameState
+	// carries all seven column-height blobs; dirty pylons also ride the 30 Hz
+	// snapshot so cover you are standing in does not wait on the HUD packet.
 	pylons:           Pylon_World,
-	pylon_sync:       Pylon_Client_Sync,
-	pylon_rx:         Pylon_Sync_Rx,
 
 	// Ore on the floor, straight from the newest snapshot. State rather than
 	// events, so a lump that stops being sent has been picked up or timed out.
 	chunks:           [MAX_SNAPSHOT_CHUNKS]Client_Chunk,
 	chunk_count:      int,
 	chunk_time:       f64,
+
+	// Lane minions, same deal as the ore: interest-managed state, replaced
+	// whole every snapshot. Smoothed towards rather than extrapolated from,
+	// because a minion that has stopped to rebuild a tower stops dead and
+	// guessing it forward would slide it into the rock.
+	minions:          [MAX_SNAPSHOT_MINIONS]Client_Minion,
+	minion_count:     int,
 
 	// Sticky soft target. Drawn under the crosshair, and sent up with every
 	// input so a targeted spell lands on it once the server has validated it.
@@ -166,6 +170,25 @@ Client_Roster_Slot :: struct {
 	is_bot:  bool,
 	name:    Player_Name,
 	stats:   Combat_Stats,
+}
+
+// Roughly "close the gap in a tenth of a second", which is three snapshots and
+// about the same distance a minion covers between two of them.
+MINION_SMOOTH_RATE :: f32(12.0)
+MINION_SNAP_DIST   :: f32(4.0)
+
+// A lane minion as the client draws it. `pos` and `yaw` are the smoothed ones
+// that get rendered; `target_pos` is where the last snapshot put it.
+Client_Minion :: struct {
+	present:    bool,
+	id:         Minion_ID,
+	kind:       Minion_Kind,
+	team:       Team_ID,
+	pos:        vec3,
+	target_pos: vec3,
+	yaw:        f32,
+	target_yaw: f32,
+	hp:         f32,
 }
 
 // A lump of ore as the client draws it. Carries the snapshot velocity so a
@@ -388,17 +411,14 @@ remote_entity_interpolate :: proc(remote: ^Remote_Entity, render_tick: f64) {
 // ---------------------------------------------------------------------------
 // World
 
-// Takes a pointer rather than returning a value: the pylon grids put this
-// struct well past half a megabyte, which is no size to be copying through a
-// return slot.
+// Takes a pointer rather than returning a value: Client_World is large
+// enough that copying it through a return slot is a bad habit.
 client_world_init :: proc(world: ^Client_World) {
 	world^ = {}
 	world.local_entity_id = INVALID_ENTITY
 	world.target_id = INVALID_ENTITY
 	client_prediction_init(&world.prediction)
 	pylon_world_init(&world.pylons)
-	// Nothing trustworthy until the server's copy lands.
-	pylon_client_mark_all_stale(&world.pylon_sync)
 }
 
 client_world_reset_session :: proc(world: ^Client_World) {
@@ -420,48 +440,24 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.combat_log = {}
 	world.chunk_count = 0
 	world.chunks = {}
-	// A new session is a new round's worth of rock: start from pristine pylons
-	// and ask the server for whatever has already been mined.
+	world.minion_count = 0
+	world.minions = {}
+	// A new session is a new round's worth of rock. GameState occupancy on
+	// the next HUD packet is the whole catch-up; there is no resync path.
 	pylon_world_reset(&world.pylons)
-	world.pylon_sync = {}
-	world.pylon_rx = {}
-	pylon_client_mark_all_stale(&world.pylon_sync)
 }
 
-// Install one slice of an incoming pylon resync. Parts may arrive in any order;
-// the last one to land commits the field.
-client_world_apply_pylon_sync :: proc(world: ^Client_World, p: ^Server_Pylon_Sync_Packet) {
-	kind := Pylon_Sync_Kind(p.kind)
-	if !pylon_sync_rx_begin(&world.pylon_rx, Pylon_ID(p.pylon), kind, p.base_seq, int(p.total), int(p.parts)) {
-		return
-	}
-	// The pristine case carries no payload, so there is nothing to reassemble.
-	if kind == .Whole {
-		pylon_sync_rx_commit(&world.pylons, &world.pylon_sync, &world.pylon_rx)
-		return
-	}
-	if pylon_sync_rx_part(&world.pylon_rx, int(p.part), p.data[:int(p.len)]) {
-		pylon_sync_rx_commit(&world.pylons, &world.pylon_sync, &world.pylon_rx)
+client_world_apply_gamestate_pylons :: proc(world: ^Client_World, gs: ^Server_GameState_Packet) {
+	for i in 0 ..< MAX_PYLONS {
+		pylon_apply_occupancy(&world.pylons, Pylon_ID(i), gs.pylons[i].heights[:])
 	}
 }
 
-// The gamestate carries a checksum per pylon. Anything that got past the bite
-// stream -- a collapse, a lost window, a bug -- shows up here as a mismatch, and
-// the fix is the same in every case: ask for the field again.
-client_world_check_pylon_drift :: proc(world: ^Client_World, gs: ^Server_GameState_Packet) {
-	// Only meaningful when both sides have taken the same number of bites.
-	// Mid-mining the client is routinely a snapshot behind, and that is not drift.
-	if !world.pylon_sync.primed || world.pylon_sync.applied_seq != gs.carve_seq {
-		return
-	}
-	for i in 0..<world.pylons.count {
-		g := pylon_grid(&world.pylons, Pylon_ID(i))
-		if g == nil {
-			continue
-		}
-		if ore_grid_checksum(g) != gs.pylons[i].checksum {
-			pylon_client_mark_stale(&world.pylon_sync, Pylon_ID(i))
-		}
+client_world_apply_snapshot_pylons :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	n := min(int(snapshot.occ_count), MAX_SNAPSHOT_OCC_PYLONS)
+	for i in 0 ..< n {
+		o := &snapshot.occ[i]
+		pylon_apply_occupancy(&world.pylons, o.pylon, o.heights[:])
 	}
 }
 
@@ -536,10 +532,9 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	client_world_apply_strikes(world, snapshot)
 	client_world_apply_beams(world, snapshot)
 	client_world_apply_combat_events(world, snapshot)
-	// Re-run the server's bites against our own grids. Bites overlap between
-	// snapshots on purpose, so most of these are already applied and skipped.
-	pylon_client_apply(&world.pylons, &world.pylon_sync, snapshot.carves[:int(snapshot.carve_count)])
+	client_world_apply_snapshot_pylons(world, snapshot)
 	client_world_apply_chunks(world, snapshot)
+	client_world_apply_minions(world, snapshot)
 }
 
 @(private = "file")
@@ -568,6 +563,60 @@ client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapsh
 				c.seed = prev[k].seed
 				break
 			}
+		}
+	}
+}
+
+@(private = "file")
+client_world_apply_minions :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	prev := world.minions
+	prev_n := world.minion_count
+	world.minions = {}
+	world.minion_count = int(snapshot.minion_count)
+	for i in 0..<world.minion_count {
+		s := &snapshot.minions[i]
+		m := &world.minions[i]
+		m.present = true
+		m.id = s.id
+		m.kind = s.kind
+		m.team = s.team
+		m.target_pos = s.pos
+		m.target_yaw = s.yaw
+		m.hp = s.hp
+		// A body we have seen before keeps the position it was drawn at and
+		// walks to the new one. One we have not just appears there, which is
+		// right: it either spawned or came round a corner into interest range.
+		m.pos = s.pos
+		m.yaw = s.yaw
+		for k in 0..<prev_n {
+			if prev[k].present && prev[k].id == s.id {
+				m.pos = prev[k].pos
+				m.yaw = prev[k].yaw
+				break
+			}
+		}
+	}
+}
+
+// Walk the drawn minions towards the last thing the server said. A fixed rate
+// rather than a spring: the error is bounded by one snapshot of travel, and a
+// constant closing speed gets rid of it in about that long without overshoot.
+client_world_step_minions :: proc(world: ^Client_World, dt: f32) {
+	blend := clampf(dt * MINION_SMOOTH_RATE, 0, 1)
+	for i in 0..<world.minion_count {
+		m := &world.minions[i]
+		if !m.present {
+			continue
+		}
+		d := m.target_pos - m.pos
+		// A jump no interpolation can explain -- a teleport, or an id reused
+		// across a round reset -- is snapped rather than slid across the map.
+		if len2_vec3(d) > MINION_SNAP_DIST * MINION_SNAP_DIST {
+			m.pos = m.target_pos
+			m.yaw = m.target_yaw
+		} else {
+			m.pos += d * blend
+			m.yaw += wrap_angle(m.target_yaw - m.yaw) * blend
 		}
 	}
 }
@@ -863,6 +912,7 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 	}
 
 	client_world_step_chunks(world, dt)
+	client_world_step_minions(world, dt)
 
 	for i in 0..<MAX_CLIENT_IMPACTS {
 		im := &world.impacts[i]

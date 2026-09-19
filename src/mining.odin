@@ -11,11 +11,9 @@ import "core:fmt"
 // we want and costs no special case to get.
 //
 // The bite cadence is the load-bearing choice here. A beam could carve every
-// tick, but then one miner would generate sixty replicated operations a second,
-// which neither the snapshot window nor the determinism story can afford. At
-// ten bites a second with proportionally more bite each, the rock comes apart at
-// the same rate, the event stream stays small enough that ordinary packet loss
-// is free, and mining gains an audible rhythm instead of melting smoothly.
+// tick, but then mining would melt the rock in a single hold. At ten bites a
+// second the tower comes apart with an audible rhythm, and occupancy on the
+// wire still only moves when a cell actually dies.
 
 // Per-entity mining cadence. Lives beside the pylons rather than in the spell
 // state because it is a property of chewing rock, not of casting.
@@ -23,9 +21,8 @@ Mining_State :: struct {
 	bite_timer: [MAX_ENTITIES]f32,
 }
 
-// A beam's bite, and how much rock a whole second of it removes. Density is in
-// 0..1 at the centre of the bite, so this is "one bite takes 60% of the density
-// where it lands" -- the falloff and the pylon's toughness do the rest.
+// A beam's bite, and how much rock a whole second of it removes. Amount is
+// scaled by toughness into cell HP, so gold takes several bites to kill a cell.
 BEAM_BITE_AMOUNT :: f32(0.60)
 // A detonation is one big stamp rather than a series of bites.
 BLAST_AMOUNT     :: f32(0.85)
@@ -85,12 +82,16 @@ mining_beams_tick :: proc(
 			continue
 		}
 		// A body in front of the rock shields it: you cannot mine through a
-		// player standing against the tower.
+		// player standing against the tower, or through the wave that walked in
+		// to defend it -- which is the whole point of sending one.
 		if body_blocks_beam(world, id, origin, dir, t) {
 			continue
 		}
+		if _, _, blocked := minion_raycast(g_minions, world.teams[i], origin, dir, t); blocked {
+			continue
+		}
 		at := origin + dir * t
-		radius := max(MINE_BITE_MIN_R, PYLON_CELL * MINE_BITE_CELLS)
+		radius := max(MINE_BITE_MIN_R, PYLON_CELL * 0.55)
 		ore, ok := pylon_mine(pylons, pylon_id, at, radius, BEAM_BITE_AMOUNT, id, world.teams[i])
 		if !ok {
 			continue
@@ -149,9 +150,15 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 // ---------------------------------------------------------------------------
 // Harvest
 
-// Players walking over settled ore pick it up. Phase 1 credits the team wallet
-// on contact; carrying a lump home is Phase 2, and the wallet it pays into is
-// already the one that will be used then.
+// Players walking over settled ore pick it up, and it is banked to their team
+// the instant they touch it.
+//
+// There is deliberately no carrying. A held lump would mean a personal
+// inventory, a drop on death and a second scramble over the corpse, on top of
+// the scramble over the rock that is already the contest here: the wallets are
+// the team's, so whoever reaches the lump first has already decided where it
+// goes. Retrieving your own ore after a wave dies is still the whole errand --
+// it is just won by getting there, not by getting back.
 mining_harvest_tick :: proc(
 	chunks: ^Ore_Chunk_World,
 	world:  ^Entity_World,

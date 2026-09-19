@@ -30,11 +30,6 @@ Client_Slot :: struct {
 	input_count:  int,
 	last_applied_tick: u32,
 	has_applied:  bool,
-
-	// Pylon density this client is owed, and how far through sending it we are.
-	// Per client because a late joiner needs all seven while everyone else needs
-	// none, and the payload is far too big to broadcast.
-	pylon_tx:     Pylon_Sync_Tx,
 }
 
 Server :: struct {
@@ -60,6 +55,7 @@ Server :: struct {
 	pylons:        Pylon_World,
 	chunks:        Ore_Chunk_World,
 	mining:        Mining_State,
+	minions:       Minion_World,
 	match:         Match,
 
 	// Strikes that landed in the last STRIKE_LINGER_SEC, replayed into every
@@ -95,6 +91,7 @@ server_init :: proc(server: ^Server, port: u16) -> bool {
 	// they are part of the collision set now.
 	pylon_world_init(&server.pylons)
 	ore_chunk_world_init(&server.chunks)
+	minion_world_init(&server.minions)
 	server.match = match_init()
 
 	server.bots_per_team = BOTS_PER_TEAM
@@ -174,13 +171,15 @@ server_tick :: proc(server: ^Server) {
 		mining_harvest_tick(&server.chunks, &server.world, &server.match)
 	}
 
+	// The waves run after mining, so ore banked this tick is in the wallet the
+	// next wave reads, and before the match check, so a donation that finishes
+	// the centre wins the round on the tick it lands.
+	minions_tick(&server.minions, &server.world, &server.pylons, &server.chunks, &server.match, SIMULATION_DT, live)
+	match_centre_tick(&server.match, &server.pylons)
+
 	if match_tick(&server.match, SIMULATION_DT) {
 		server_round_reset(server)
 	}
-
-	// A collapse cannot be described by the bite stream, so the affected pylon
-	// gets queued for every client that is watching.
-	server_flush_pylon_resyncs(server)
 
 	for i in 1..<MAX_ENTITIES {
 		if server.world.characters[i].active {
@@ -197,9 +196,6 @@ server_tick :: proc(server: ^Server) {
 	if server.tick_id % 30 == 0 {
 		server_send_roster(server)
 	}
-	// Resync slices ride between snapshots, a couple per tick, so one late
-	// joiner pulling seven pylons cannot crowd out everybody's bodies.
-	server_send_pylon_syncs(server)
 
 	server.tick_id += 1
 	server.total_ticks += 1
@@ -213,6 +209,7 @@ server_round_reset :: proc(server: ^Server) {
 	pylon_world_reset(&server.pylons)
 	ore_chunk_world_reset(&server.chunks)
 	mining_reset(&server.mining)
+	minion_world_reset(&server.minions)
 	projectile_clear_all(&server.projectiles)
 	server.strikes = {}
 	combat_reset_stats(&server.world)
@@ -222,61 +219,7 @@ server_round_reset :: proc(server: ^Server) {
 			bot_reset_ai(&server.bots[i])
 		}
 	}
-	// Every pylon is whole again, which no client can infer. Send them all.
-	for i in 0..<server.client_count {
-		pylon_sync_tx_request(&server.clients[i].pylon_tx, (1 << MAX_PYLONS) - 1)
-	}
 	fmt.println("[Server] Round reset: pylons raised, ore cleared, everyone respawned")
-}
-
-// ---------------------------------------------------------------------------
-// Pylon resync
-
-// Anything the bite stream cannot express -- a collapse, a round reset -- is
-// flagged on the pylon world and turned into a per-client debt here.
-server_flush_pylon_resyncs :: proc(server: ^Server) {
-	mask: u8 = 0
-	for i in 0..<MAX_PYLONS {
-		if server.pylons.resync[i] {
-			mask |= 1 << u8(i)
-			server.pylons.resync[i] = false
-		}
-	}
-	if mask == 0 {
-		return
-	}
-	for i in 0..<server.client_count {
-		pylon_sync_tx_request(&server.clients[i].pylon_tx, mask)
-	}
-}
-
-server_send_pylon_syncs :: proc(server: ^Server) {
-	buffer: [MAX_PACKET_SIZE]u8
-	for ci in 0..<server.client_count {
-		client := &server.clients[ci]
-		tx := &client.pylon_tx
-		for _ in 0..<PYLON_SYNC_PARTS_PER_TICK {
-			if !pylon_sync_tx_advance(tx, &server.pylons) {
-				break
-			}
-			packet := Server_Pylon_Sync_Packet{
-				pylon    = u8(tx.pylon),
-				kind     = u8(tx.kind),
-				base_seq = tx.base_seq,
-				total    = u16(tx.total),
-				parts    = u8(tx.parts),
-				part     = u8(tx.next),
-			}
-			slice := pylon_sync_tx_part(tx, &server.pylons, tx.next)
-			packet.len = u16(len(slice))
-			copy(packet.data[:len(slice)], slice)
-			size := serialize_server_pylon_sync(&packet, buffer[:])
-			if size > 0 {
-				network_send(&server.network, buffer[:], size, client.addr)
-			}
-			pylon_sync_tx_done_part(tx)
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +289,6 @@ server_process_packets :: proc(server: ^Server) {
 				server_send_gamestate_to(server, new_slot)
 				// Don't make them wait half a second to learn who is here.
 				server_send_roster_to(server, new_slot)
-				// A joiner has pristine pylons and the towers may be half gone.
-				// Nothing in the bite stream can tell them that, so send every
-				// pylon's density up front.
-				pylon_sync_tx_request(&server.clients[new_slot].pylon_tx, (1 << MAX_PYLONS) - 1)
 			} else {
 				server_send_lobby(server, from, .Server_Full)
 			}
@@ -368,20 +307,6 @@ server_process_packets :: proc(server: ^Server) {
 				tick := pkt.newest_tick - u32(k)
 				client_queue_input(client, tick, pkt.inputs[k])
 			}
-
-		case .Client_Pylon_Request:
-			// A client noticed its ore does not match ours and wants it resent.
-			// Costs nothing to honour: the request is rate limited on their end
-			// and the payload is queued, not sent immediately.
-			if slot < 0 {
-				continue
-			}
-			req, rok := deserialize_client_pylon_request(buffer[:n])
-			if !rok {
-				continue
-			}
-			server.clients[slot].last_packet = time.tick_now()
-			pylon_sync_tx_request(&server.clients[slot].pylon_tx, req.mask)
 		}
 	}
 }
@@ -741,6 +666,9 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 	}
 
+	dirty: [MAX_SNAPSHOT_OCC_PYLONS]Pylon_ID
+	dirty_n := pylon_collect_dirty(&server.pylons, dirty[:])
+
 	for ci in 0..<server.client_count {
 		client := &server.clients[ci]
 		self_id := client.entity_id
@@ -814,6 +742,45 @@ server_send_snapshots :: proc(server: ^Server) {
 			}
 		}
 		snapshot.entity_count = u8(take)
+
+		// Nearest minions, selected the same way. A wave the client cannot see
+		// is a wave it does not need: the ones that matter are the fourteen
+		// bodies in the lane you are standing in, and a fight at the far pylon
+		// can have its own fourteen.
+		midx:  [MAX_MINIONS]int
+		mdist: [MAX_MINIONS]f32
+		mn := 0
+		for i in 0..<MAX_MINIONS {
+			if !server.minions.minions[i].active {
+				continue
+			}
+			midx[mn] = i
+			mdist[mn] = len2_vec3(server.minions.minions[i].pos - self_pos)
+			mn += 1
+		}
+		mtake := min(mn, MAX_SNAPSHOT_MINIONS)
+		for k in 0..<mtake {
+			best := k
+			for j in k + 1..<mn {
+				if mdist[j] < mdist[best] {
+					best = j
+				}
+			}
+			if best != k {
+				midx[k], midx[best] = midx[best], midx[k]
+				mdist[k], mdist[best] = mdist[best], mdist[k]
+			}
+			m := &server.minions.minions[midx[k]]
+			snapshot.minions[k] = Snapshot_Minion{
+				id   = m.id,
+				kind = m.kind,
+				team = m.team,
+				pos  = m.pos,
+				yaw  = m.yaw,
+				hp   = m.health_max > 0 ? clampf(m.health / m.health_max, 0, 1) : 0,
+			}
+		}
+		snapshot.minion_count = u8(mtake)
 
 		// Nearest projectiles
 		pidx:  [MAX_PROJECTILES]int
@@ -923,10 +890,15 @@ server_send_snapshots :: proc(server: ^Server) {
 		// This client's own combat log and nobody else's.
 		snapshot.combat_event_count = u8(combat_log_gather(&server.world.combat_log, self_id, &snapshot.combat_events))
 
-		// Recent bites. Not interest-managed: a client has to apply every bite
-		// to every pylon whether or not it can see the tower, or its copy of the
-		// density field diverges the moment it turns around.
-		snapshot.carve_count = u8(pylon_recent_events(&server.pylons, snapshot.carves[:]))
+		snapshot.occ_count = u8(dirty_n)
+		for k in 0..<dirty_n {
+			id := dirty[k]
+			g := pylon_grid(&server.pylons, id)
+			snapshot.occ[k].pylon = id
+			if g != nil {
+				ore_grid_pack_heights(g, snapshot.occ[k].heights[:])
+			}
+		}
 
 		// Nearest ore on the floor.
 		kidx:  [MAX_ORE_CHUNKS]int
@@ -969,6 +941,7 @@ server_send_snapshots :: proc(server: ^Server) {
 			network_send(&server.network, buffer[:], size, client.addr)
 		}
 	}
+	pylon_clear_dirty(&server.pylons, dirty[:dirty_n])
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1013,21 @@ server_build_gamestate :: proc(server: ^Server) -> Server_GameState_Packet {
 		match_result = u8(server.match.result),
 		winner       = u8(server.match.winner),
 		essence      = server.match.essence,
+		centre_open  = server.match.centre_open,
 		match_time   = server.match.match_time,
+	}
+	// Shares, not voxel counts: the HUD wants "who is winning the centre", and
+	// a percentage survives the one byte it gets on the wire.
+	{
+		total: f32
+		for i in 0..<TEAM_COUNT {
+			total += server.match.centre_build[i]
+		}
+		if total > 0 {
+			for i in 0..<TEAM_COUNT {
+				gs.centre_share[i] = quant_u8(server.match.centre_build[i] / total, 255)
+			}
+		}
 	}
 	humans := server_human_counts(server)
 	for i in 0..<TEAM_COUNT {
@@ -1052,16 +1039,11 @@ server_build_gamestate :: proc(server: ^Server) -> Server_GameState_Packet {
 	for i in 0..<MAX_PYLONS {
 		p := &server.pylons.pylons[i]
 		g := server.pylons.grids[i]
-		gs.pylons[i] = Snapshot_Pylon{
-			intact   = p.intact,
-			// The digest is what lets a client find out it has drifted. Cheap
-			// here at 10 Hz; the alternative is a wrong tower nobody notices.
-			checksum = g != nil ? ore_grid_checksum(g) : 0,
+		gs.pylons[i].intact = p.intact
+		if g != nil {
+			ore_grid_pack_heights(g, gs.pylons[i].heights[:])
 		}
 	}
-	// Stamp the bite count these digests were taken at, so a client can tell
-	// "I am behind" from "I am wrong".
-	gs.carve_seq = server.pylons.next_seq == 1 ? 0 : server.pylons.next_seq - 1
 	return gs
 }
 
@@ -1070,7 +1052,7 @@ server_send_gamestate :: proc(server: ^Server) {
 		return
 	}
 	gs := server_build_gamestate(server)
-	buffer: [256]u8
+	buffer: [MAX_PACKET_SIZE]u8
 	size := serialize_server_gamestate(&gs, buffer[:])
 	if size <= 0 {
 		return
@@ -1082,7 +1064,7 @@ server_send_gamestate :: proc(server: ^Server) {
 
 server_send_gamestate_to :: proc(server: ^Server, slot: int) {
 	gs := server_build_gamestate(server)
-	buffer: [256]u8
+	buffer: [MAX_PACKET_SIZE]u8
 	size := serialize_server_gamestate(&gs, buffer[:])
 	if size > 0 {
 		network_send(&server.network, buffer[:], size, server.clients[slot].addr)

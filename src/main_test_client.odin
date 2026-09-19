@@ -29,12 +29,9 @@ Test_Client :: struct {
 	detour:        f32,
 	detour_timer:  f32,
 
-	// Ore reproduction tally: how many times our density field was compared
-	// against the server's at a matching bite count, and how many of those
-	// disagreed.
+	// Occupancy tally: GameState column heights vs the local grid after apply.
 	pylon_compares: int,
 	pylon_drifts:   int,
-	pylon_syncs:    int,
 }
 
 // Static rather than a local: the pylon grids inside Client_World are far too
@@ -115,29 +112,18 @@ main :: proc() {
 			case .Server_GameState:
 				client.client_world.game_state = packet.gamestate
 				client.client_world.have_game_state = true
-				// The point of this client, for the ore: prove that replaying the
-				// bite stream lands on the server's exact density field. Every
-				// comparison that happens at a matching sequence is a bit-level
-				// check of the whole reproduction path.
-				before := client.client_world.pylon_sync.want
-				client_world_check_pylon_drift(&client.client_world, &packet.gamestate)
-				if client.client_world.pylon_sync.applied_seq == packet.gamestate.carve_seq {
-					client.pylon_compares += 1
-					if client.client_world.pylon_sync.want != before {
+				client_world_apply_gamestate_pylons(&client.client_world, &packet.gamestate)
+				client.pylon_compares += 1
+				for i in 0 ..< MAX_PYLONS {
+					g := pylon_grid(&client.client_world.pylons, Pylon_ID(i))
+					if g == nil || !ore_grid_heights_equal(g, packet.gamestate.pylons[i].heights[:]) {
 						client.pylon_drifts += 1
 					}
 				}
 			case .Server_Roster:
 				roster := packet.roster
 				client_world_apply_roster(&client.client_world, &roster)
-			case .Server_Pylon_Sync:
-				client_world_apply_pylon_sync(&client.client_world, &packet.pylon_sync)
-				client.pylon_syncs += 1
 			}
-		}
-
-		if pylon_client_should_request(&client.client_world.pylon_sync, SIMULATION_DT) {
-			network_client_send_pylon_request(&client.network, client.client_world.pylon_sync.want)
 		}
 
 		switch client.phase {
@@ -330,8 +316,8 @@ test_client_print_pylons :: proc(client: ^Test_Client) {
 		mine := g != nil ? ore_grid_intact(g) : 0
 		fmt.printf(" %s%.0f/%.0f", i == 0 ? "G:" : "", mine * 100, world.game_state.pylons[i].intact * 100)
 	}
-	fmt.printf("  (mine/server %%)  compares %d drift %d syncs %d\n",
-		client.pylon_compares, client.pylon_drifts, client.pylon_syncs)
+	fmt.printf("  (mine/server %%)  compares %d drift %d\n",
+		client.pylon_compares, client.pylon_drifts)
 	w := &client.client_world.game_state.wallets
 	fmt.printf("    wallets")
 	for t in 0..<TEAM_COUNT {

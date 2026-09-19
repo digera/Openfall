@@ -133,7 +133,7 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 // sweeps, `world_segment_clear` for line of sight, `world_ray_hit` for beam
 // reach -- so a tower becomes cover, stops spells and blocks sight in one move
 // instead of four. `pylon_blocks_point` rejects on a bound cylinder first, so a
-// point nowhere near a tower costs seven distance compares and no noise.
+// point nowhere near a tower costs seven distance compares and no occupancy.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
 	in_floor := false
 	for i in 0..<NUM_FLOOR_BOXES {
@@ -172,8 +172,8 @@ box_exit_depth :: proc(b: ^World_Box, p: vec3, pad: f32) -> vec3 {
 // Outward normal of the surface something just ran into: `from` is the last
 // point that passed world_point_free, `blocked` the first one that didn't.
 world_surface_normal :: proc(from, blocked: vec3, pad: f32) -> vec3 {
-	// Ore first, and from the SDF gradient rather than a box face, so a spell
-	// that glances off a mined crater leaves along the shape it was cut into.
+	// Ore first, from the occupied cell face, so a spell that glances off a
+	// tower leaves along the rock it actually hit.
 	if g_pylons != nil {
 		if n, ok := pylon_surface_normal(g_pylons, blocked, pad); ok {
 			return n

@@ -51,6 +51,9 @@ Projectile :: struct {
 
 	pierce_left:   int,
 	pierced_mask:  u64,
+	// Minions live in their own table, so a spear that has already gone through
+	// one needs its own set of "do not hit twice" bits.
+	pierced_minions: u64,
 
 	damage:        f32,
 	aoe_radius:    f32,
@@ -276,6 +279,21 @@ projectile_step_entities :: proc(world: ^Projectile_World, entity_world: ^Entity
 		projectile_impact(world, entity_world, slot, at, id)
 		return false
 	}
+
+	// Lane bodies, after the players. A minion is a worse thing to detonate on
+	// than a person, so it only catches the shot nobody else did, and a spear
+	// with pierce left goes through it the same way.
+	if mslot, mhit := minion_sphere_hit(g_minions, proj.owner_team, at, proj.radius, proj.pierced_minions); mhit {
+		if proj.pierce_left > 0 {
+			proj.pierce_left -= 1
+			proj.pierced_minions |= u64(1) << u64(mslot)
+			minion_damage(g_minions, mslot, proj.damage)
+			return true
+		}
+		minion_damage(g_minions, mslot, proj.damage)
+		projectile_impact(world, entity_world, slot, at, INVALID_ENTITY)
+		return false
+	}
 	return true
 }
 
@@ -404,6 +422,10 @@ splash_damage :: proc(
 	if radius <= 0 || damage <= 0 {
 		return
 	}
+	// Every blast in the game comes through here, so putting the lane bodies in
+	// the same call is what keeps a grenade from being good against players and
+	// useless against a wave standing in the same crater.
+	minion_splash(g_minions, at, owner_team, damage, radius)
 	for entity_idx in 1..<MAX_ENTITIES {
 		id := Entity_ID(entity_idx)
 		if !entity_alive(entity_world, id) || id == owner_id || id == direct {

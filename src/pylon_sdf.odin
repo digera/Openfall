@@ -6,18 +6,9 @@ import "core:math"
 // pyramidal cap, roughened by grain noise so it reads as raw ore rather than
 // cut stone.
 //
-// This field never changes. Mining only ever subtracts from the density grid,
-// and the rendered surface is `max(body, carve)`. That has two consequences
-// worth knowing before touching anything here: the body is the permanent outer
-// envelope, so a rebuilt tower can never exceed its original silhouette; and
-// every chunk that breaks off keeps sampling this same field, which is why a
-// fallen piece still looks like the part of the tower it came from.
-//
-// Everything in this file has a twin in shaders/scene.glsl. The integer hash is
-// deliberately integer -- it is the only way the CPU and the GPU agree on the
-// surface to the last bit, and they must, because the server decides what a
-// spell hit using these procs while the player aims using the shader. Change
-// one, change both.
+// On the server this field is used once, to stamp each column's max height.
+// Hits and collision use the coarse occupancy grid. The GPU keeps a twin of
+// the hull and grain for shading; the marched surface is occupancy plus grain.
 
 PYLON_GRAIN_AMP  :: f32(0.16)  // surface displacement, as a fraction of base radius
 PYLON_GRAIN_FREQ :: f32(2.10)
@@ -127,9 +118,8 @@ pylon_radius_at :: proc(z: f32, shape: Pylon_Shape) -> f32 {
 	return waist * (1 - (t - PYLON_CAP_START) / (1 - PYLON_CAP_START))
 }
 
-// Smooth body without grain. The grid rasteriser and both marchers use this to
-// decide, cheaply, whether a point is far enough from the surface that the
-// noise cannot matter.
+// Smooth body without grain. The grid rasteriser uses this to decide whether
+// a cell centre is inside the original silhouette.
 pylon_sdf_hull :: proc(p: vec3, shape: Pylon_Shape) -> f32 {
 	r := pylon_radius_at(p.z, shape)
 	d_xy := pylon_sd_hex({p.x, p.y}, max(r, 0.001))
@@ -142,15 +132,6 @@ pylon_sdf_hull :: proc(p: vec3, shape: Pylon_Shape) -> f32 {
 pylon_sdf_body :: proc(p: vec3, shape: Pylon_Shape) -> f32 {
 	d := pylon_sdf_hull(p, shape)
 	return d + pylon_grain_amp(shape) * (pylon_grain(p, shape) * 2 - 1)
-}
-
-// Combined surface: the body minus everything that has been mined out.
-pylon_sdf_local :: proc(p: vec3, shape: Pylon_Shape, grid: ^Ore_Grid) -> f32 {
-	d := pylon_sdf_body(p, shape)
-	if grid != nil {
-		d = max(d, ore_grid_carve_sdf(grid, p))
-	}
-	return d
 }
 
 // How far the true surface can lag behind the hull distance. The taper tilts
@@ -226,99 +207,4 @@ pylon_bound_clip :: proc(ro, rd: vec3, z0, z1, radius: f32, max_t: f32) -> (t0, 
 		return 0, 0, false
 	}
 	return max(enter, 0), exit, true
-}
-
-// Sphere-trace a pylon in its own local frame. Twin of `pylon_trace` in
-// shaders/scene.glsl.
-//
-// The bound cylinder is the body's current extent, which shrinks as the pylon is
-// mined down. Returns a negative distance for a miss.
-pylon_trace_local :: proc(
-	ro, rd: vec3,
-	shape: Pylon_Shape,
-	grid: ^Ore_Grid,
-	bound_z0, bound_z1, bound_r: f32,
-	max_t: f32,
-	epsilon: f32 = 0.012,
-) -> f32 {
-	t, end, inside := pylon_bound_clip(ro, rd, bound_z0, bound_z1, bound_r, max_t)
-	if !inside {
-		return -1
-	}
-
-	amp := pylon_grain_amp(shape)
-	step_scale := pylon_step_scale(shape)
-	carve_on := grid != nil
-	// The carve field is only a half-cell band, so once inside the body the
-	// step has to be capped or the ray tunnels through a mined wall.
-	max_step := f32(1e5)
-	if carve_on {
-		max_step = PYLON_CELL * 0.5
-	}
-
-	for _ in 0 ..< PYLON_TRACE_STEPS {
-		if t > end {
-			return -1
-		}
-		p := ro + rd * t
-		hull := pylon_sdf_hull(p, shape)
-		prev := t
-
-		// Far outside the grain envelope the noise cannot have moved the
-		// surface this far, so step on the hull and skip it entirely.
-		if hull > amp {
-			t += (hull - amp)
-			if t <= prev {
-				t = prev + epsilon
-			}
-			continue
-		}
-
-		body: f32
-		d: f32
-		if hull < -amp {
-			// Deep inside: the body is certainly negative, so the only thing
-			// that can stop the ray is a carve.
-			body = hull + amp
-			if !carve_on {
-				return t
-			}
-			d = ore_grid_carve_sdf(grid, p)
-		} else {
-			body = pylon_sdf_body(p, shape)
-			d = body
-			if carve_on && body <= max_step {
-				d = max(d, ore_grid_carve_sdf(grid, p))
-			}
-		}
-		if d < epsilon {
-			return t
-		}
-		step := d * step_scale
-		if carve_on && body < max_step {
-			step = min(step, max_step)
-		}
-		t += step
-		if t <= prev {
-			t = prev + epsilon
-		}
-	}
-	return -1
-}
-
-PYLON_TRACE_STEPS :: 192
-
-// Surface normal of the combined field. The epsilon has a floor of a quarter
-// cell on carved bodies: any tighter and it reads the trilinear ramp as noise
-// and the mined faces come out faceted and sparkling.
-pylon_normal_local :: proc(p: vec3, shape: Pylon_Shape, grid: ^Ore_Grid) -> vec3 {
-	e := clampf(shape.radius * 0.006, 0.004, 0.03)
-	if grid != nil {
-		e = max(e, PYLON_CELL * 0.25)
-	}
-	return norm_vec3({
-		pylon_sdf_local(p + vec3{e, 0, 0}, shape, grid) - pylon_sdf_local(p - vec3{e, 0, 0}, shape, grid),
-		pylon_sdf_local(p + vec3{0, e, 0}, shape, grid) - pylon_sdf_local(p - vec3{0, e, 0}, shape, grid),
-		pylon_sdf_local(p + vec3{0, 0, e}, shape, grid) - pylon_sdf_local(p - vec3{0, 0, e}, shape, grid),
-	})
 }

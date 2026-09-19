@@ -4,12 +4,9 @@ import "core:math"
 
 // Ore chunks: the lumps that come off a pylon and can be carried home.
 //
-// These are deliberately *not* voxel bodies. Giving every fragment its own
-// density grid the way a single-player miner can afford would mean another 80 KB
-// and another sphere-trace per fragment per pixel, and there are dozens of them
-// on the floor at once. The towers are the sculpted objects; what falls off them
-// is cargo. A chunk is a grainy ellipsoid that samples its parent pylon's own
-// noise field, so it still reads as a piece of that rock.
+// These are deliberately *not* voxel bodies. The towers are occupancy stacks;
+// what falls off them is cargo. A chunk is a grainy ellipsoid that samples its
+// parent pylon's own noise field, so it still reads as a piece of that rock.
 //
 // Chunks are server-authoritative and replicated as small snapshot records.
 
@@ -146,30 +143,24 @@ ore_chunk_spawn_at_face :: proc(world: ^Ore_Chunk_World, p: ^Pylon) {
 	ore_chunk_spawn(world, p, local, n, 3.4, 0.30, CHUNK_ORE_BASE)
 }
 
-// A whole island sheared off. Its volume becomes several chunks scattered around
-// the centroid, so knocking the top off a tower showers ore rather than dropping
-// one implausibly large boulder.
-ore_chunk_burst :: proc(world: ^Ore_Chunk_World, p: ^Pylon, centroid: vec3, voxels: int) {
-	if voxels < PYLON_ISLAND_MIN_VOX {
-		// Rubble: one small chunk so the ore is not simply lost.
-		ore_chunk_spawn(world, p, centroid, {0, 0, 1}, 1.5, 0.22, CHUNK_ORE_BASE * 0.4)
+// A lump that did not come off a tower: what a lane minion leaves where it
+// fell. It borrows its team's near-lane pylon as a source so a wave's ore is
+// shaded as the same rock their towers are made of.
+ore_chunk_spawn_loose :: proc(world: ^Ore_Chunk_World, kind: Ore_Kind, at: vec3, amount: f32) {
+	c := ore_chunk_claim(world)
+	if c == nil {
 		return
 	}
-	total := f32(voxels) * ORE_PER_VOXEL
-	n := clamp_int(voxels / 14, 2, 8)
-	each := total / f32(n)
-	// Size each lump by the volume it represents, so a big collapse drops big
-	// rocks and a graze drops pebbles.
-	r := clampf(ore_grid_equivalent_radius(voxels / n) * 0.8, 0.20, 0.62)
-	spread := ore_grid_equivalent_radius(voxels) * 0.6
-	for k in 0 ..< n {
-		h := hash_u32(u32(k) * 374761393 + u32(p.id) * 2654435761 + u32(voxels))
-		a := f32(h & 0xFFFF) / f32(0x10000) * (2 * PI_F32)
-		up := f32((h >> 16) & 0xFF) / 255.0
-		dir := vec3{math.cos(a), math.sin(a), up * 0.8}
-		off := vec3{math.cos(a), math.sin(a), 0} * spread * (f32((h >> 24) & 0xFF) / 255.0)
-		ore_chunk_spawn(world, p, centroid + off, norm_vec3(dir), 2.2 + up * 2.6, r, each)
-	}
+	c.ore = kind
+	ti := team_index(ore_team(kind))
+	c.source = Pylon_ID(ti >= 0 ? ti + 1 : 0)
+	c.pos = at
+	h := hash_u32(u32(c.id) * 2246822519 + 911)
+	a := f32(h & 0xFFFF) / f32(0x10000) * (2 * PI_F32)
+	c.vel = {math.cos(a) * 1.2, math.sin(a) * 1.2, 2.4}
+	c.radius = 0.28
+	c.amount = amount
+	c.seed = f32((h >> 16) & 0xFFFF) / f32(0x10000) * 8
 }
 
 // Step every chunk. Collides against the map and the pylons so ore that falls

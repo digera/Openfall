@@ -43,6 +43,8 @@ layout(binding=1) uniform fs_params {
     vec4 pylon_bound[7];    // x local z0, y local z1, z radius, w fraction standing
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
+    vec4 minions[14];       // xyz feet pos, w = ore kind + 1 (0 = none)
+    vec4 minion_fx[14];     // x yaw, y hp 0..1, z kind (1 fodder, 2 pusher, 3 heavy), w seed
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
@@ -85,6 +87,7 @@ const int MAT_HAND = 8;
 const int MAT_ROBE = 9;
 const int MAT_CAST_ORB = 10;
 const int MAT_CHUNK = 11;
+const int MAT_MINION = 12;
 
 const vec3 MOON_DIR = normalize(vec3(0.35, -0.55, 0.75));
 
@@ -442,13 +445,11 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // ---------------------------------------------------------------------------
 // Ore pylons
 //
-// A pylon is a procedural hexagonal obelisk (the body) with everything mined
-// out of it subtracted (the damage field, sampled from pylon_tex). Both halves
-// have twins on the CPU: the body in src/pylon_sdf.odin, the field in
-// src/ore_grid.odin. They must agree to the last bit, because the server
-// decides what a spell carved out with those procs while the player aims with
-// this shader -- so the integer hash below is integer on purpose, and any
-// change here is a change there.
+// Authority is the coarse occupancy volume (8x8x20, one metre cells). The
+// marched surface is the 0.5 iso of that occupancy plus grain that exists only
+// here. The original hex hull is a silhouette hint for cut-face shading, not a
+// clip: a shortened column must actually be shorter. Two clients may disagree
+// on wrinkles. They may not disagree on which cells exist.
 
 const float PYLON_GRAIN_AMP  = 0.16;
 const float PYLON_GRAIN_FREQ = 2.10;
@@ -456,19 +457,19 @@ const float PYLON_CAP_START  = 0.82;
 const float PYLON_CAP_WAIST  = 0.62;
 const float PYLON_CUT_BODY   = -0.02;
 
-const float PYLON_CELL   = 0.25;
-const float PYLON_NX_F   = 32.0;
-const float PYLON_NY_F   = 32.0;
-const float PYLON_NZ_F   = 80.0;
+const float PYLON_CELL   = 1.0;
+const float PYLON_NX_F   = 8.0;
+const float PYLON_NY_F   = 8.0;
+const float PYLON_NZ_F   = 20.0;
 const float PYLON_HALF_X = PYLON_NX_F * PYLON_CELL * 0.5;
 const float PYLON_HALF_Y = PYLON_NY_F * PYLON_CELL * 0.5;
 const float PYLON_ATLAS_NZ = PYLON_NZ_F * float(NPYLON);
 
-// Fewer than the CPU's 192. The CPU marcher answers one query per bite and can
-// afford to be thorough; this one runs per pixel per pylon, and what it loses is
-// a rare sliver of ore seen edge-on at grazing incidence.
-const int PYLON_TRACE_STEPS = 128;
-const float PYLON_EPS = 0.012;
+// Occupancy SDF is a half-cell band, so a step cap of 0.5 m is the most the
+// field can honestly report. A standing tower is fewer steps than the old
+// 25 cm field, not more.
+const int PYLON_TRACE_STEPS = 64;
+const float PYLON_EPS = 0.02;
 
 vec3 ore_tint(float ore) {
     if (ore < 1.5) return vec3(1.00, 0.44, 0.24);   // ember
@@ -585,9 +586,9 @@ float pylon_step_scale(float height, float radius) {
     return 1.0 / (taper + grain_slope);
 }
 
-// Trilinear density in pylon i's slab of the atlas. The clamp keeps the filter
-// footprint inside the slab, so no pylon bleeds into its neighbour's base.
-float pylon_density(int i, vec3 lp) {
+// Trilinear occupancy in pylon i's slab of the atlas. The clamp keeps the
+// filter footprint inside the slab, so no pylon bleeds into its neighbour.
+float pylon_occ(int i, vec3 lp) {
     vec3 g = vec3((lp.x + PYLON_HALF_X) / PYLON_CELL,
                   (lp.y + PYLON_HALF_Y) / PYLON_CELL,
                   lp.z / PYLON_CELL);
@@ -601,15 +602,18 @@ float pylon_density(int i, vec3 lp) {
     return textureLod(sampler3D(pylon_tex, pylon_smp), uvw, 0.0).r;
 }
 
-// Positive in mined-out space, ~0 on the cut face, negative in remaining ore.
-// Only a true distance within about half a cell, which is why the marcher caps
-// its step once it is inside the body.
-float pylon_carve_sdf(int i, vec3 lp) {
-    return (0.5 - pylon_density(i, lp)) * PYLON_CELL;
+// Smooth occupancy iso, plus grain that exists only in this shader. Grain is
+// displacement in the occupancy band so empty air cannot grow rock.
+float pylon_occ_sdf(int i, vec3 lp, float radius, float seed) {
+    float occ = pylon_occ(i, lp);
+    float d = (0.5 - occ) * PYLON_CELL;
+    float band = occ * (1.0 - occ) * 4.0;
+    d += PYLON_CELL * PYLON_GRAIN_AMP * (pylon_grain(lp, radius, seed) * 2.0 - 1.0) * band;
+    return d;
 }
 
 float pylon_sdf_local(int i, vec3 p, float height, float radius, float seed) {
-    return max(pylon_sdf_body(p, height, radius, seed), pylon_carve_sdf(i, p));
+    return pylon_occ_sdf(i, p, radius, seed);
 }
 
 // Clip a ray to a Z-aligned cylinder in local space. Twin of pylon_bound_clip
@@ -650,49 +654,22 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
     return true;
 }
 
-// Sphere-trace one pylon in its own frame. Negative on a miss. Twin of
-// pylon_trace_local in src/pylon_sdf.odin.
+// Sphere-trace one pylon in its own frame. Negative on a miss. The bound
+// cylinder is the live-cell AABB, so a stump does not pay for empty air above.
 float pylon_trace_local(int i, vec3 ro, vec3 rd, float height, float radius, float seed,
                         float z0, float z1, float bound_r, float max_t) {
     float t, end;
     if (!pylon_bound_clip(ro, rd, z0, z1, bound_r, max_t, t, end)) return -1.0;
 
-    float amp = radius * PYLON_GRAIN_AMP;
-    float step_scale = pylon_step_scale(height, radius);
-    // The carve field is only a half-cell band, so inside the body the step has
-    // to be capped or the ray tunnels straight through a mined wall.
     float max_step = PYLON_CELL * 0.5;
 
     for (int s = 0; s < PYLON_TRACE_STEPS; s++) {
         if (t > end) return -1.0;
         vec3 p = ro + rd * t;
-        float hull = pylon_sdf_hull(p, height, radius);
-        float prev = t;
-
-        // Further out than the grain can reach: step on the hull and skip the
-        // noise entirely, which is what makes approaching a tower cheap.
-        if (hull > amp) {
-            t += hull - amp;
-            if (t <= prev) t = prev + PYLON_EPS;
-            continue;
-        }
-
-        float body;
-        float d;
-        if (hull < -amp) {
-            // Deep inside: the body is certainly negative, so only a carve can
-            // stop the ray.
-            body = hull + amp;
-            d = pylon_carve_sdf(i, p);
-        } else {
-            body = pylon_sdf_body(p, height, radius, seed);
-            d = body;
-            if (body <= max_step) d = max(d, pylon_carve_sdf(i, p));
-        }
+        float d = pylon_occ_sdf(i, p, radius, seed);
         if (d < PYLON_EPS) return t;
-        float adv = d * step_scale;
-        if (body < max_step) adv = min(adv, max_step);
-        t += adv;
+        float prev = t;
+        t += clamp(d, PYLON_EPS, max_step);
         if (t <= prev) t = prev + PYLON_EPS;
     }
     return -1.0;
@@ -867,6 +844,69 @@ bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float
         vec3 wn;
         if (wisp_hit_parts(ro, rd, c, whp, death_swell(death_t), 0.04, t, wt, wn, wp)) {
             t = wt; n = wn; part = wp; team = wteam; hp = whp; hit = true;
+        }
+    }
+    return hit;
+}
+
+// ---------------------------------------------------------------------------
+// Lane minions: a team's ore, walking.
+//
+// Deliberately not built like a wisp. A wisp is light wearing cloth; these are
+// rock that stood up, so they are made of the same ore_stone and lit by the
+// same seams as the pylon the ore came out of. Three sizes of one body, because
+// what a lane has to read at a glance is only ever: whose is it, which of the
+// three is it, and how close is it to coming apart.
+
+// radius, height, head radius
+vec3 minion_dims(float kind) {
+    if (kind > 2.5) return vec3(0.52, 1.78, 0.34);  // heavy  (Minion_Kind.Heavy  = 3)
+    if (kind > 1.5) return vec3(0.34, 1.14, 0.24);  // pusher (Minion_Kind.Pusher = 2)
+    return vec3(0.32, 1.02, 0.23);                  // fodder (Minion_Kind.Fodder = 1)
+}
+
+bool minion_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out float part) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    idx = 0;
+    part = 0.0;
+    bool hit = false;
+    for (int i = 0; i < 14; i++) {
+        vec4 m = minions[i];
+        if (m.w < 0.5) continue;
+        vec3 dim = minion_dims(minion_fx[i].z);
+        vec3 c = m.xyz + vec3(0.0, 0.0, dim.y * 0.5);
+        if (!bounds_hit(ro, rd, c, dim.y * 0.8, t)) continue;
+
+        // A trudge, rocked through the whole body: it has no limbs to animate,
+        // and a lump of rock swinging arms would be a different creature.
+        float rate = (minion_fx[i].z > 2.5) ? 3.0 : 4.6;
+        float gait = WORLD_T * rate + minion_fx[i].w * 6.283;
+        vec3 torso = c + vec3(0.0, 0.0, 0.04 * dim.y * sin(gait * 2.0));
+
+        float s = sin(minion_fx[i].x), cs = cos(minion_fx[i].x);
+        vec3 fwd = vec3(cs, s, 0.0);
+        vec3 side = vec3(-s, cs, 0.0);
+
+        float et;
+        vec3 en;
+        if (intersect_ellipsoid(ro, rd, torso, vec3(dim.x, dim.x * 0.84, dim.y * 0.40), 0.04, t, et, en)) {
+            t = et; n = en; idx = i; part = 0.0; hit = true;
+        }
+        // Head, leaned into the walk. Whichever way it is looking is the way it
+        // is about to go, which is the only tell a fodder gives before it rushes.
+        vec3 head = torso + vec3(0.0, 0.0, dim.y * 0.46) + fwd * (dim.x * 0.30 + 0.05 * dim.y * sin(gait));
+        if (intersect_sphere(ro, rd, head, dim.z, 0.04, t, et, en)) {
+            t = et; n = en; idx = i; part = 1.0; hit = true;
+        }
+        // Two shoulder lumps, so the silhouette is a hunched thing rather than
+        // a pill.
+        vec3 sh = torso + vec3(0.0, 0.0, dim.y * 0.22);
+        if (intersect_sphere(ro, rd, sh + side * (dim.x * 0.88), dim.x * 0.62, 0.04, t, et, en)) {
+            t = et; n = en; idx = i; part = 0.0; hit = true;
+        }
+        if (intersect_sphere(ro, rd, sh - side * (dim.x * 0.88), dim.x * 0.62, 0.04, t, et, en)) {
+            t = et; n = en; idx = i; part = 0.0; hit = true;
         }
     }
     return hit;
@@ -1422,6 +1462,14 @@ void main() {
         best = cht; hit_n = chn; mat = MAT_CHUNK;
     }
 
+    int mn_idx = 0;
+    float mn_part = 0.0;
+    float mnt;
+    vec3 mnn;
+    if (minion_trace(ro, rd, best, mnt, mnn, mn_idx, mn_part)) {
+        best = mnt; hit_n = mnn; mat = MAT_MINION;
+    }
+
     float wisp_team = 0.0, wisp_hp = 1.0, wisp_part = 0.0;
     float wt;
     vec3 wn;
@@ -1761,11 +1809,10 @@ void main() {
         vec3 stone = ore_stone(ore);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
 
-        // A face that has been mined is behind the original silhouette, and that
-        // is the whole read of the mode: worked rock glows because the seams
-        // inside it are open to the air, untouched rock is dull.
-        float body = pylon_sdf_body(py_local, sh.x, sh.y, sh.z);
-        float cut = 1.0 - smoothstep(PYLON_CUT_BODY, PYLON_CUT_BODY - 0.12, body);
+        // A face well inside the original hull is a cut: worked rock, seams
+        // open. The original skin of a still-full column stays dull.
+        float body = pylon_sdf_hull(py_local, sh.x, sh.y);
+        float cut = smoothstep(PYLON_CUT_BODY - 0.35, PYLON_CUT_BODY + 0.08, body);
         float vein = pylon_vein(py_local, sh.z);
 
         albedo = stone * (0.72 + 0.45 * pylon_grain(py_local, sh.y, sh.z));
@@ -1797,6 +1844,31 @@ void main() {
         emissive += tint * (0.55 + 0.9 * pylon_vein(lp * 2.0, seed)) * (0.5 + 0.5 * ndv);
         spec_pow = 20.0;
         spec_amt = 0.10;
+    } else if (mat == MAT_MINION) {
+        float ore = minions[mn_idx].w - 1.0;
+        float seed = minion_fx[mn_idx].w * 8.0;
+        float mhp = minion_fx[mn_idx].y;
+        vec3 tint = ore_tint(ore);
+        vec3 lp = (hp - minions[mn_idx].xyz) * 1.8;
+        float e = 0.30;
+        vec3 gn = vec3(
+            pylon_grain(lp + vec3(e, 0.0, 0.0), 1.0, seed) - pylon_grain(lp - vec3(e, 0.0, 0.0), 1.0, seed),
+            pylon_grain(lp + vec3(0.0, e, 0.0), 1.0, seed) - pylon_grain(lp - vec3(0.0, e, 0.0), 1.0, seed),
+            pylon_grain(lp + vec3(0.0, 0.0, e), 1.0, seed) - pylon_grain(lp - vec3(0.0, 0.0, e), 1.0, seed));
+        hit_n = normalize(hit_n + gn * 1.2);
+        albedo = ore_stone(ore) * (0.70 + 0.45 * pylon_grain(lp, 1.0, seed));
+        // The seams are the thing that is alive in it, so they are also the
+        // health bar: a minion about to break is grey rock with the light going
+        // out of its cracks, readable across a lane without a floating number.
+        float vein = pylon_vein(lp * 2.0, seed);
+        float heat = 0.22 + 0.78 * mhp;
+        // A pulse the wave shares: they arrive together and they flicker together.
+        heat *= 0.86 + 0.14 * sin(WORLD_T * 2.4 + minion_fx[mn_idx].w * 6.283);
+        emissive += tint * (0.10 + 1.30 * vein) * heat;
+        // Lit from inside the head, so the thing has a direction even in the dark.
+        if (mn_part > 0.5) emissive += tint * (0.55 + 0.45 * heat);
+        spec_pow = 18.0;
+        spec_amt = 0.08;
     } else if (mat == MAT_WISP) {
         // Motes: sparks of the team's light orbiting the robe
         vec3 tint = team_tint(wisp_team);

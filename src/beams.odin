@@ -94,6 +94,16 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 		}
 	}
 
+	// A minion in front of the player stops the beam at the minion. It cannot
+	// be chained from -- the arcs are an Entity_ID list on the wire -- so a
+	// wave between you and your target genuinely is cover for them.
+	mt, mslot, mhit := minion_raycast(g_minions, caster_team, origin, dir, hit_dist)
+	if mhit {
+		out^ = {end = origin + dir * mt, hit = INVALID_ENTITY}
+		minion_damage(g_minions, mslot, damage)
+		return
+	}
+
 	out^ = {end = origin + dir * hit_dist, hit = hit}
 	if hit == INVALID_ENTITY {
 		return

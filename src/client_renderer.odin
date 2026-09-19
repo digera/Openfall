@@ -208,13 +208,15 @@ Client_Renderer :: struct {
 	// w is 1 where there is an orb at all.
 	orbs:         [MAX_ENTITIES]vec4,
 
-	// The pylon damage fields, one 3D texture with the seven grids stacked along
-	// Z. Re-uploaded whole whenever any of them changes, which is what the
-	// backends want anyway, and the grids only change when someone is mining.
+	// The pylon occupancy fields, one 3D texture with the seven 8x8x20 grids
+	// stacked along Z. Re-uploaded when occupancy changes or a column is still
+	// settling toward its replicated height.
 	pylon_tex:    sg.Image,
 	pylon_view:   sg.View,
 	pylon_smp:    sg.Sampler,
-	pylon_seen:   [MAX_PYLONS]u32,  // grid version last uploaded
+	pylon_seen:   [MAX_PYLONS]u32,  // grid version last sampled
+	pylon_disp_h: [MAX_PYLONS][PYLON_OCC_BYTES]f32,
+	pylon_disp_ok: [MAX_PYLONS]bool,
 }
 
 // The atlas stacks slabs along Z. Trilinear filtering therefore has to be kept
@@ -223,8 +225,6 @@ Client_Renderer :: struct {
 PYLON_ATLAS_NZ    :: PYLON_NZ * MAX_PYLONS
 PYLON_ATLAS_BYTES :: PYLON_NX * PYLON_NY * PYLON_ATLAS_NZ
 
-// Static: over half a megabyte, written every time a tower loses a bite, and
-// there is only ever one renderer.
 @(private = "file") pylon_atlas: [PYLON_ATLAS_BYTES]u8
 
 // ---------------------------------------------------------------------------
@@ -358,32 +358,31 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 		height = PYLON_NY,
 		num_slices = PYLON_ATLAS_NZ,
 		pixel_format = .R8,
-		label = "pylon_density",
+		label = "pylon_occupancy",
 	})
 	r.pylon_view = sg.make_view({
 		texture = {image = r.pylon_tex},
-		label = "pylon_density_view",
+		label = "pylon_occupancy_view",
 	})
 	// Linear in all three axes: the surface the marcher finds is the 0.5 iso of
-	// the filtered field, so the filter is not a smoothing pass over the voxels,
-	// it is what defines the shape of a mined face. Clamped, because a sample
-	// that wrapped would carve one end of a tower from the other.
+	// the filtered occupancy, so the filter is the shape of a stacked column,
+	// not a smoothing pass over finer voxels. Clamped, because a sample that
+	// wrapped would merge one tower into the next.
 	r.pylon_smp = sg.make_sampler({
 		min_filter = .LINEAR,
 		mag_filter = .LINEAR,
 		wrap_u = .CLAMP_TO_EDGE,
 		wrap_v = .CLAMP_TO_EDGE,
 		wrap_w = .CLAMP_TO_EDGE,
-		label = "pylon_density_smp",
+		label = "pylon_occupancy_smp",
 	})
 	r.bind.views[VIEW_pylon_tex] = r.pylon_view
 	r.bind.samplers[SMP_pylon_smp] = r.pylon_smp
-	// Untouched ore everywhere, so a slab with no grid behind it reads as solid
-	// rather than as a tower that has been mined out of existence. Not uploaded
-	// here: an image takes one update per frame, and the first frame's is the
-	// one that carries the real grids.
+	// Empty until the first upload fills live occupancy. Not uploaded here: an
+	// image takes one update per frame, and the first frame's is the one that
+	// carries the real grids.
 	for &b in pylon_atlas {
-		b = 255
+		b = 0
 	}
 
 	r.pass_action = {
@@ -398,25 +397,44 @@ client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 	sg.shutdown()
 }
 
-// Push whatever has been mined since the last frame to the GPU.
-//
-// One upload for the whole atlas rather than seven: `sg.update_image` replaces
-// an image wholesale on every backend, so a partial write would mean seven
-// images and seven texture bindings, and the shader would have to unroll a
-// switch over them to sample one. Half a megabyte is a cheap way out of that,
-// and it is only paid on the frames where a tower actually lost rock.
+// Push occupancy to the GPU. Column heights lerp so a compact reads as a drop
+// instead of a pop. The atlas is 8x8x20x7, about 9 KB.
 @(private = "file")
-client_renderer_upload_pylons :: proc(r: ^Client_Renderer, world: ^Pylon_World) {
+client_renderer_upload_pylons :: proc(r: ^Client_Renderer, world: ^Pylon_World, dt: f32) {
+	gain := min(dt * 12.0, 1.0)
 	dirty := false
-	for i in 0..<MAX_PYLONS {
+	for i in 0 ..< MAX_PYLONS {
 		g := pylon_grid(world, Pylon_ID(i))
-		if g == nil || g.version == r.pylon_seen[i] {
+		if g == nil {
 			continue
 		}
 		off := i * PYLON_VOX
-		copy(pylon_atlas[off:off + PYLON_VOX], g.density[:])
-		r.pylon_seen[i] = g.version
-		dirty = true
+		for y in 0 ..< PYLON_NY {
+			for x in 0 ..< PYLON_NX {
+				col := ore_col_index(x, y)
+				target := f32(ore_grid_column_h(g, x, y))
+				disp := &r.pylon_disp_h[i][col]
+				if !r.pylon_disp_ok[i] || abs(disp^ - target) > 1.25 {
+					disp^ = target
+					dirty = true
+				} else if abs(disp^ - target) > 0.01 {
+					disp^ += (target - disp^) * gain
+					dirty = true
+				} else {
+					disp^ = target
+				}
+				h := disp^
+				for z in 0 ..< PYLON_NZ {
+					occ := clampf(h - f32(z), 0, 1)
+					pylon_atlas[off + ore_index(x, y, z)] = u8(occ * 255.0 + 0.5)
+				}
+			}
+		}
+		r.pylon_disp_ok[i] = true
+		if g.version != r.pylon_seen[i] {
+			r.pylon_seen[i] = g.version
+			dirty = true
+		}
 	}
 	if dirty {
 		sg.update_image(r.pylon_tex, {mip_levels = {0 = {ptr = &pylon_atlas, size = PYLON_ATLAS_BYTES}}})
@@ -558,7 +576,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		fs_params.solid_boxes[2 * i + 1] = c
 	}
 
-	client_renderer_upload_pylons(r, &world.pylons)
+	client_renderer_upload_pylons(r, &world.pylons, dt)
 	for i in 0..<MAX_PYLONS {
 		p := &world.pylons.pylons[i]
 		fs_params.pylons[i] = {p.base.x, p.base.y, p.base.z, p.yaw}
@@ -574,6 +592,20 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		}
 		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, c.radius}
 		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, 0}
+	}
+	// Minions go up as the ore they are made of rather than as a team colour:
+	// their team is legible because their team's rock is, and it is the same
+	// read as the tower they came out of and the lump they will drop.
+	for i in 0..<MAX_SNAPSHOT_MINIONS {
+		m := &world.minions[i]
+		if !m.present {
+			fs_params.minions[i] = {}
+			fs_params.minion_fx[i] = {}
+			continue
+		}
+		fs_params.minions[i] = {m.pos.x, m.pos.y, m.pos.z, f32(u8(team_ore(m.team))) + 1}
+		seed := f32(hash_u32(u32(m.id) * 2654435761) & 0xFFFF) / f32(0x10000)
+		fs_params.minion_fx[i] = {m.yaw, m.hp, f32(u8(m.kind)), seed}
 	}
 
 	// Nearest living remote players → wisps
@@ -1063,20 +1095,34 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			}
 		}
 
-		// Pylons: how much of each tower is still standing. G is the golden one
-		// in the centre, then the near-lane towers and the far-lane towers.
-		sdtx.pos(cols * 0.5 - f32(MAX_PYLONS) * 4.0, 3)
-		for i in 0..<MAX_PYLONS {
-			p := &world.pylons.pylons[i]
-			sdtx_color(ore_color(p.ore))
-			label := i == 0 ? "G" : fmt.tprintf("%d", i)
-			sdtx.printf("[%s %3d]", label, int(gs.pylons[i].intact * 100))
-			sdtx.puts(" ")
+		// The round, once the golden pylon is down: whose rock is going back
+		// into the stump. This replaces the pylon row it sits on, because from
+		// the moment the centre opens it is the only line that decides anything.
+		if gs.centre_open {
+			share_w := f32(TEAM_COUNT) * 11
+			sdtx.pos(cols * 0.5 - share_w * 0.5, 3)
+			sdtx.color3f(0.95, 0.88, 0.55)
+			sdtx.puts("CENTRE ")
+			for i in 0..<TEAM_COUNT {
+				sdtx_color(team_color(team_from_index(i)))
+				sdtx.printf("%s %3d%% ", team_name(team_from_index(i)), int(f32(gs.centre_share[i]) / 255.0 * 100))
+			}
+		} else {
+			// Pylons: how much of each tower is still standing. G is the golden
+			// one in the centre, then the near-lane towers and the far ones.
+			sdtx.pos(cols * 0.5 - f32(MAX_PYLONS) * 4.0, 3)
+			for i in 0..<MAX_PYLONS {
+				p := &world.pylons.pylons[i]
+				sdtx_color(ore_color(p.ore))
+				label := i == 0 ? "G" : fmt.tprintf("%d", i)
+				sdtx.printf("[%s %3d]", label, int(gs.pylons[i].intact * 100))
+				sdtx.puts(" ")
+			}
 		}
 
-		// The wallet: what the local team has carried home, one column per ore.
-		// Enemy ore is what buys a push against its owner, so a stack of someone
-		// else's colour is a threat you can read off your own HUD.
+		// The wallet: what the local team has banked, one column per ore.
+		// Enemy ore buys extra pushers that walk the *other* rival's lane, so a
+		// stack of Ember on Verdant's HUD is a Tide problem, not an Ember one.
 		if world.local_team != .None && world.local_team != .Spectator {
 			w := &gs.wallets[team_index(world.local_team)]
 			line := f32(ORE_COUNT) * 9
@@ -1218,7 +1264,27 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	if world.have_game_state && Match_State(gs.match_state) == .Waiting {
 		sdtx.color3f(0.7, 0.68, 0.62)
-		hud_center_text(cols, 6, "break enemy pylons, carry the ore home - gold is worth the most")
+		hud_center_text(cols, 6, "walk over the ore to bank it - your own rock thickens the next wave")
+		hud_center_text(cols, 7, "bring the golden tower down, then build it back: most rock in the stump wins")
+	}
+
+	// Taking a tower does not open a push; it turns the owner's waves into a
+	// repair crew. That is the one rule of this mode nobody guesses, so it is
+	// said out loud the first time a friendly tower is missing enough rock
+	// that the next wave will hop it, and again once the centre is the prize.
+	if world.have_game_state && Match_State(gs.match_state) == .Active {
+		if gs.centre_open {
+			sdtx.color3f(0.95, 0.88, 0.55)
+			hud_center_text(cols, 6, "the centre is open - your waves are rebuilding it, most rock laid wins")
+		} else if world.local_team != .None && world.local_team != .Spectator {
+			own := team_index(world.local_team)
+			near := own + 1
+			far := own + 4
+			if gs.pylons[near].intact < PYLON_REBUILD_FRAC || gs.pylons[far].intact < PYLON_REBUILD_FRAC {
+				sdtx.color3f(0.85, 0.78, 0.55)
+				hud_center_text(cols, 6, "your waves are rebuilding the tower - flattening a lane stalls that team")
+			}
+		}
 	}
 
 	hud_combat_log(world, cols, rows)
