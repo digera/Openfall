@@ -29,7 +29,7 @@ Test_Client :: struct {
 	detour:        f32,
 	detour_timer:  f32,
 
-	// Occupancy tally: GameState column heights vs the local grid after apply.
+	// Node HP tally: GameState intact vs the local tower after apply.
 	pylon_compares: int,
 	pylon_drifts:   int,
 }
@@ -112,11 +112,11 @@ main :: proc() {
 			case .Server_GameState:
 				client.client_world.game_state = packet.gamestate
 				client.client_world.have_game_state = true
-				client_world_apply_gamestate_pylons(&client.client_world, &packet.gamestate)
+				client_world_apply_gamestate_towers(&client.client_world, &packet.gamestate)
 				client.pylon_compares += 1
 				for i in 0 ..< MAX_PYLONS {
-					g := pylon_grid(&client.client_world.pylons, Pylon_ID(i))
-					if g == nil || !ore_grid_heights_equal(g, packet.gamestate.pylons[i].heights[:]) {
+					t := tower_get(&client.client_world.towers, Pylon_ID(i))
+					if t == nil || abs(t.intact - packet.gamestate.towers[i].intact) > 0.02 {
 						client.pylon_drifts += 1
 					}
 				}
@@ -309,12 +309,10 @@ test_client_print_pylons :: proc(client: ^Test_Client) {
 	if !world.have_game_state {
 		return
 	}
-	fmt.printf("    pylons")
+	fmt.printf("    towers")
 	for i in 0..<MAX_PYLONS {
-		p := &world.pylons.pylons[i]
-		g := pylon_grid(&world.pylons, Pylon_ID(i))
-		mine := g != nil ? ore_grid_intact(g) : 0
-		fmt.printf(" %s%.0f/%.0f", i == 0 ? "G:" : "", mine * 100, world.game_state.pylons[i].intact * 100)
+		t := &world.towers.towers[i]
+		fmt.printf(" %s%.0f/%.0f", i == 0 ? "G:" : "", t.intact * 100, world.game_state.towers[i].intact * 100)
 	}
 	fmt.printf("  (mine/server %%)  compares %d drift %d\n",
 		client.pylon_compares, client.pylon_drifts)

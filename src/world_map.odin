@@ -132,7 +132,7 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 // whether a point is solid comes through this one proc -- movement, projectile
 // sweeps, `world_segment_clear` for line of sight, `world_ray_hit` for beam
 // reach -- so a tower becomes cover, stops spells and blocks sight in one move
-// instead of four. `pylon_blocks_point` rejects on a bound cylinder first, so a
+// instead of four. `tower_blocks_point` rejects on a bound cylinder first, so a
 // point nowhere near a tower costs seven distance compares and no occupancy.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
 	in_floor := false

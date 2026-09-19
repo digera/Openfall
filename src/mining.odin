@@ -12,8 +12,8 @@ import "core:fmt"
 //
 // The bite cadence is the load-bearing choice here. A beam could carve every
 // tick, but then mining would melt the rock in a single hold. At ten bites a
-// second the tower comes apart with an audible rhythm, and occupancy on the
-// wire still only moves when a cell actually dies.
+// second the tower comes apart with an audible rhythm, and node HP on the
+// wire moves as soon as a bite actually removes rock.
 
 // Per-entity mining cadence. Lives beside the pylons rather than in the spell
 // state because it is a property of chewing rock, not of casting.
@@ -22,7 +22,7 @@ Mining_State :: struct {
 }
 
 // A beam's bite, and how much rock a whole second of it removes. Amount is
-// scaled by toughness into cell HP, so gold takes several bites to kill a cell.
+// scaled by toughness into node HP, so gold takes several bites to kill a node.
 BEAM_BITE_AMOUNT :: f32(0.60)
 // A detonation is one big stamp rather than a series of bites.
 BLAST_AMOUNT     :: f32(0.85)
@@ -53,6 +53,9 @@ mining_beams_tick :: proc(
 	dt:      f32,
 	allowed: bool,
 ) {
+	if towers == nil {
+		return
+	}
 	for i in 1 ..< MAX_ENTITIES {
 		id := Entity_ID(i)
 		ss := &world.spell_states[i]
@@ -77,7 +80,7 @@ mining_beams_tick :: proc(
 		origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
 		dir := camera_forward(char.yaw, char.pitch)
 
-		t, tower_id, _, hit := tower_raycast(g_towers, origin, dir, def.range)
+		t, tower_id, _, hit := tower_raycast(towers, origin, dir, def.range)
 		if !hit {
 			continue
 		}
@@ -90,13 +93,17 @@ mining_beams_tick :: proc(
 		if _, _, blocked := minion_raycast(g_minions, world.teams[i], origin, dir, t); blocked {
 			continue
 		}
+		tw := tower_get(towers, tower_id)
+		if tw == nil {
+			continue
+		}
 		at := origin + dir * t
-		radius := max(MINE_BITE_MIN_R, NODE_RADIUS * 1.5)
-		ore, ok := tower_mine(g_towers, tower_id, at, radius, BEAM_BITE_AMOUNT, id, world.teams[i])
+		radius := max(MINE_BITE_MIN_R, tw.node_radius * 1.15)
+		ore, ok := tower_mine(towers, tower_id, at, radius, BEAM_BITE_AMOUNT, id, world.teams[i])
 		if !ok {
 			continue
 		}
-		tower_credit_ore(g_towers, tower_id, ore)
+		tower_credit_ore(towers, tower_id, ore)
 		_ = chunks
 	}
 }
@@ -133,13 +140,17 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 	if g_towers == nil {
 		return
 	}
-	pad := max(radius, 0.5) + NODE_RADIUS * 2
+	pad := max(radius, 0.5) + 2.5
 	id, ok := tower_at_point(g_towers, at, pad)
 	if !ok {
 		return
 	}
+	tw := tower_get(g_towers, id)
+	if tw == nil {
+		return
+	}
 
-	r := max(MINE_BITE_MIN_R, radius * BLAST_RADIUS_MULT)
+	r := max(MINE_BITE_MIN_R, max(radius * BLAST_RADIUS_MULT, tw.node_radius * 0.85))
 	ore, mined := tower_mine(g_towers, id, at, r, BLAST_AMOUNT, owner, team)
 	if !mined {
 		return

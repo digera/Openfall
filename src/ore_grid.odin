@@ -2,15 +2,10 @@ package main
 
 import "core:math"
 
-// Coarse occupancy for ore pylons.
-//
-// Authority is an 8x8x20 HP grid, one metre cells, packed to the floor in each
-// column. The pretty rock is a client shader of this occupancy; it is not
-// replicated and the server never marches it. Gravity forbids holes, so the
-// wire form is just 64 column heights.
-//
-// This grid is the collision surface. The visual SDF can sit a little further
-// out (grain), and PYLON_COLLIDE_SLACK is the pad that keeps them aligned.
+// Coarse occupancy constants shared with the client paint of shield-node
+// towers. The 8x8x20 grid is no longer gameplay authority; tower_nodes.odin
+// owns collision, mining and scoring. The GPU still marches an occupancy
+// atlas, filled by painting node spheres and the thin core into these cells.
 
 PYLON_NX  :: 8
 PYLON_NY  :: 8

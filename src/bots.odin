@@ -220,7 +220,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		b.objective = bot_pick_objective(server, b, char.pos)
 		b.objective_timer = rand.float32_range(2.5, 4.5)
 	}
-	obj := &server.pylons.pylons[clamp_int(b.objective, 0, MAX_PYLONS - 1)]
+	obj := &server.towers.towers[clamp_int(b.objective, 0, MAX_PYLONS - 1)]
 	obj_pos := obj.base
 	to_obj := obj_pos - char.pos
 	to_obj.z = 0
@@ -228,13 +228,13 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 
 	// Stand off far enough not to be inside the rock, close enough to hold a
 	// beam on it. Hysteresis so a bot at the boundary does not flicker.
-	stand := obj.shape.radius + BOT_MINE_STANDOFF
+	stand := obj.design_radius + BOT_MINE_STANDOFF
 	if obj_dist < stand {
 		b.mode = .Mine
 	} else if obj_dist > stand * 1.25 {
 		b.mode = .Travel
 	}
-	b.mine_point = obj_pos + vec3{0, 0, obj.shape.height * BOT_MINE_HEIGHT_FRAC}
+	b.mine_point = obj_pos + vec3{0, 0, obj.design_height * BOT_MINE_HEIGHT_FRAC}
 
 	// --- Target ----------------------------------------------------------
 	b.target_timer -= dt
@@ -256,8 +256,8 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 
 	// A bot is mining when it is stood at its tower with nothing else to do.
 	// Decided before movement because it changes where the bot wants to be.
-	b.mining = b.mode == .Mine && pylon_standing(&server.pylons, obj.id) &&
-		pylon_mineable_by(obj, b.team)
+	b.mining = b.mode == .Mine && tower_standing(&server.towers, obj.pylon_id) &&
+		tower_mineable_by(obj, b.team)
 
 	// --- Movement direction ----------------------------------------------
 	move_dir := vec3{}
@@ -268,7 +268,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		// Circle the tower at mining distance so bots working the same rock
 		// spread around it instead of stacking on one face.
 		b.orbit_phase += dt * 0.5
-		ring := vec3{math.cos(b.orbit_phase), math.sin(b.orbit_phase), 0} * (obj.shape.radius + BOT_MINE_STANDOFF * 0.6)
+		ring := vec3{math.cos(b.orbit_phase), math.sin(b.orbit_phase), 0} * (obj.design_radius + BOT_MINE_STANDOFF * 0.6)
 		goal := obj_pos + ring
 		d := vec3{goal.x - char.pos.x, goal.y - char.pos.y, 0}
 		if len2_vec3(d) > 0.6 * 0.6 {
@@ -540,15 +540,15 @@ rotate_xy :: proc(v: vec3, a: f32) -> vec3 {
 
 @(private = "file")
 bot_objective_done :: proc(server: ^Server, b: ^Bot) -> bool {
-	if b.objective < 0 || b.objective >= server.pylons.count {
+	if b.objective < 0 || b.objective >= server.towers.count {
 		return true
 	}
-	p := &server.pylons.pylons[b.objective]
+	p := &server.towers.towers[b.objective]
 	// Nothing left to chew, or it was never ours to chew.
-	if !pylon_standing(&server.pylons, p.id) {
+	if !tower_standing(&server.towers, p.pylon_id) {
 		return true
 	}
-	return !pylon_mineable_by(p, b.team)
+	return !tower_mineable_by(p, b.team)
 }
 
 // Score every pylon and pick the best. Lower is better.
@@ -557,10 +557,10 @@ bot_pick_objective :: proc(server: ^Server, b: ^Bot, pos: vec3) -> int {
 	best := -1
 	best_score := f32(1e9)
 
-	for i in 0..<server.pylons.count {
-		p := &server.pylons.pylons[i]
+	for i in 0..<server.towers.count {
+		p := &server.towers.towers[i]
 		// Your own ore is off limits, and a stump has nothing to give.
-		if !pylon_mineable_by(p, b.team) || !pylon_standing(&server.pylons, p.id) {
+		if !tower_mineable_by(p, b.team) || !tower_standing(&server.towers, p.pylon_id) {
 			continue
 		}
 		score := len_vec3(vec3{p.base.x - pos.x, p.base.y - pos.y, 0})

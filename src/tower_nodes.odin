@@ -1,46 +1,67 @@
 package main
 
+import "core:fmt"
 import "core:math"
 import "core:slice"
 
-// Spiral shield-node tower authority: replaces occupancy-grid pylon damage.
+// Spiral shield-node tower authority.
 //
-// Each tower has:
-// 1. A solid core whose height = live_node_count * STACK_STEP (derived)
-// 2. An AoS of shield nodes wrapping in a spiral around the core
-// 3. Nodes are the exo-shield: each has stable Node_ID, hp, max_hp, alive flag
-// 4. On node destroy: remove from live set, re-sort by hp desc + stable ID tie
-// 5. Spiral slot is derived from sort rank, never stored as hit target identity
-// 6. Minion donate: 1 minion = 1 node at top free stack slot
+// Gameplay is an array of overlapping ore nodes wrapped around a thin core.
+// Node_ID is identity; spiral rank is derived from a sort on remaining HP
+// (high HP at the bottom, damaged nodes rise). Hits address the Node_ID found
+// at the impact point, never the slot, so a re-sort cannot hop damage onto a
+// neighbour mid-bite. Core height is live_count * stack_step and is not
+// synced. Minion hops restore a handful of nodes, scaled by the wave's own-ore
+// bolster, so a flattened lane still takes about three unbuffed waves.
+//
+// The occupancy atlas the client marches is paint of this state, not a second
+// authority. See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
 
-// Hard-cap nodes per tower for MTU. Aim ~24-48 so snapshot fits in budget.
 MAX_NODES_PER_TOWER :: 32
+TOWER_NODES_GOLD    :: 32
+TOWER_NODES_NEAR    :: 28
+TOWER_NODES_FAR     :: 24
 
-// Core vertical step per live node
-STACK_STEP :: f32(0.42)
+#assert(TOWER_NODES_GOLD <= MAX_NODES_PER_TOWER)
+#assert(TOWER_NODES_NEAR <= MAX_NODES_PER_TOWER)
+#assert(TOWER_NODES_FAR  <= MAX_NODES_PER_TOWER)
 
-// Core is thin: just the stack column, not the full spiral base
-CORE_RADIUS :: f32(0.6)
+// Thin last-stand column. Nodes are the destructible shell; this is what is
+// left in the gaps once the shell is gone, not a fat pillar that swallows rays.
+CORE_RADIUS :: f32(0.55)
 
-// Spiral parameters: nodes wrap around core in golden-angle spiral
-SPIRAL_TURNS_PER_HEIGHT :: f32(1.8)
-SPIRAL_BASE_RADIUS :: f32(2.8)
-SPIRAL_RADIUS_GROWTH :: f32(0.02)  // radial growth per unit height
+// Phyllotaxis on a cylinder. Consecutive ranks are a golden step apart, so
+// neighbours in space are Fibonacci parastichies -- overlapping blobs, not a
+// string of beads with walkable holes.
+SPIRAL_GOLDEN_ANGLE  :: f32(2.399963229728653)
+SPIRAL_RADIUS_GROWTH :: f32(0.015)
 
-// Node dimensions for collision/rendering
-NODE_RADIUS :: f32(0.45)
-NODE_HEIGHT :: f32(0.38)
+// How much of the old hex circumradius is the node sphere, and how far out
+// the spiral sits. Outer extent is about design_radius + collide slack, so
+// the lane still has a walkable shoulder.
+TOWER_NODE_RADIUS_FRAC  :: f32(0.48)
+TOWER_SPIRAL_RADIUS_FRAC :: f32(0.55)
 
-// Node HP scaling
-NODE_HP_TEAM :: f32(35.0)
-NODE_HP_GOLD :: f32(85.0)
+// HP is in "amount" units after toughness. A team bite is 0.60, gold divides
+// by 4.5, so these take a couple of seconds of beam per node rather than a
+// minute, and a focused player can still drop a lane tower in a fight.
+NODE_HP_TEAM :: f32(12.0)
+NODE_HP_GOLD :: f32(16.0)
 
-// Intact fraction for rebuild trigger / centre claim
-TOWER_REBUILD_FRAC :: f32(0.75)
-TOWER_CLAIM_FRAC :: f32(0.80)
+// Ore from a fully mined node. Fraction of HP removed pays out as you chip,
+// so a bite that does not kill still sheds rock.
+NODE_ORE_TEAM :: f32(8.0)
+NODE_ORE_GOLD :: f32(18.0)
+
+// Unbolstered hop restores two nodes: three fodder over three waves put back
+// 18, which is 75% of a 24-node far tower -- the rebuild cutoff. Own-ore
+// extra lets a farming team do it in one or two waves without a single hop
+// rebuilding the whole thing.
+TOWER_DONATE_BASE      :: 2
+TOWER_DONATE_OWN_EXTRA :: 2
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,43 +69,45 @@ TOWER_CLAIM_FRAC :: f32(0.80)
 Node_ID :: u16
 
 Tower_Node :: struct {
-	id:      Node_ID,
-	hp:      f32,
-	max_hp:  f32,
-	alive:   bool,
-	ore:     Ore_Kind,  // for scoring on minion donation
-	team:    Team_ID,   // for scoring
+	id:     Node_ID,
+	hp:     f32,
+	max_hp: f32,
+	alive:  bool,
 }
 
 Tower :: struct {
-	pylon_id:   Pylon_ID,
-	base:       vec3,
-	yaw:        f32,
-	owner:      Team_ID,
-	ore:        Ore_Kind,
-	tough:      f32,
+	pylon_id: Pylon_ID,
+	base:     vec3,
+	yaw:      f32,
+	owner:    Team_ID,
+	ore:      Ore_Kind,
+	tough:    f32,
+	seed:     f32,
 
-	// Node pool: fixed-size array, subset alive
-	nodes:       [MAX_NODES_PER_TOWER]Tower_Node,
-	live_count:  int,
-	max_count:   int,  // design capacity for this tower
+	design_height: f32,
+	design_radius: f32,
+	node_radius:   f32,
+	spiral_radius: f32,
+	stack_step:    f32,
+
+	nodes:        [MAX_NODES_PER_TOWER]Tower_Node,
+	live_count:   int,
+	max_count:    int,
 	next_node_id: Node_ID,
 
-	// Sorted indices: maps rank → array index (rank 0 = highest hp node)
-	// Updated on damage/death/build. Spiral position is derived from rank.
+	// rank 0 = highest HP. Spiral position is a function of rank.
 	sorted_indices: [MAX_NODES_PER_TOWER]int,
 
-	// Derived state (not synced, computed from live_count)
 	core_height: f32,
-	intact:      f32,  // live_count / max_count
+	intact:      f32,
+	version:     u32,
 
-	// Mining state (same as old pylon)
-	ore_debt:    f32,
-	last_miner:  Entity_ID,
-	last_bite:   vec3,
+	ore_debt:   f32,
+	last_miner: Entity_ID,
+	last_bite:  vec3,
 	last_bite_n: vec3,
 
-	touched:     bool,
+	touched: bool,
 }
 
 Tower_World :: struct {
@@ -93,8 +116,9 @@ Tower_World :: struct {
 	dirty:  [MAX_PYLONS]bool,
 }
 
-// Global tower world (replaces g_pylons for collision authority)
 g_towers: ^Tower_World
+
+@(private = "file") tower_serial: u32 = 1
 
 // ---------------------------------------------------------------------------
 // Init / Reset
@@ -107,34 +131,14 @@ tower_world_init :: proc(world: ^Tower_World) {
 		t.pylon_id = Pylon_ID(i)
 		t.base = pylon_base_position(i)
 		t.base.z = WORLD_FLOOR_Z
-
-		if i == 0 {
-			// Golden centre
-			t.owner = .None
-			t.ore = .Gold
-			t.tough = PYLON_TOUGHNESS_GOLD
-			t.max_count = 32
-		} else if i <= 3 {
-			// Near-lane towers
-			t.owner = team_from_index(i - 1)
-			t.ore = team_ore(t.owner)
-			t.tough = PYLON_TOUGHNESS_TEAM
-			t.max_count = 28
-		} else {
-			// Far-lane towers
-			t.owner = team_from_index(i - 4)
-			t.ore = team_ore(t.owner)
-			t.tough = PYLON_TOUGHNESS_TEAM
-			t.max_count = 24
-		}
-
-		h := hash_u32(u32(i) * 2654435761 + 17)
-		t.yaw = f32((h >> 16) & 0xFFFF) / f32(0x10000) * (2 * PI_F32)
-
+		tower_configure(t, i)
 		tower_build_full(t)
 		world.dirty[i] = true
 	}
 	g_towers = world
+	tower_selftest()
+	fmt.printf("[Tower] %d shield-node towers (gold %d, near %d, far %d)\n",
+		MAX_PYLONS, TOWER_NODES_GOLD, TOWER_NODES_NEAR, TOWER_NODES_FAR)
 }
 
 tower_world_reset :: proc(world: ^Tower_World) {
@@ -147,52 +151,104 @@ tower_world_reset :: proc(world: ^Tower_World) {
 	}
 }
 
-// Build a tower to full capacity
+@(private = "file")
+tower_configure :: proc(t: ^Tower, i: int) {
+	if i == 0 {
+		t.owner = .None
+		t.ore = .Gold
+		t.tough = PYLON_TOUGHNESS_GOLD
+		t.max_count = TOWER_NODES_GOLD
+		t.design_height = PYLON_GOLD_HEIGHT
+		t.design_radius = PYLON_GOLD_RADIUS
+	} else if i <= 3 {
+		t.owner = team_from_index(i - 1)
+		t.ore = team_ore(t.owner)
+		t.tough = PYLON_TOUGHNESS_TEAM
+		t.max_count = TOWER_NODES_NEAR
+		t.design_height = PYLON_NEAR_HEIGHT
+		t.design_radius = PYLON_NEAR_RADIUS
+	} else {
+		t.owner = team_from_index(i - 4)
+		t.ore = team_ore(t.owner)
+		t.tough = PYLON_TOUGHNESS_TEAM
+		t.max_count = TOWER_NODES_FAR
+		t.design_height = PYLON_FAR_HEIGHT
+		t.design_radius = PYLON_FAR_RADIUS
+	}
+	t.node_radius = t.design_radius * TOWER_NODE_RADIUS_FRAC
+	t.spiral_radius = t.design_radius * TOWER_SPIRAL_RADIUS_FRAC
+	t.stack_step = t.design_height / f32(t.max_count)
+	h := hash_u32(u32(i) * 2654435761 + 17)
+	t.seed = f32(h & 0xFFFF) / f32(0x10000) * 8
+	t.yaw = f32((h >> 16) & 0xFFFF) / f32(0x10000) * (2 * PI_F32)
+}
+
 tower_build_full :: proc(t: ^Tower) {
 	t.live_count = 0
 	t.next_node_id = 1
+	hp := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
 	for i in 0 ..< t.max_count {
 		node := &t.nodes[i]
 		node.id = t.next_node_id
 		t.next_node_id += 1
-		node.hp = t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
-		node.max_hp = node.hp
+		if t.next_node_id == 0 {
+			t.next_node_id = 1
+		}
+		node.hp = hp
+		node.max_hp = hp
 		node.alive = true
-		node.ore = t.ore
-		node.team = t.owner
 		t.live_count += 1
 	}
+	for i in t.max_count ..< MAX_NODES_PER_TOWER {
+		t.nodes[i] = {}
+	}
 	tower_recompute(t)
-	tower_resort_nodes(t)  // Critical: populate sorted_indices after building nodes
+	tower_resort_nodes(t)
+	tower_bump(t)
 }
 
 tower_recompute :: proc(t: ^Tower) {
-	t.core_height = f32(t.live_count) * STACK_STEP
+	t.core_height = f32(t.live_count) * t.stack_step
 	t.intact = t.max_count > 0 ? f32(t.live_count) / f32(t.max_count) : 0
+}
+
+@(private = "file")
+tower_bump :: proc(t: ^Tower) {
+	tower_serial += 1
+	if tower_serial == 0 {
+		tower_serial = 1
+	}
+	t.version = tower_serial
 }
 
 @(private = "file")
 tower_touch :: proc(world: ^Tower_World, t: ^Tower) {
 	t.touched = true
 	world.dirty[t.pylon_id] = true
+	tower_bump(t)
 }
 
 // ---------------------------------------------------------------------------
-// Node positioning: spiral around core
+// Geometry
 
-// Given a node's sort rank (0 = highest hp), return its spiral position in local frame
-tower_node_spiral_pos :: proc(rank: int, core_h: f32) -> vec3 {
+tower_outer_radius :: proc(t: ^Tower) -> f32 {
+	return t.spiral_radius + t.core_height * SPIRAL_RADIUS_GROWTH + t.node_radius
+}
+
+tower_node_spiral_pos :: proc(t: ^Tower, rank: int) -> vec3 {
 	if rank < 0 {
 		return {}
 	}
-	// Stack vertically with golden-angle spiral
-	z := f32(rank) * STACK_STEP
-	angle := f32(rank) * 2.39996  // golden angle
-	radius := SPIRAL_BASE_RADIUS + z * SPIRAL_RADIUS_GROWTH
+	z := f32(rank) * t.stack_step
+	angle := f32(rank) * SPIRAL_GOLDEN_ANGLE
+	radius := t.spiral_radius + z * SPIRAL_RADIUS_GROWTH
 	return {math.cos(angle) * radius, math.sin(angle) * radius, z}
 }
 
-// Transform local to world
+tower_node_world_pos :: proc(t: ^Tower, rank: int) -> vec3 {
+	return tower_to_world(t, tower_node_spiral_pos(t, rank))
+}
+
 tower_to_world :: proc(t: ^Tower, local: vec3) -> vec3 {
 	s := math.sin(t.yaw)
 	c := math.cos(t.yaw)
@@ -219,7 +275,7 @@ tower_dir_to_local :: proc(t: ^Tower, v: vec3) -> vec3 {
 }
 
 // ---------------------------------------------------------------------------
-// Sorting: re-sort live nodes by hp desc, stable tie-break by Node_ID
+// Sorting
 
 Tower_Node_Sort_Key :: struct {
 	hp:      f32,
@@ -228,11 +284,6 @@ Tower_Node_Sort_Key :: struct {
 }
 
 tower_resort_nodes :: proc(t: ^Tower) {
-	if t.live_count <= 0 {
-		return
-	}
-
-	// Gather live nodes with their array indices
 	keys: [MAX_NODES_PER_TOWER]Tower_Node_Sort_Key
 	n := 0
 	for i in 0 ..< t.max_count {
@@ -241,26 +292,23 @@ tower_resort_nodes :: proc(t: ^Tower) {
 			n += 1
 		}
 	}
-
-	// Sort by hp desc, then by node_id asc (stable)
-	slice.sort_by(keys[:n], proc(a, b: Tower_Node_Sort_Key) -> bool {
-		if a.hp != b.hp {
-			return a.hp > b.hp
-		}
-		return a.node_id < b.node_id
-	})
-
-	// Store sorted array indices: sorted_indices[rank] = array_index
+	t.live_count = n
+	if n > 1 {
+		slice.sort_by(keys[:n], proc(a, b: Tower_Node_Sort_Key) -> bool {
+			if a.hp != b.hp {
+				return a.hp > b.hp
+			}
+			return a.node_id < b.node_id
+		})
+	}
 	for rank in 0 ..< n {
 		t.sorted_indices[rank] = keys[rank].index
 	}
-	// Clear unused ranks
 	for rank in n ..< MAX_NODES_PER_TOWER {
 		t.sorted_indices[rank] = -1
 	}
 }
 
-// Get node at given rank (0 = highest hp)
 tower_node_at_rank :: proc(t: ^Tower, rank: int) -> ^Tower_Node {
 	if rank < 0 || rank >= t.live_count {
 		return nil
@@ -294,57 +342,77 @@ tower_mineable_by :: proc(t: ^Tower, team: Team_ID) -> bool {
 	return t.owner != team
 }
 
-// Find which node (by Node_ID) is hit at a world point (within NODE_RADIUS)
-// Returns the node and its current spiral rank
+tower_node_ore :: proc(t: ^Tower) -> f32 {
+	return t.ore == .Gold ? NODE_ORE_GOLD : NODE_ORE_TEAM
+}
+
+tower_donate_count :: proc(build_r: f32) -> int {
+	extra := clampf((build_r - MINION_BUILD_RADIUS) / max(OWN_ORE_BUILD_GAIN, 0.01), 0, 1)
+	n := TOWER_DONATE_BASE + int(math.round(extra * f32(TOWER_DONATE_OWN_EXTRA)))
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 tower_node_at_point :: proc(t: ^Tower, wp: vec3, pad: f32) -> (node_id: Node_ID, rank: int, ok: bool) {
 	local := tower_to_local(t, wp)
-	reach2 := (NODE_RADIUS + pad) * (NODE_RADIUS + pad)
-
-	// Check live nodes in sorted rank order
+	reach := t.node_radius + pad
+	reach2 := reach * reach
+	best_d2 := reach2
+	best_rank := -1
+	best_id := Node_ID(0)
 	for rank in 0 ..< t.live_count {
 		node := tower_node_at_rank(t, rank)
 		if node == nil || !node.alive {
 			continue
 		}
-		pos := tower_node_spiral_pos(rank, t.core_height)
+		pos := tower_node_spiral_pos(t, rank)
 		dx := local.x - pos.x
 		dy := local.y - pos.y
 		dz := local.z - pos.z
-		if dx * dx + dy * dy + dz * dz <= reach2 {
-			return node.id, rank, true
+		d2 := dx * dx + dy * dy + dz * dz
+		if d2 <= best_d2 {
+			best_d2 = d2
+			best_rank = rank
+			best_id = node.id
 		}
 	}
-	return 0, -1, false
+	if best_rank < 0 {
+		return 0, -1, false
+	}
+	return best_id, best_rank, true
 }
 
-// Does the tower (core or nodes) block this world point?
+tower_in_bound :: proc(t: ^Tower, wp: vec3, pad: f32) -> bool {
+	dx := wp.x - t.base.x
+	dy := wp.y - t.base.y
+	max_r := tower_outer_radius(t) + pad
+	if dx * dx + dy * dy > max_r * max_r {
+		return false
+	}
+	if wp.z < t.base.z - pad || wp.z > t.base.z + t.core_height + t.node_radius + pad {
+		return false
+	}
+	return true
+}
+
 tower_blocks_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> bool {
 	for i in 0 ..< world.count {
 		t := &world.towers[i]
 		if t.live_count == 0 {
 			continue
 		}
-		// Cylinder reject
-		dx := wp.x - t.base.x
-		dy := wp.y - t.base.y
-		max_r := SPIRAL_BASE_RADIUS + t.core_height * SPIRAL_RADIUS_GROWTH + NODE_RADIUS + pad
-		if dx * dx + dy * dy > max_r * max_r {
+		if !tower_in_bound(t, wp, pad) {
 			continue
 		}
-		if wp.z < t.base.z - pad || wp.z > t.base.z + t.core_height + NODE_HEIGHT + pad {
-			continue
-		}
-
 		local := tower_to_local(t, wp)
-		
-		// Check core (thin cylinder)
-		if local.z >= 0 && local.z <= t.core_height {
-			if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
+		core_r := CORE_RADIUS + pad
+		if local.z >= -pad && local.z <= t.core_height + pad {
+			if local.x * local.x + local.y * local.y <= core_r * core_r {
 				return true
 			}
 		}
-
-		// Check nodes
 		if _, _, hit := tower_node_at_point(t, wp, pad); hit {
 			return true
 		}
@@ -352,66 +420,46 @@ tower_blocks_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> bool {
 	return false
 }
 
-// Raycast: nearest tower along ray
 tower_raycast :: proc(world: ^Tower_World, ro, rd: vec3, max_t: f32) -> (t: f32, id: Pylon_ID, node_id: Node_ID, hit: bool) {
+	rd_len := len_vec3(rd)
+	if rd_len < 1e-8 {
+		return 0, 0, 0, false
+	}
+	rdn := rd / rd_len
 	best := max_t
 	found_tower := -1
 	found_node := Node_ID(0)
-	
+
 	for i in 0 ..< world.count {
 		tw := &world.towers[i]
 		if tw.live_count == 0 {
 			continue
 		}
-
-		// Transform ray to local
 		local_ro := tower_to_local(tw, ro)
-		local_rd := tower_dir_to_local(tw, rd)
-
-		// Bound cylinder
-		max_r := SPIRAL_BASE_RADIUS + tw.core_height * SPIRAL_RADIUS_GROWTH + NODE_RADIUS
-		z0 := f32(-NODE_RADIUS)
-		z1 := tw.core_height + NODE_HEIGHT
-
-		// Clip ray to bound
-		t0, t1, clip_hit := tower_bound_clip(local_ro, local_rd, z0, z1, max_r, best)
+		local_rd := tower_dir_to_local(tw, rdn)
+		outer := tower_outer_radius(tw)
+		_, _, clip_hit := tower_bound_clip(local_ro, local_rd, -tw.node_radius, tw.core_height + tw.node_radius, outer, best)
 		if !clip_hit {
 			continue
 		}
 
-		// March and check core + nodes
-		steps := int((t1 - t0) / (NODE_RADIUS * 0.5)) + 1
-		steps = clamp_int(steps, 1, 128)
-		step_size := (t1 - t0) / f32(steps)
-
-		for step in 0 ..< steps {
-			t_sample := t0 + f32(step) * step_size
-			if t_sample >= best {
-				break
+		for rank in 0 ..< tw.live_count {
+			node := tower_node_at_rank(tw, rank)
+			if node == nil || !node.alive {
+				continue
 			}
-			p := local_ro + local_rd * t_sample
-
-			// Core hit?
-			if p.z >= 0 && p.z <= tw.core_height {
-				if p.x * p.x + p.y * p.y <= CORE_RADIUS * CORE_RADIUS {
-					if t_sample < best {
-						best = t_sample
-						found_tower = i
-						found_node = 0
-					}
-					break
-				}
+			center := tower_node_world_pos(tw, rank)
+			if d, ok := ray_sphere_hit(ro, rdn, center, tw.node_radius, best); ok {
+				best = d
+				found_tower = i
+				found_node = node.id
 			}
-
-			// Node hit?
-			wp := tower_to_world(tw, p)
-			if nid, _, node_hit := tower_node_at_point(tw, wp, 0); node_hit {
-				if t_sample < best {
-					best = t_sample
-					found_tower = i
-					found_node = nid
-				}
-				break
+		}
+		if tw.core_height > 0.01 {
+			if d, ok := ray_cylinder_hit(ro, rdn, tw.base, CORE_RADIUS, tw.core_height, best); ok {
+				best = d
+				found_tower = i
+				found_node = 0
 			}
 		}
 	}
@@ -426,7 +474,6 @@ tower_bound_clip :: proc(ro, rd: vec3, z0, z1, radius: f32, max_t: f32) -> (t0, 
 	enter := f32(0)
 	exit := max_t
 
-	// Z slab
 	if abs(rd.z) < 1e-6 {
 		if ro.z < z0 || ro.z > z1 {
 			return 0, 0, false
@@ -442,7 +489,6 @@ tower_bound_clip :: proc(ro, rd: vec3, z0, z1, radius: f32, max_t: f32) -> (t0, 
 		exit = min(exit, b)
 	}
 
-	// Cylinder
 	qa := rd.x * rd.x + rd.y * rd.y
 	qc := ro.x * ro.x + ro.y * ro.y - radius * radius
 	if qa < 1e-12 {
@@ -466,43 +512,36 @@ tower_bound_clip :: proc(ro, rd: vec3, z0, z1, radius: f32, max_t: f32) -> (t0, 
 	return max(enter, 0), exit, true
 }
 
-// Normal at world point (approximate from nearest node or core surface)
 tower_normal_world :: proc(world: ^Tower_World, id: Pylon_ID, wp: vec3) -> vec3 {
 	t := tower_get(world, id)
 	if t == nil {
 		return {0, 0, 1}
 	}
 	local := tower_to_local(t, wp)
-	
-	// Check core (thin cylinder)
-	if local.z >= 0 && local.z <= t.core_height {
-		if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
-			// Core: radial normal
-			n := norm_vec3(vec3{local.x, local.y, 0})
-			return tower_dir_to_world(t, n)
-		}
-	}
 
-	// Node: approximate radial
-	_, rank, ok := tower_node_at_point(t, wp, NODE_RADIUS)
+	_, rank, ok := tower_node_at_point(t, wp, t.node_radius)
 	if ok {
-		pos := tower_node_spiral_pos(rank, t.core_height)
+		pos := tower_node_spiral_pos(t, rank)
 		d := local - pos
 		if len2_vec3(d) > 0.01 {
 			return tower_dir_to_world(t, norm_vec3(d))
 		}
 	}
 
+	if local.z >= 0 && local.z <= t.core_height {
+		n := norm_vec3(vec3{local.x, local.y, 0})
+		if len2_vec3(n) > 0.01 {
+			return tower_dir_to_world(t, n)
+		}
+	}
 	return {0, 0, 1}
 }
 
-// Top of tower for minion rebuild landing
 tower_column_top_world :: proc(world: ^Tower_World, id: Pylon_ID, wp: vec3) -> (pos: vec3, ok: bool) {
 	t := tower_get(world, id)
 	if t == nil {
 		return {}, false
 	}
-	// Land on core top
 	local := tower_to_local(t, wp)
 	local.z = t.core_height
 	return tower_to_world(t, local), true
@@ -514,26 +553,16 @@ tower_at_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> (id: Pylon_ID
 		if t.live_count == 0 {
 			continue
 		}
-		dx := wp.x - t.base.x
-		dy := wp.y - t.base.y
-		max_r := SPIRAL_BASE_RADIUS + t.core_height * SPIRAL_RADIUS_GROWTH + NODE_RADIUS + pad
-		if dx * dx + dy * dy > max_r * max_r {
+		if !tower_in_bound(t, wp, pad) {
 			continue
 		}
-		if wp.z < t.base.z - pad || wp.z > t.base.z + t.core_height + NODE_HEIGHT + pad {
-			continue
-		}
-
 		local := tower_to_local(t, wp)
-		
-		// Core?
-		if local.z >= 0 && local.z <= t.core_height {
-			if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
+		core_r := CORE_RADIUS + pad
+		if local.z >= -pad && local.z <= t.core_height + pad {
+			if local.x * local.x + local.y * local.y <= core_r * core_r {
 				return Pylon_ID(i), true
 			}
 		}
-
-		// Node?
 		if _, _, hit := tower_node_at_point(t, wp, pad); hit {
 			return Pylon_ID(i), true
 		}
@@ -542,7 +571,7 @@ tower_at_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> (id: Pylon_ID
 }
 
 // ---------------------------------------------------------------------------
-// Mining: damage a node
+// Mining / rebuild
 
 tower_mine :: proc(
 	world:  ^Tower_World,
@@ -563,101 +592,160 @@ tower_mine :: proc(
 
 	local := tower_to_local(t, at)
 	damage := amount / max(t.tough, 0.01)
-	reach2 := max(radius, NODE_RADIUS * 1.2) * max(radius, NODE_RADIUS * 1.2)
-	removed := 0
-	killed := 0
+	reach := max(radius, t.node_radius * 1.15)
+	reach2 := reach * reach
 
-	// Damage nodes in splash radius (iterate by sorted rank)
-	for rank in 0 ..< t.live_count {
+	// Snapshot ranks, then damage by array index. Killing a node must not
+	// shorten the loop, and a re-sort must not move a neighbour under the
+	// splash mid-bite.
+	ranks := t.live_count
+	hit_idx: [MAX_NODES_PER_TOWER]int
+	n_hit := 0
+	for rank in 0 ..< ranks {
 		node := tower_node_at_rank(t, rank)
 		if node == nil || !node.alive {
 			continue
 		}
-		pos := tower_node_spiral_pos(rank, t.core_height)
+		pos := tower_node_spiral_pos(t, rank)
 		dx := local.x - pos.x
 		dy := local.y - pos.y
 		dz := local.z - pos.z
 		if dx * dx + dy * dy + dz * dz > reach2 {
 			continue
 		}
+		hit_idx[n_hit] = t.sorted_indices[rank]
+		n_hit += 1
+	}
 
+	if n_hit == 0 {
+		// Projectile and beam stops sit a hair short of the surface. Snap onto
+		// the nearest live node so a core graze or a near miss still bites.
+		fallback2 := (reach + t.node_radius) * (reach + t.node_radius)
+		best_i := -1
+		best_d2 := fallback2
+		for rank in 0 ..< ranks {
+			node := tower_node_at_rank(t, rank)
+			if node == nil || !node.alive {
+				continue
+			}
+			pos := tower_node_spiral_pos(t, rank)
+			dx := local.x - pos.x
+			dy := local.y - pos.y
+			dz := local.z - pos.z
+			d2 := dx * dx + dy * dy + dz * dz
+			if d2 < best_d2 {
+				best_d2 = d2
+				best_i = t.sorted_indices[rank]
+			}
+		}
+		if best_i >= 0 {
+			hit_idx[0] = best_i
+			n_hit = 1
+		}
+	}
+
+	if n_hit == 0 {
+		return 0, false
+	}
+
+	removed: f32 = 0
+	killed := 0
+	hit_n := vec3{0, 0, 1}
+	for i in 0 ..< n_hit {
+		idx := hit_idx[i]
+		if idx < 0 || idx >= t.max_count {
+			continue
+		}
+		node := &t.nodes[idx]
+		if !node.alive {
+			continue
+		}
 		before := node.hp
 		node.hp -= damage
 		if node.hp < 0 {
 			node.hp = 0
 		}
-		removed += int(before - node.hp)
-
-		if node.hp <= 0 && node.alive {
+		lost := before - node.hp
+		if lost <= 0 {
+			continue
+		}
+		removed += lost
+		ore += (lost / max(node.max_hp, 0.01)) * tower_node_ore(t)
+		if node.hp <= 0 {
 			node.alive = false
-			t.live_count -= 1
 			killed += 1
 		}
 	}
 
-	if removed == 0 {
+	if removed <= 0 {
 		return 0, false
-	}
-
-	// Re-sort after damage
-	if killed > 0 {
-		tower_resort_nodes(t)
 	}
 
 	t.last_miner = miner
 	t.last_bite = local
-	t.last_bite_n = {0, 0, 1}  // approximate
+	if _, rank, node_ok := tower_node_at_point(t, at, t.node_radius * 2); node_ok {
+		pos := tower_node_spiral_pos(t, rank)
+		d := local - pos
+		if len2_vec3(d) > 0.01 {
+			hit_n = norm_vec3(d)
+		}
+	}
+	t.last_bite_n = hit_n
+	tower_resort_nodes(t)
 	tower_recompute(t)
 	tower_touch(world, t)
-
-	// Ore yield: scale by nodes killed
-	ore = f32(killed) * ORE_PER_VOXEL * 4.0  // rough equiv to old voxel
+	_ = killed
 	return ore, true
 }
 
-// Build: add one node (minion donation)
-tower_build :: proc(world: ^Tower_World, id: Pylon_ID, at: vec3, radius: f32, amount: f32) -> (gained: int, ok: bool) {
+tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int) -> (gained: int, ok: bool) {
 	t := tower_get(world, id)
-	if t == nil {
+	if t == nil || count <= 0 {
 		return 0, false
 	}
-	if t.live_count >= t.max_count {
-		return 0, false
-	}
-
-	// Find first dead node slot
-	for i in 0 ..< t.max_count {
-		node := &t.nodes[i]
-		if node.alive {
-			continue
+	hp := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	for _ in 0 ..< count {
+		if t.live_count >= t.max_count {
+			break
 		}
-		// Resurrect node
-		node.id = t.next_node_id
-		t.next_node_id += 1
-		node.hp = t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
-		node.max_hp = node.hp
-		node.alive = true
-		node.ore = t.ore
-		node.team = t.owner
-		t.live_count += 1
-		tower_recompute(t)
-		tower_resort_nodes(t)
-		tower_touch(world, t)
-		return 1, true
+		placed := false
+		for i in 0 ..< t.max_count {
+			node := &t.nodes[i]
+			if node.alive {
+				continue
+			}
+			node.id = t.next_node_id
+			t.next_node_id += 1
+			if t.next_node_id == 0 {
+				t.next_node_id = 1
+			}
+			node.hp = hp
+			node.max_hp = hp
+			node.alive = true
+			gained += 1
+			placed = true
+			break
+		}
+		if !placed {
+			break
+		}
 	}
-
-	return 0, false
+	if gained == 0 {
+		return 0, false
+	}
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	tower_touch(world, t)
+	return gained, true
 }
 
-// Build point for minion landing
 tower_build_point :: proc(world: ^Tower_World, id: Pylon_ID, turn: int) -> vec3 {
 	t := tower_get(world, id)
 	if t == nil {
 		return {}
 	}
-	// Land on top of core
 	z := t.core_height
-	a := f32(turn) * 2.39996
+	a := f32(turn) * SPIRAL_GOLDEN_ANGLE
 	r := CORE_RADIUS * 0.8
 	return {math.cos(a) * r, math.sin(a) * r, z}
 }
@@ -675,51 +763,71 @@ tower_reserve :: proc(world: ^Tower_World, id: Pylon_ID) -> f32 {
 	if t == nil {
 		return 0
 	}
-	return f32(t.live_count) * ORE_PER_VOXEL * 4.0
+	return f32(t.live_count) * tower_node_ore(t)
 }
 
 // ---------------------------------------------------------------------------
-// Wire: pack/unpack for replication
+// Wire
 
-// Pack: quantize node hp to u8 (0-255 range)
 tower_pack_nodes :: proc(t: ^Tower, dst: []u8) -> int {
-	if len(dst) < t.max_count {
+	if len(dst) < MAX_NODES_PER_TOWER {
 		return 0
 	}
-	n := 0
+	for i in 0 ..< MAX_NODES_PER_TOWER {
+		dst[i] = 0
+	}
 	for i in 0 ..< t.max_count {
 		node := &t.nodes[i]
-		if !node.alive {
-			dst[n] = 0
-			n += 1
+		if !node.alive || node.hp <= 0 {
 			continue
 		}
-		q := u8(clampf(node.hp / node.max_hp * 255, 0, 255))
-		dst[n] = q
-		n += 1
+		q := u8(clampf(node.hp / max(node.max_hp, 0.01) * 255, 1, 255))
+		dst[i] = q
 	}
-	return n
+	return MAX_NODES_PER_TOWER
 }
 
 tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	if len(src) < t.max_count {
 		return
 	}
-	t.live_count = 0
+	hp_max := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	changed := false
 	for i in 0 ..< t.max_count {
 		node := &t.nodes[i]
+		if node.max_hp <= 0 {
+			node.max_hp = hp_max
+		}
+		if node.id == 0 {
+			node.id = Node_ID(i + 1)
+		}
 		q := src[i]
 		if q == 0 {
+			if node.alive || node.hp != 0 {
+				changed = true
+			}
 			node.alive = false
 			node.hp = 0
 			continue
 		}
+		hp := f32(q) / 255.0 * node.max_hp
+		if !node.alive || abs(node.hp - hp) > 0.02 {
+			changed = true
+		}
 		node.alive = true
-		node.hp = f32(q) / 255.0 * node.max_hp
-		t.live_count += 1
+		node.hp = hp
 	}
-	tower_recompute(t)
+	for i in t.max_count ..< MAX_NODES_PER_TOWER {
+		if t.nodes[i].alive {
+			changed = true
+		}
+		t.nodes[i] = {}
+	}
 	tower_resort_nodes(t)
+	tower_recompute(t)
+	if changed {
+		tower_bump(t)
+	}
 }
 
 tower_collect_dirty :: proc(world: ^Tower_World, dst: []Pylon_ID) -> int {
@@ -746,7 +854,89 @@ tower_clear_dirty :: proc(world: ^Tower_World, ids: []Pylon_ID) {
 }
 
 // ---------------------------------------------------------------------------
-// Tick: ore chunk payouts
+// Occupancy paint (client visual only)
+
+@(private = "file")
+tower_paint_add :: proc(dst: []u8, x, y, z: int, occ: f32) {
+	if x < 0 || x >= PYLON_NX || y < 0 || y >= PYLON_NY || z < 0 || z >= PYLON_NZ {
+		return
+	}
+	v := u8(clampf(occ, 0, 1) * 255.0 + 0.5)
+	i := ore_index(x, y, z)
+	if v > dst[i] {
+		dst[i] = v
+	}
+}
+
+@(private = "file")
+tower_paint_span :: proc(c: f32, r: f32, half: f32, n: int) -> (lo, hi: int) {
+	lo = int(math.floor((c - r + half) / PYLON_CELL))
+	hi = int(math.floor((c + r + half) / PYLON_CELL))
+	return clamp_int(lo, 0, n - 1), clamp_int(hi, 0, n - 1)
+}
+
+tower_paint_occupancy :: proc(t: ^Tower, dst: []u8) {
+	if len(dst) < PYLON_VOX {
+		return
+	}
+	for i in 0 ..< PYLON_VOX {
+		dst[i] = 0
+	}
+	if t.live_count <= 0 {
+		return
+	}
+
+	// Finite cylinder SDF: occ 0.5 at the surface so the existing occupancy
+	// marcher finds the same iso it did for voxel columns.
+	core_r := CORE_RADIUS
+	h := t.core_height
+	x0, x1 := tower_paint_span(0, core_r + PYLON_CELL, PYLON_HALF_X, PYLON_NX)
+	y0, y1 := tower_paint_span(0, core_r + PYLON_CELL, PYLON_HALF_Y, PYLON_NY)
+	z1 := clamp_int(int(math.ceil((h + PYLON_CELL) / PYLON_CELL)), 0, PYLON_NZ - 1)
+	for z in 0 ..= z1 {
+		for y in y0 ..= y1 {
+			for x in x0 ..= x1 {
+				c := ore_voxel_center(x, y, z)
+				radial := math.sqrt(c.x * c.x + c.y * c.y)
+				d := max(radial - core_r, max(-c.z, c.z - h))
+				occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
+				if occ > 0 {
+					tower_paint_add(dst, x, y, z, occ)
+				}
+			}
+		}
+	}
+
+	for rank in 0 ..< t.live_count {
+		node := tower_node_at_rank(t, rank)
+		if node == nil || !node.alive {
+			continue
+		}
+		p := tower_node_spiral_pos(t, rank)
+		frac := clampf(node.hp / max(node.max_hp, 0.01), 0, 1)
+		r := t.node_radius * (0.62 + 0.38 * frac)
+		span := r + PYLON_CELL
+		nx0, nx1 := tower_paint_span(p.x, span, PYLON_HALF_X, PYLON_NX)
+		ny0, ny1 := tower_paint_span(p.y, span, PYLON_HALF_Y, PYLON_NY)
+		nz0 := clamp_int(int(math.floor((p.z - span) / PYLON_CELL)), 0, PYLON_NZ - 1)
+		nz1 := clamp_int(int(math.floor((p.z + span) / PYLON_CELL)), 0, PYLON_NZ - 1)
+		for z in nz0 ..= nz1 {
+			for y in ny0 ..= ny1 {
+				for x in nx0 ..= nx1 {
+					c := ore_voxel_center(x, y, z)
+					d := len_vec3(c - p) - r
+					occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
+					if occ > 0 {
+						tower_paint_add(dst, x, y, z, occ)
+					}
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tick
 
 tower_world_tick :: proc(world: ^Tower_World, chunks: ^Ore_Chunk_World, dt: f32) {
 	_ = dt
@@ -757,13 +947,92 @@ tower_world_tick :: proc(world: ^Tower_World, chunks: ^Ore_Chunk_World, dt: f32)
 		}
 		for t.ore_debt >= ORE_PER_CHUNK {
 			t.ore_debt -= ORE_PER_CHUNK
-			// Spawn chunk at tower base
 			local := t.last_bite
 			if len2_vec3(local) < 0.01 {
-				local = {SPIRAL_BASE_RADIUS, 0, t.core_height * 0.5}
+				local = {t.spiral_radius, 0, t.core_height * 0.5}
 			}
 			wp := tower_to_world(t, local)
 			ore_chunk_spawn_loose(chunks, t.ore, wp + vec3{0, 0, 0.5}, ORE_PER_CHUNK)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Self-test
+
+@(private = "file")
+tower_selftest_ran: bool
+
+tower_selftest :: proc() {
+	if tower_selftest_ran {
+		return
+	}
+	tower_selftest_ran = true
+
+	world: Tower_World
+	world.count = 1
+	t := &world.towers[0]
+	t.pylon_id = 0
+	t.owner = .None
+	t.ore = .Gold
+	t.tough = 1
+	t.max_count = 8
+	t.design_height = 8
+	t.design_radius = 2.4
+	t.node_radius = 1.15
+	t.spiral_radius = 1.32
+	t.stack_step = 1
+	tower_build_full(t)
+	assert(t.live_count == 8, "full tower live_count")
+	seen: [MAX_NODES_PER_TOWER]bool
+	for rank in 0 ..< t.live_count {
+		idx := t.sorted_indices[rank]
+		assert(idx >= 0 && idx < t.max_count, "sorted index in range")
+		assert(!seen[idx], "sorted indices unique")
+		seen[idx] = true
+		assert(t.nodes[idx].alive, "sorted node alive")
+	}
+
+	// Fractional chip must register. The old int(hp-delta) path dropped every
+	// 0.60 bite and never dirtied the tower.
+	pos := tower_node_world_pos(t, 0)
+	ore, ok := tower_mine(&world, 0, pos, t.node_radius, 0.60, 1, .Alpha)
+	assert(ok, "fractional chip mines")
+	assert(ore > 0, "chip yields ore")
+	assert(t.live_count == 8, "chip does not kill")
+	assert(world.dirty[0], "chip dirties wire")
+
+	// Kill splash must visit every overlapping node even as they die.
+	t.tough = 0.01
+	_, ok = tower_mine(&world, 0, pos, t.node_radius * 3, 50, 1, .Alpha)
+	assert(ok, "kill splash mines")
+	assert(t.live_count < 8, "kill splash reduces live_count")
+	for rank in 0 ..< t.live_count {
+		node := tower_node_at_rank(t, rank)
+		assert(node != nil && node.alive, "post-kill ranks are live")
+		if rank > 0 {
+			prev := tower_node_at_rank(t, rank - 1)
+			assert(prev.hp >= node.hp, "hp desc after resort")
+		}
+	}
+
+	wire: [MAX_NODES_PER_TOWER]u8
+	n := tower_pack_nodes(t, wire[:])
+	assert(n == MAX_NODES_PER_TOWER, "pack fills the wire slot")
+	alive := t.live_count
+	tower_unpack_nodes(t, wire[:])
+	assert(t.live_count == alive, "unpack preserves live_count")
+
+	before := t.live_count
+	gained, built := tower_build(&world, 0, 2)
+	assert(built, "donate builds")
+	assert(gained > 0, "donate gained")
+	assert(t.live_count == min(before + gained, t.max_count), "donate live_count")
+
+	// Analytic ray from outside hits the node we aimed at.
+	center := tower_node_world_pos(t, 0)
+	ro := center + vec3{6, 0, 0}
+	rd := norm_vec3(center - ro)
+	_, _, _, hit := tower_raycast(&world, ro, rd, 20)
+	assert(hit, "raycast hits a standing tower")
 }

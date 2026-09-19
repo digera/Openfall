@@ -165,7 +165,7 @@ Minion_World :: struct {
 	wave_number: int,
 }
 
-// The live pool. Reachable the way `g_pylons` is, because the damage paths that
+// The live pool. Reachable the way `g_towers` is, because the damage paths that
 // have to find minions -- projectile splash, the blast that carves rock -- are
 // shared with the client and have no server handle to thread through. Nil on a
 // client, which is what makes those paths no-ops there.
@@ -812,7 +812,7 @@ minions_tick :: proc(
 		} else if m.mode == .Rebuild && m.has_pylon {
 			t := tower_get(towers, m.objective)
 			if t != nil {
-				reach := CORE_RADIUS + NODE_RADIUS + MINION_BUILD_REACH
+				reach := t.design_radius + MINION_BUILD_REACH
 				if len2_vec3(vec3{t.base.x - m.pos.x, t.base.y - m.pos.y, 0}) <= reach * reach {
 					minion_donate(world, towers, match, m, i)
 					continue
@@ -845,9 +845,7 @@ minion_donate :: proc(world: ^Minion_World, towers: ^Tower_World, match: ^Match,
 		minion_remove(world, slot)
 		return
 	}
-	local := tower_build_point(towers, m.objective, world.wave_number + slot)
-	at := tower_to_world(t, local)
-	gained, ok := tower_build(towers, m.objective, at, max(m.build_r, MINION_BUILD_RADIUS), 1.0)
+	gained, ok := tower_build(towers, m.objective, tower_donate_count(m.build_r))
 	if ok && gained > 0 && t.owner == .None {
 		match_credit_centre(match, m.team, gained)
 	}

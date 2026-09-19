@@ -119,6 +119,28 @@ ray_cylinder_hit :: proc(origin, dir, base: vec3, radius, height, max_dist: f32)
 	return t_enter, true
 }
 
+// Ray against a sphere. `dir` must be unit length; a ray that starts inside
+// reports a distance of zero.
+ray_sphere_hit :: proc(origin, dir, center: vec3, radius, max_dist: f32) -> (dist: f32, hit: bool) {
+	oc := origin - center
+	b := oc.x * dir.x + oc.y * dir.y + oc.z * dir.z
+	c := oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - radius * radius
+	disc := b * b - c
+	if disc < 0 {
+		return 0, false
+	}
+	root := math.sqrt(disc)
+	t0 := -b - root
+	t1 := -b + root
+	if t1 < 0 || t0 >= max_dist {
+		return 0, false
+	}
+	if t0 < 0 {
+		return 0, true
+	}
+	return t0, true
+}
+
 hash_u32 :: proc(n: u32) -> u32 {
 	x := n
 	x = (x ~ (x >> 16)) * 0x7FEB_352D
