@@ -161,10 +161,22 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 // ---------------------------------------------------------------------------
 // Harvest + Carry
 
-// Simple carry rule: one chunk at a time. Multiple chunks stack into one carry slot.
-ORE_CARRY_LIMIT :: f32(999.0)  // effectively no limit; chunks merge
+// Carry capacity: shared across all ore kinds
+CARRY_CAPACITY_MAX :: f32(20.0)
 
-// Players walking over settled ore pick it up into personal carry.
+// Movement slow from carrying ore: 100% at 0 units, 60% at full (20 units)
+CARRY_SPEED_MIN :: f32(0.60)  // minimum speed multiplier at full load
+
+// Helper: total amount carried across all kinds
+carry_total :: proc(carry: [ORE_COUNT]f32) -> f32 {
+	sum := f32(0)
+	for amt in carry {
+		sum += amt
+	}
+	return sum
+}
+
+// Players walking over settled ore pick it up into personal carry (multi-kind, shared 20 cap).
 mining_harvest_tick :: proc(
 	chunks: ^Ore_Chunk_World,
 	world:  ^Entity_World,
@@ -186,22 +198,36 @@ mining_harvest_tick :: proc(
 			continue
 		}
 		c := &chunks.chunks[index]
-		// If carrying different ore, cannot pick up
-		if char.carrying_ore != .None && char.carrying_ore != c.ore {
+		
+		// Check capacity
+		total := carry_total(char.carrying_ore)
+		if total >= CARRY_CAPACITY_MAX {
+			continue  // at cap, cannot pick up
+		}
+		
+		// Partial or full pickup
+		space := CARRY_CAPACITY_MAX - total
+		pickup := min(c.amount, space)
+		
+		slot := ore_index_of(c.ore)
+		if slot < 0 {
 			continue
 		}
-		// If at limit, cannot pick up more
-		if char.carrying_ore_amount >= ORE_CARRY_LIMIT {
-			continue
-		}
-		// Pick up into carry
-		pickup := min(c.amount, ORE_CARRY_LIMIT - char.carrying_ore_amount)
-		char.carrying_ore = c.ore
-		char.carrying_ore_amount += pickup
+		
+		char.carrying_ore[slot] += pickup
+		
 		if SERVER_VERBOSE {
-			server_log("[Ore] %d picked up %.0f %s (now carrying %.0f)", id, pickup, ore_name(c.ore), char.carrying_ore_amount)
+			new_total := carry_total(char.carrying_ore)
+			server_log("[Ore] %d picked up %.0f %s (now carrying %.0f / %.0f)", 
+				id, pickup, ore_name(c.ore), new_total, CARRY_CAPACITY_MAX)
 		}
-		ore_chunk_consume(chunks, index)
+		
+		// Consume chunk if fully picked up, else reduce amount
+		if pickup >= c.amount {
+			ore_chunk_consume(chunks, index)
+		} else {
+			c.amount -= pickup
+		}
 	}
 }
 
@@ -219,20 +245,25 @@ mining_dump_tick :: proc(world: ^Entity_World, match: ^Match, dt: f32) {
 			continue
 		}
 		char := &world.characters[i]
-		if char.carrying_ore == .None || char.carrying_ore_amount <= 0 {
+		total := carry_total(char.carrying_ore)
+		if total <= 0 {
 			continue
 		}
 		// Check if inside team dump zone
 		dump_center := team_dump_position(team)
 		d := vec3{char.pos.x - dump_center.x, char.pos.y - dump_center.y, 0}
 		if len2_vec3(d) <= DUMP_ZONE_RADIUS * DUMP_ZONE_RADIUS {
-			// Bank to team wallet
-			match_credit_ore(match, team, char.carrying_ore, char.carrying_ore_amount)
-			if SERVER_VERBOSE {
-				server_log("[Ore] %d banked %.0f %s", id, char.carrying_ore_amount, ore_name(char.carrying_ore))
+			// Bank all carried ore to team wallet
+			for k in 0..<ORE_COUNT {
+				if char.carrying_ore[k] > 0 {
+					kind := ore_from_index(k)
+					match_credit_ore(match, team, kind, char.carrying_ore[k])
+					if SERVER_VERBOSE {
+						server_log("[Ore] %d banked %.0f %s", id, char.carrying_ore[k], ore_name(kind))
+					}
+					char.carrying_ore[k] = 0
+				}
 			}
-			char.carrying_ore = .None
-			char.carrying_ore_amount = 0
 		}
 	}
 }

@@ -22,13 +22,17 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			// never saw, or three people at once is counted here exactly once.
 			combat_record_death(entity_world, Entity_ID(i))
 			// Drop carried ore on death
-			if char.carrying_ore != .None && char.carrying_ore_amount > 0 && g_ore_chunks != nil {
-				ore_chunk_spawn_loose(g_ore_chunks, char.carrying_ore, char.pos + vec3{0, 0, 0.35}, char.carrying_ore_amount)
-				if SERVER_VERBOSE {
-					fmt.printf("[Death] Entity %d dropped %.0f %s\n", i, char.carrying_ore_amount, ore_name(char.carrying_ore))
+			if g_ore_chunks != nil {
+				for k in 0..<ORE_COUNT {
+					if char.carrying_ore[k] > 0 {
+						kind := ore_from_index(k)
+						ore_chunk_spawn_loose(g_ore_chunks, kind, char.pos + vec3{0, 0, 0.35}, char.carrying_ore[k])
+						if SERVER_VERBOSE {
+							fmt.printf("[Death] Entity %d dropped %.0f %s\n", i, char.carrying_ore[k], ore_name(kind))
+						}
+						char.carrying_ore[k] = 0
+					}
 				}
-				char.carrying_ore = .None
-				char.carrying_ore_amount = 0
 			}
 			if SERVER_VERBOSE {
 				fmt.printf("[Death] Entity %d died\n", i)
@@ -58,8 +62,7 @@ entity_respawn :: proc(char: ^Character_State, team: Team_ID, slot: int) {
 	char.slow_ticks = 0
 	char.dead = false
 	char.respawn_timer = 0
-	char.carrying_ore = .None
-	char.carrying_ore_amount = 0
+	char.carrying_ore = {}
 	// Face the center (look is client-authoritative, so this only sticks for bots)
 	if team != .None {
 		char.yaw = wrap_angle(team_angle(team) + 3.14159265)

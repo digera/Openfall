@@ -742,8 +742,7 @@ server_send_snapshots :: proc(server: ^Server) {
 				slow_ticks    = char.slow_ticks,
 				channel_spell = spell_state.channel_spell,
 				channel_frac  = channel_frac,
-				carrying_ore        = char.carrying_ore,
-				carrying_ore_amount = char.carrying_ore_amount,
+				carrying_ore  = char.carrying_ore,
 			}
 		}
 		snapshot.entity_count = u8(take)

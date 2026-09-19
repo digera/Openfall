@@ -124,8 +124,8 @@ Snapshot_Entity :: struct {
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
 
-	carrying_ore:        Ore_Kind,
-	carrying_ore_amount: f32,
+	// Ore carry: per-kind amounts (4 kinds, 4 bytes each = 16 bytes)
+	carrying_ore: [ORE_COUNT]f32,
 }
 
 Snapshot_Projectile :: struct {
@@ -727,8 +727,8 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
 SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 8   // version+type, tick, ack, eight counts
-SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 1 + 4
-                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, ore, ore_amt
+SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 16
+                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, carry[4]
 // Projectiles used to carry full f32 position and velocity, which they never
 // needed: the server owns them outright and nobody reconciles a prediction
 // against one. Centimetres and cm/s inside the arena are visually identical and
@@ -809,8 +809,9 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
 		bw_u8(&w, u8(e.channel_spell))
 		bw_u8(&w, quant_u8(e.channel_frac, 255))
-		bw_u8(&w, u8(e.carrying_ore))
-		bw_f32(&w, e.carrying_ore_amount)
+		for k in 0..<ORE_COUNT {
+			bw_f32(&w, e.carrying_ore[k])
+		}
 	}
 
 	// A minion costs eleven bytes against a player's forty. Position drops to
@@ -937,8 +938,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.slow_ticks = int(br_u8(&r))
 		e.channel_spell = spell_id_from_wire(br_u8(&r))
 		e.channel_frac = f32(br_u8(&r)) / 255.0
-		e.carrying_ore = ore_from_wire(br_u8(&r))
-		e.carrying_ore_amount = br_f32(&r)
+		for k in 0..<ORE_COUNT {
+			e.carrying_ore[k] = br_f32(&r)
+		}
 		if !r.ok {
 			return {}, false
 		}

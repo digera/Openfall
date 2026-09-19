@@ -81,17 +81,21 @@ instantly on pickup.** Players must carry ore back to their team's dump zone to
 credit it to the team wallet.
 
 - **Pickup:** Walking over a settled chunk picks it up into personal carry.
-  Carry is single-kind: you cannot pick up a different ore while carrying.
-  Multiple chunks of the same kind stack (up to `ORE_CARRY_LIMIT`).
+  Carry is **multi-kind** with a **shared 20-unit cap** (`CARRY_CAPACITY_MAX`).
+  Partial pickup: if a chunk exceeds remaining space, only the portion that fits
+  is picked up; the remainder stays on the ground.
+- **Movement slow:** Carrying ore slows movement linearly. At 0 units: 100% speed.
+  At 20 units (full): 60% speed (`CARRY_SPEED_MIN`). Applies to walk and sprint,
+  server-authoritative (affects bots and players).
 - **Dump zone:** An 8 m radius apron at each team base (centered at
-  `WORLD_SPAWN_R + 2.0`). Standing in your team's dump while carrying banks to
-  the team wallet. Enemy dumps do nothing.
+  `WORLD_SPAWN_R + 2.0`). Standing in your team's dump while carrying banks all
+  carried ore to the team wallet. Enemy dumps do nothing.
 - **Drop on death:** Carried ore spawns as loose chunks at death position,
   reclaimable by anyone. No silent bank on death.
 - **Minions:** Standard lane fodder still drop ore on death (`MINION_ORE_DROP`)
   as before, which must also be retrieved.
 
-The carry state is replicated in snapshots (`carrying_ore`, `carrying_ore_amount`)
+The carry state is replicated in snapshots (per-kind array, 16 bytes = 4 × f32)
 so remotes and spectators see who is hauling what. Respawn clears carry.
 
 ## Minion rebuild
@@ -112,8 +116,9 @@ Quantized node HP, 32 bytes per tower, 0 = dead. Alive nodes never pack as 0
 on smaller towers are zero. Snapshot still carries at most two dirty towers;
 GameState carries all seven. `SNAPSHOT_WORST_BYTES` stays under MTU.
 
-Entity snapshots now include carry state: 1 byte for ore kind + 4 bytes for
-amount (5 bytes per entity). With 15 entities max, snapshot overhead is ~75 bytes.
+Entity snapshots now include carry state: per-kind array (4 × f32 = 16 bytes per
+entity). With 15 entities max, snapshot overhead is ~240 bytes. Byte budget
+updated: `SNAPSHOT_ENTITY_BYTES` = 56 (was 40 before carry, 45 after single-kind).
 
 The client unpacks HP by array index. Collision and drawing use those same
 slots: the GPU gets max_count, spiral radius, stack step, a 32-bit alive

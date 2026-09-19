@@ -1116,11 +1116,29 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	}
 
 	// --- Carry (bottom right) --------------------------------------------------
-	if local.carrying_ore != .None && local.carrying_ore_amount > 0 {
-		carry_text := fmt.tprintf("%s %.0f", ore_name(local.carrying_ore), local.carrying_ore_amount)
+	carry_total := f32(0)
+	for amt in local.carrying_ore {
+		carry_total += amt
+	}
+	if carry_total > 0 {
+		// Find dominant kind (for color)
+		dominant_kind := Ore_Kind.None
+		dominant_amt := f32(0)
+		for k in 0..<ORE_COUNT {
+			if local.carrying_ore[k] > dominant_amt {
+				dominant_amt = local.carrying_ore[k]
+				dominant_kind = ore_from_index(k)
+			}
+		}
+		
+		carry_text := fmt.tprintf("%.0f/%.0f", carry_total, CARRY_CAPACITY_MAX)
 		carry_len := f32(len(carry_text))
 		sdtx.pos(cols - carry_len - 2, rows - 2)
-		sdtx_color(ore_color(local.carrying_ore))
+		if dominant_kind != .None {
+			sdtx_color(ore_color(dominant_kind))
+		} else {
+			sdtx.color3f(0.8, 0.8, 0.8)
+		}
 		sdtx.puts(carry_text)
 	}
 
