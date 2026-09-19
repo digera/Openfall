@@ -159,17 +159,12 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 }
 
 // ---------------------------------------------------------------------------
-// Harvest
+// Harvest + Carry
 
-// Players walking over settled ore pick it up, and it is banked to their team
-// the instant they touch it.
-//
-// There is deliberately no carrying. A held lump would mean a personal
-// inventory, a drop on death and a second scramble over the corpse, on top of
-// the scramble over the rock that is already the contest here: the wallets are
-// the team's, so whoever reaches the lump first has already decided where it
-// goes. Retrieving your own ore after a wave dies is still the whole errand --
-// it is just won by getting there, not by getting back.
+// Simple carry rule: one chunk at a time. Multiple chunks stack into one carry slot.
+ORE_CARRY_LIMIT :: f32(999.0)  // effectively no limit; chunks merge
+
+// Players walking over settled ore pick it up into personal carry.
 mining_harvest_tick :: proc(
 	chunks: ^Ore_Chunk_World,
 	world:  ^Entity_World,
@@ -184,20 +179,73 @@ mining_harvest_tick :: proc(
 		if team == .None || team == .Spectator {
 			continue
 		}
-		// Reach from the body's middle, not its feet, so ore resting against a
-		// step is still collectable.
-		at := world.characters[i].pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		char := &world.characters[i]
+		at := char.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
 		index, ok := ore_chunk_find_pickup(chunks, at)
 		if !ok {
 			continue
 		}
 		c := &chunks.chunks[index]
-		match_credit_ore(match, team, c.ore, c.amount)
+		// If carrying different ore, cannot pick up
+		if char.carrying_ore != .None && char.carrying_ore != c.ore {
+			continue
+		}
+		// If at limit, cannot pick up more
+		if char.carrying_ore_amount >= ORE_CARRY_LIMIT {
+			continue
+		}
+		// Pick up into carry
+		pickup := min(c.amount, ORE_CARRY_LIMIT - char.carrying_ore_amount)
+		char.carrying_ore = c.ore
+		char.carrying_ore_amount += pickup
 		if SERVER_VERBOSE {
-			server_log("[Ore] %d collected %.0f %s", id, c.amount, ore_name(c.ore))
+			server_log("[Ore] %d picked up %.0f %s (now carrying %.0f)", id, pickup, ore_name(c.ore), char.carrying_ore_amount)
 		}
 		ore_chunk_consume(chunks, index)
 	}
+}
+
+// Dump zone: standing in your team's base banks carried ore to wallet.
+DUMP_ZONE_RADIUS :: f32(8.0)  // dump apron around base center
+
+mining_dump_tick :: proc(world: ^Entity_World, match: ^Match, dt: f32) {
+	for i in 1 ..< MAX_ENTITIES {
+		id := Entity_ID(i)
+		if !entity_alive(world, id) {
+			continue
+		}
+		team := world.teams[i]
+		if team == .None || team == .Spectator {
+			continue
+		}
+		char := &world.characters[i]
+		if char.carrying_ore == .None || char.carrying_ore_amount <= 0 {
+			continue
+		}
+		// Check if inside team dump zone
+		dump_center := team_dump_position(team)
+		d := vec3{char.pos.x - dump_center.x, char.pos.y - dump_center.y, 0}
+		if len2_vec3(d) <= DUMP_ZONE_RADIUS * DUMP_ZONE_RADIUS {
+			// Bank to team wallet
+			match_credit_ore(match, team, char.carrying_ore, char.carrying_ore_amount)
+			if SERVER_VERBOSE {
+				server_log("[Ore] %d banked %.0f %s", id, char.carrying_ore_amount, ore_name(char.carrying_ore))
+			}
+			char.carrying_ore = .None
+			char.carrying_ore_amount = 0
+		}
+	}
+}
+
+// Team dump position: at the back of each base
+team_dump_position :: proc(team: Team_ID) -> vec3 {
+	if team == .None || team == .Spectator {
+		return {0, 0, WORLD_FLOOR_Z}
+	}
+	d := team_dir(team)
+	p := d * (WORLD_SPAWN_R + 2.0)  // slightly behind spawn line
+	p.z = WORLD_FLOOR_Z
+	return p
 }
 
 mining_report :: proc(towers: ^Tower_World) {

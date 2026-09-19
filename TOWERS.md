@@ -74,6 +74,26 @@ mid-morph. That 0..1 is the morph parameter SDF welding will drive when the
 analytic spheres become a deformed volume: smear along the same from-to
 path instead of rigid-body interpolating the spheres.
 
+## Ore retrieval (protocol v15)
+
+Mining a tower spawns ore chunks on the ground. **Chunks are no longer banked
+instantly on pickup.** Players must carry ore back to their team's dump zone to
+credit it to the team wallet.
+
+- **Pickup:** Walking over a settled chunk picks it up into personal carry.
+  Carry is single-kind: you cannot pick up a different ore while carrying.
+  Multiple chunks of the same kind stack (up to `ORE_CARRY_LIMIT`).
+- **Dump zone:** An 8 m radius apron at each team base (centered at
+  `WORLD_SPAWN_R + 2.0`). Standing in your team's dump while carrying banks to
+  the team wallet. Enemy dumps do nothing.
+- **Drop on death:** Carried ore spawns as loose chunks at death position,
+  reclaimable by anyone. No silent bank on death.
+- **Minions:** Standard lane fodder still drop ore on death (`MINION_ORE_DROP`)
+  as before, which must also be retrieved.
+
+The carry state is replicated in snapshots (`carrying_ore`, `carrying_ore_amount`)
+so remotes and spectators see who is hauling what. Respawn clears carry.
+
 ## Minion rebuild
 
 One hop restores `TOWER_DONATE_BASE` (2) nodes, plus up to
@@ -85,12 +105,15 @@ jackpot still cannot rebuild the whole tower in a single hop.
 Centre scoring still counts donated nodes. First team to have laid most of
 the gold silhouette when it closes (`CENTRE_CLAIM_FRAC`) wins.
 
-## Wire (protocol v14)
+## Wire (protocol v15)
 
 Quantized node HP, 32 bytes per tower, 0 = dead. Alive nodes never pack as 0
 (minimum 1) so a sliver of HP does not look dead on the client. Unused slots
 on smaller towers are zero. Snapshot still carries at most two dirty towers;
 GameState carries all seven. `SNAPSHOT_WORST_BYTES` stays under MTU.
+
+Entity snapshots now include carry state: 1 byte for ore kind + 4 bytes for
+amount (5 bytes per entity). With 15 entities max, snapshot overhead is ~75 bytes.
 
 The client unpacks HP by array index. Collision and drawing use those same
 slots: the GPU gets max_count, spiral radius, stack step, a 32-bit alive

@@ -26,6 +26,9 @@ Character_State :: struct {
 
 	dead:           bool,
 	respawn_timer:  f32,
+
+	carrying_ore:        Ore_Kind,
+	carrying_ore_amount: f32,
 }
 
 // Input for one entity for one tick. Look angles are absolute so a dropped

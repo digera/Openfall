@@ -170,6 +170,7 @@ server_tick :: proc(server: ^Server) {
 	ore_chunk_tick(&server.chunks, SIMULATION_DT)
 	if live {
 		mining_harvest_tick(&server.chunks, &server.world, &server.match)
+		mining_dump_tick(&server.world, &server.match, SIMULATION_DT)
 	}
 
 	// The waves run after mining, so ore banked this tick is in the wallet the
@@ -741,6 +742,8 @@ server_send_snapshots :: proc(server: ^Server) {
 				slow_ticks    = char.slow_ticks,
 				channel_spell = spell_state.channel_spell,
 				channel_frac  = channel_frac,
+				carrying_ore        = char.carrying_ore,
+				carrying_ore_amount = char.carrying_ore_amount,
 			}
 		}
 		snapshot.entity_count = u8(take)

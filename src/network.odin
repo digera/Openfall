@@ -34,7 +34,7 @@ import "core:strconv"
 // carries up to two pylons that changed this tick so cover you are standing
 // in does not wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(14)  // tower shield nodes replace occupancy grid
+PROTOCOL_VERSION :: u8(15)  // ore carry + dump zones
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -123,6 +123,9 @@ Snapshot_Entity :: struct {
 	// charge for as long as it is lit.
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
+
+	carrying_ore:        Ore_Kind,
+	carrying_ore_amount: f32,
 }
 
 Snapshot_Projectile :: struct {
@@ -806,6 +809,8 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
 		bw_u8(&w, u8(e.channel_spell))
 		bw_u8(&w, quant_u8(e.channel_frac, 255))
+		bw_u8(&w, u8(e.carrying_ore))
+		bw_f32(&w, e.carrying_ore_amount)
 	}
 
 	// A minion costs eleven bytes against a player's forty. Position drops to
@@ -932,6 +937,8 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.slow_ticks = int(br_u8(&r))
 		e.channel_spell = spell_id_from_wire(br_u8(&r))
 		e.channel_frac = f32(br_u8(&r)) / 255.0
+		e.carrying_ore = ore_from_wire(br_u8(&r))
+		e.carrying_ore_amount = br_f32(&r)
 		if !r.ok {
 			return {}, false
 		}

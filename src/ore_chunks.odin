@@ -52,9 +52,12 @@ Ore_Chunk_World :: struct {
 	next_id: Ore_Chunk_ID,
 }
 
+g_ore_chunks: ^Ore_Chunk_World
+
 ore_chunk_world_init :: proc(world: ^Ore_Chunk_World) {
 	world^ = {}
 	world.next_id = 1
+	g_ore_chunks = world
 }
 
 ore_chunk_world_reset :: proc(world: ^Ore_Chunk_World) {
