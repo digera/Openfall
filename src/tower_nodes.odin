@@ -163,6 +163,7 @@ tower_build_full :: proc(t: ^Tower) {
 		t.live_count += 1
 	}
 	tower_recompute(t)
+	tower_resort_nodes(t)  // Critical: populate sorted_indices after building nodes
 }
 
 tower_recompute :: proc(t: ^Tower) {
