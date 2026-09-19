@@ -65,6 +65,11 @@ Game_Client :: struct {
 	// Menu state
 	menu_selected:  int, // selected menu item (0-based)
 	is_spectating:  bool, // spectator mode
+
+	// Aim lock is latched rather than re-tested every frame: it takes a
+	// healthy bar to engage but runs until the bar is dry, so a lock does not
+	// chatter on and off while stamina hovers around the threshold.
+	aim_locked:     bool,
 }
 
 game_client: Game_Client
@@ -368,6 +373,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 			_, _ = input_consume_look()
 		}
 		gc.move_input = {}
+		gc.aim_locked = false
 		_ = input_consume_jump()
 		// Clear slot presses
 		for slot in 1..=HOTBAR_SLOTS {
@@ -382,6 +388,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		}
 		_, _ = input_consume_look()
 		gc.move_input = {}
+		gc.aim_locked = false
 		_ = input_consume_jump()
 		return
 	}
@@ -408,6 +415,10 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	if input_consume_jump() || input.key_space {
 		gc.move_input.jump = true
 	}
+
+	// The lock is only claimed on the wire when it actually ran, so the server
+	// never charges stamina for a right button held over empty air.
+	gc.move_input.aim_lock = client_apply_aim_lock(gc, dt)
 
 	for slot in 1..=HOTBAR_SLOTS {
 		if input_consume_slot(slot) {
@@ -684,6 +695,71 @@ client_handle_menu_input :: proc(gc: ^Game_Client) {
 		_ = input_consume_slot(slot)
 	}
 	_ = input_consume_click()
+}
+
+AIM_LOCK_PULL_RATE :: f32(3.5)   // radians per second the view is drawn in
+
+// Hold the right button to lean on the sticky target: the view is drawn toward
+// it at a fixed rate rather than snapped, so the help is tracking rather than
+// a shot placed for you, and the whole time it runs the stamina bar empties
+// faster than a sprint. It pulls to `strike_center`, the same point the server
+// validates a strike against, so the assist lands the crosshair exactly where
+// a cast is legal instead of somewhere near it.
+//
+// Returns whether the lock ran this frame; that answer is what goes on the
+// wire and what the server bills for.
+client_apply_aim_lock :: proc(gc: ^Game_Client, dt: f32) -> bool {
+	pred := &gc.client_world.prediction
+	world := &gc.client_world
+
+	if !input.held_right || !pred.initialized || pred.predicted_char.dead {
+		gc.aim_locked = false
+		return false
+	}
+
+	// An empty bar drops the lock, and it takes a real recovery to get it
+	// back; otherwise it would stutter back on every tick that regenerates.
+	stamina := pred.predicted_char.stamina
+	if stamina <= 0 {
+		gc.aim_locked = false
+	} else if !gc.aim_locked && stamina >= STAMINA_AIM_LOCK_MIN {
+		gc.aim_locked = true
+	}
+	if !gc.aim_locked {
+		return false
+	}
+
+	// Only hostiles. Heal has its own sticky target and dragging the view onto
+	// an ally would fight the player rather than help them.
+	target_id := world.target_id
+	if target_id == INVALID_ENTITY || int(target_id) >= MAX_ENTITIES {
+		return false
+	}
+	remote := &world.remote_entities[int(target_id)]
+	if !remote.active || remote.display_state.dead {
+		return false
+	}
+	if !teams_are_enemies(world.local_team, remote.team) {
+		return false
+	}
+
+	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
+	to_target := strike_center(remote.display_state.pos) - eye
+	dist := len_vec3(to_target)
+	if dist < 0.5 {
+		return false
+	}
+	to_target /= dist
+
+	step := AIM_LOCK_PULL_RATE * dt
+	yaw_delta := wrap_angle(math.atan2(to_target.y, to_target.x) - gc.view_yaw)
+	gc.view_yaw = wrap_angle(gc.view_yaw + clampf(yaw_delta, -step, step))
+
+	target_pitch := math.asin(clampf(to_target.z, -1, 1))
+	pitch_delta := target_pitch - gc.view_pitch
+	gc.view_pitch = clampf(gc.view_pitch + clampf(pitch_delta, -step, step), -CAM_PITCH_MAX, CAM_PITCH_MAX)
+
+	return true
 }
 
 main_client :: proc() {

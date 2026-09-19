@@ -27,6 +27,14 @@ CHARACTER_JUMP_VELOCITY :: f32(6.6)
 STAMINA_SPRINT_DRAIN   :: f32(24.0)   // per second while sprinting
 STAMINA_SPRINT_MIN     :: f32(5.0)    // need at least this much to start sprinting
 
+// Aim lock burns the bar faster than a sprint, so tracking is bought with the
+// legs: about three and a half seconds of help on a full bar, and none of it
+// spent running. The client asks for the lock and the server charges for it,
+// so the cost cannot be dodged by a client that stops sending the flag; that
+// also stops the assist it is asking for.
+STAMINA_AIM_LOCK_DRAIN :: f32(28.0)   // per second while locked onto a target
+STAMINA_AIM_LOCK_MIN   :: f32(20.0)   // need this much before a lock will engage
+
 // Simulate one character for one tick.
 simulate_character_step :: proc(char: ^Character_State, input: Input_State, dt: f32) {
 	// Look is absolute; wrap/clamp defensively.
@@ -53,9 +61,14 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	wish_len := math.sqrt(wish_fwd * wish_fwd + wish_str * wish_str)
 	moving := wish_len > 0.001
 
-	// Sprint: needs input, ground contact and stamina.
-	sprinting := input.sprint && moving && char.on_ground && char.stamina > 0
-	if sprinting {
+	// Aim lock and sprint draw on the same bar and cannot be held together:
+	// tracking costs you the ability to close or break away while it runs.
+	aim_locking := input.aim_lock && char.stamina > 0
+	sprinting := input.sprint && moving && char.on_ground && char.stamina > 0 && !aim_locking
+
+	if aim_locking {
+		char.stamina = max(char.stamina - STAMINA_AIM_LOCK_DRAIN * dt, 0)
+	} else if sprinting {
 		char.stamina = max(char.stamina - STAMINA_SPRINT_DRAIN * dt, 0)
 	} else {
 		char.stamina = min(char.stamina + STAMINA_REGEN_PER_SEC * dt, STAMINA_MAX)

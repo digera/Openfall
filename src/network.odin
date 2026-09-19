@@ -533,8 +533,9 @@ deserialize_client_join :: proc(buffer: []u8) -> (packet: Client_Join_Packet, ok
 @(private = "file")
 input_flags :: proc(input: Input_State) -> u8 {
 	f: u8 = 0
-	if input.jump   { f |= 1 }
-	if input.sprint { f |= 2 }
+	if input.jump     { f |= 1 }
+	if input.sprint   { f |= 2 }
+	if input.aim_lock { f |= 4 }
 	return f
 }
 
@@ -573,6 +574,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		flags := br_u8(&r)
 		in_.jump = flags & 1 != 0
 		in_.sprint = flags & 2 != 0
+		in_.aim_lock = flags & 4 != 0
 		in_.yaw = dequant_angle(br_i16(&r))
 		in_.pitch = dequant_angle(br_i16(&r))
 		in_.charge_spell = spell_id_from_wire(br_u8(&r))

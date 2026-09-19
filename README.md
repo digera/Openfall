@@ -92,6 +92,7 @@ $env:BOTS_PER_TEAM = "3"
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
 | Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
 | Release LMB | Commit the cast — it finishes charging to full power, then fires. Holding through the full wind-up still waits for the release. |
+| Hold RMB | Aim lock: draw the view onto the hostile sticky target (drains stamina faster than sprinting) |
 | Esc | Open menu (while playing) or unlock mouse (in lobby) |
 
 ### In-Game Menu
@@ -158,6 +159,14 @@ The selected entity goes up with every input, and targeted spells land on it —
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 
 **Target brackets:** The sticky target is framed in the world by four corner brackets around the wisp — red for a hostile mark, green for an ally the heal will reach. The frame turns to face the eye, so it reads the same whichever way the arena is crossed, and its stroke thickens with range so a mark on the far side of the plaza is still a mark. It rides the drawn body, bob and all, and only a wisp near enough to be drawn gets one: a frame around nothing marks nothing. Nothing is drawn with no target, or once the target is down.
+
+### Aim lock
+
+Holding the right mouse button leans on the sticky target: the view is drawn toward it at 3.5 rad/s rather than snapped there, so what you get is tracking help, not a shot placed for you. It pulls to `strike_center`, the same point the server validates a cast against, so the crosshair settles exactly where a strike is legal.
+
+It is paid for in legs. Aim lock empties the stamina bar at 28/s against the 24/s a sprint costs, which is about three and a half seconds from full, and it cannot be held while sprinting. Tracking therefore costs you the ability to close or break away, and the server charges for it rather than the client: the flag only goes up on the wire when the lock actually ran, and the drain happens in the shared simulation both ends step.
+
+The lock needs a healthy bar (20) to engage but runs until the bar is dry, so it does not chatter on and off around the threshold. It ends when the button comes up, the bar empties, the target dies or stops being hostile, the player dies, or the mouse unlocks.
 
 ### Names, the scoreboard and the combat log
 
