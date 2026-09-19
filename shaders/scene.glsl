@@ -40,7 +40,8 @@ layout(binding=1) uniform fs_params {
     vec4 solid_boxes[30];   // pairs, same layout
     vec4 pylons[7];         // xyz base centre on the floor, w yaw
     vec4 pylon_shape[7];    // x height, y circumradius, z noise seed, w ore kind
-    vec4 pylon_bound[7];    // x local z0, y local z1, z radius, w fraction standing
+    vec4 pylon_bound[7];    // x local z0, y local z1, z radius, w remaining mass 0..1
+    vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
     vec4 minions[14];       // xyz feet pos, w = ore kind + 1 (0 = none)
@@ -445,11 +446,11 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // ---------------------------------------------------------------------------
 // Ore pylons
 //
-// Authority is the coarse occupancy volume (8x8x20, one metre cells). The
-// marched surface is the 0.5 iso of that occupancy plus grain that exists only
-// here. The original hex hull is a silhouette hint for cut-face shading, not a
-// clip: a shortened column must actually be shorter. Two clients may disagree
-// on wrinkles. They may not disagree on which cells exist.
+// Gameplay authority is the shield-node spiral on the CPU. This atlas is paint
+// of live node spheres plus the thin core. The marched surface is the 0.5 iso
+// of that occupancy plus grain that exists only here. Chip damage is a scar
+// (pylon_wounds); killed nodes leave the atlas. Two clients may disagree on
+// wrinkles. They may not disagree on which nodes exist.
 
 const float PYLON_GRAIN_AMP  = 0.16;
 const float PYLON_GRAIN_FREQ = 2.10;
@@ -610,6 +611,19 @@ float pylon_occ_sdf(int i, vec3 lp, float radius, float seed) {
     float band = occ * (1.0 - occ) * 4.0;
     d += PYLON_CELL * PYLON_GRAIN_AMP * (pylon_grain(lp, radius, seed) * 2.0 - 1.0) * band;
     return d;
+}
+
+// Bite scars in tower-local space. The occupancy iso stays on the collision
+// sphere; this only powders and lights the face you are mining.
+float pylon_scar(int i, vec3 lp) {
+    float s = 0.0;
+    for (int k = 0; k < 4; k++) {
+        vec4 w = pylon_wounds[i * 4 + k];
+        if (w.w < 0.02) continue;
+        float d = length(lp - w.xyz) / max(w.w, 0.02);
+        s = max(s, 1.0 - smoothstep(0.45, 1.05, d));
+    }
+    return s;
 }
 
 float pylon_sdf_local(int i, vec3 p, float height, float radius, float seed) {
@@ -1647,8 +1661,8 @@ void main() {
         aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w + 0.35 * hand_cast.y);
     }
     // Pylons: the ore inside lights the air around a standing tower, dimming as
-    // the tower is eaten away, so how far a fight has got is visible from the
-    // far end of a lane through smoke and glare.
+    // mass is chipped off, so how far a fight has got is visible from the far
+    // end of a lane through smoke and glare.
     for (int i = 0; i < NPYLON; i++) {
         float standing = pylon_bound[i].w;
         if (standing <= 0.002) continue;
@@ -1817,16 +1831,18 @@ void main() {
 
         albedo = stone * (0.72 + 0.45 * pylon_grain(py_local, sh.y, sh.z));
         // Fresh breaks are pale where the rock has been powdered, and brighter
-        // to make damage immediately readable.
-        albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), (1.0 - cut) * 0.60);
+        // to make damage immediately readable. Scars from chips use the same
+        // language so a beam on the face reads before any node dies.
+        float scar = pylon_scar(py_idx, py_local);
+        float worked = max(1.0 - cut, scar);
+        albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), worked * 0.60);
         // Seams run through the whole body, so a cut across one exposes it in
         // cross-section and it burns; on the skin only a hint shows through.
-        // Increased cut-face emissive intensity for clearer damage feedback.
-        emissive += tint * vein * (0.14 + 3.2 * (1.0 - cut));
+        emissive += tint * vein * (0.14 + 3.2 * worked);
+        emissive += tint * scar * (0.45 + 0.35 * vein);
         emissive += tint * pow(1.0 - ndv, 3.0) * 0.12;
         spec_pow = 18.0;
-        // More specular on cut faces: they're crystalline cross-sections.
-        spec_amt = 0.05 + 0.18 * (1.0 - cut);
+        spec_amt = 0.05 + 0.18 * worked;
     } else if (mat == MAT_CHUNK) {
         vec4 ch = chunks[ch_idx];
         float ore = chunk_fx[ch_idx].x;
@@ -1994,8 +2010,8 @@ void main() {
             color += albedo * point_light(hp, hit_n, cs.xyz, spell_tint(cs.w), 0.8 + 3.2 * wisp_aim[i].w, 8.0);
         }
         // A standing pylon is the main light in its lane, from about mid-shaft,
-        // and it dims as it comes down -- so a lane whose tower has been broken
-        // genuinely goes dark.
+        // and it dims as mass comes off -- so a lane whose tower is being
+        // ground down genuinely goes dark before the last node dies.
         for (int i = 0; i < NPYLON; i++) {
             float standing = pylon_bound[i].w;
             if (standing <= 0.002) continue;

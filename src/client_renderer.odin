@@ -555,7 +555,16 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		if t.live_count <= 0 {
 			fs_params.pylon_bound[i] = {0, 0, 0, 0}
 		} else {
-			fs_params.pylon_bound[i] = {0, t.core_height + t.node_radius, tower_outer_radius(t), t.intact}
+			fs_params.pylon_bound[i] = {0, t.core_height + t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
+		}
+		for k in 0 ..< TOWER_WOUND_MAX {
+			idx := i * TOWER_WOUND_MAX + k
+			if k < t.wound_count {
+				w := t.wounds[k]
+				fs_params.pylon_wounds[idx] = {w.pos.x, w.pos.y, w.pos.z, w.radius}
+			} else {
+				fs_params.pylon_wounds[idx] = {}
+			}
 		}
 	}
 	for i in 0..<MAX_SNAPSHOT_CHUNKS {
@@ -1099,14 +1108,14 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 				sdtx.printf("%s %3d%% ", team_name(team_from_index(i)), int(f32(gs.centre_share[i]) / 255.0 * 100))
 			}
 		} else {
-			// Towers: how much of each tower is still standing. G is the golden
-			// one in the centre, then the near-lane towers and the far ones.
+			// Towers: remaining mass, chips included. G is the golden one in
+			// the centre, then the near-lane towers and the far ones.
 			sdtx.pos(cols * 0.5 - f32(MAX_PYLONS) * 4.0, 3)
 			for i in 0..<MAX_PYLONS {
 				t := &world.towers.towers[i]
 				sdtx_color(ore_color(t.ore))
 				label := i == 0 ? "G" : fmt.tprintf("%d", i)
-				sdtx.printf("[%s %3d]", label, int(gs.towers[i].intact * 100))
+				sdtx.printf("[%s %3d]", label, int(tower_mass_frac(t) * 100 + 0.5))
 				sdtx.puts(" ")
 			}
 		}

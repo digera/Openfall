@@ -60,47 +60,28 @@ The client unpacks HP, re-sorts locally, and paints the occupancy atlas from
 the resulting spiral. Collision on the client uses the same node spheres as
 the server.
 
-## Damage Visualization (Client Paint)
+## Damage visualization
 
-**Problem:** The original node paint used subtle radius scaling (62%–100% based
-on HP) that made chip damage nearly invisible in the coarse 1m occupancy grid,
-especially with heavily overlapping spiral neighbors.
+The occupancy atlas is 1 m cells. Node spheres are ~1.1–1.7 m. HP-scaling
+those radii either does nothing the grid can show, or drops a low-HP node
+below the 0.5 march iso while the raycast still hits the full sphere. The
+HP-sort spiral makes it worse: a chipped node rises, a healthy one takes its
+slot, and the face you are mining stays full-size.
 
-**Fix (current):**
-- **Aggressive radius scaling:** 100% HP = full radius (1.0×), 50% HP = 60%
-  radius (0.6×), 25% HP = 40% radius (0.4×), 10% HP = 28% radius (0.28×).
-  Node shrinkage is now dramatic and readable.
-- **No occupancy intensity modulation:** Considered but rejected because it
-  could drop low-HP nodes below the 0.5 march iso, creating hitbox/visual
-  desync. Radius scaling alone provides sufficient visual feedback.
-- **Result:** While mining, tower silhouette visibly deforms, thins, and loses
-  mass. Chip damage is readable before nodes die. Node deaths create clear gaps
-  in the shell.
+So paint and collision stay in lockstep — every live node is the collision
+sphere, dead nodes are omitted, core height is `live_count * stack_step`.
+Chip damage is a **scar** stamped at the bite (the outward face of the node
+that just lost HP). The scar survives the re-sort, so the beam's impact
+powders and lights up even as that node climbs the spiral. Repeated bites
+on the same face merge into one growing scar.
 
-**Math verification (radius scaling only):**
-```
-HP %  | Old Radius | New Radius | Visual Change
-100%  | 100%       | 100%       | (baseline)
-50%   | 81%        | 60%        | 40% shrink (was 19%)
-25%   | 72%        | 40%        | 60% shrink (was 28%)
-10%   | 66%        | 28%        | 72% shrink (was 34%)
-```
-The new scaling makes chip damage 2–3× more visible than the original.
+Lane light, apron dust, and the HUD use **mass** (`sum(hp) / sum(max_hp)`),
+not `intact`. `intact` is still `live_count / max_count` for scoring and
+minion rebuild. Lighting and the percent readout therefore move on the
+first chip, not the first kill.
 
-**Playtest verification:**
-1. Mine any tower with beam (spell 6, hold LMB) or projectiles
-2. Expected: silhouette visibly shrinks and deforms as nodes take damage
-3. Expected: at 50% HP, node radius is clearly smaller (60% of original)
-4. Expected: node deaths create visible gaps in the shell
-
-**Authority vs Paint:**
-- Server: `Tower_World` in `tower_nodes.odin` (nodes with HP, spiral position)
-- Client: `tower_paint_occupancy` paints nodes → 8×8×20 occupancy atlas →
-  shader marches the 0.5 iso with grain (unchanged from pylon era)
-- Dual authority status: `g_pylons` / `Pylon_World` in `pylons.odin` remain
-  defined but are unused dormant leftovers from the occupancy-grid era. Sole
-  gameplay authority is `g_towers`. `pylons.odin` now provides only shared
-  helpers (`ore_color`, `team_ore`, `Ore_Grid` structure, constants).
+`g_pylons` / `Pylon_World` in `pylons.odin` are unused leftovers from the
+occupancy-grid era. Gameplay authority is `g_towers`.
 
 ## Out of scope
 

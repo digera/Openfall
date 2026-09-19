@@ -15,7 +15,8 @@ import "core:slice"
 // bolster, so a flattened lane still takes about three unbuffed waves.
 //
 // The occupancy atlas the client marches is paint of this state, not a second
-// authority. See TOWERS.md.
+// authority: live node spheres at collision radius, thin core, chip scars in
+// the shader. See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -63,6 +64,11 @@ NODE_ORE_GOLD :: f32(18.0)
 TOWER_DONATE_BASE      :: 2
 TOWER_DONATE_OWN_EXTRA :: 2
 
+// Shader scars, not occupancy. Four is enough for a focused beam plus a
+// couple of splash nicks; the shader reads this many per tower.
+TOWER_WOUND_MAX :: 4
+#assert(TOWER_WOUND_MAX * MAX_PYLONS == 28)
+
 // ---------------------------------------------------------------------------
 // Types
 
@@ -73,6 +79,13 @@ Tower_Node :: struct {
 	hp:     f32,
 	max_hp: f32,
 	alive:  bool,
+}
+
+// Client-visual bite mark, tower-local. Collision ignores this; the occupancy
+// atlas paints the full node sphere so the marched iso matches the hit.
+Tower_Wound :: struct {
+	pos:    vec3,
+	radius: f32,
 }
 
 Tower :: struct {
@@ -106,6 +119,9 @@ Tower :: struct {
 	last_miner: Entity_ID,
 	last_bite:  vec3,
 	last_bite_n: vec3,
+
+	wounds:      [TOWER_WOUND_MAX]Tower_Wound,
+	wound_count: int,
 
 	touched: bool,
 }
@@ -204,6 +220,7 @@ tower_build_full :: proc(t: ^Tower) {
 	}
 	tower_recompute(t)
 	tower_resort_nodes(t)
+	tower_clear_wounds(t)
 	tower_bump(t)
 }
 
@@ -344,6 +361,79 @@ tower_mineable_by :: proc(t: ^Tower, team: Team_ID) -> bool {
 
 tower_node_ore :: proc(t: ^Tower) -> f32 {
 	return t.ore == .Gold ? NODE_ORE_GOLD : NODE_ORE_TEAM
+}
+
+// Remaining HP over the original full tower, including chips. `intact` is
+// still live_count / max_count for scoring and rebuild; this is what the
+// shader and HUD use so a grind reads before the first node dies.
+tower_mass_frac :: proc(t: ^Tower) -> f32 {
+	if t == nil || t.max_count <= 0 {
+		return 0
+	}
+	sum: f32 = 0
+	cap: f32 = 0
+	for i in 0 ..< t.max_count {
+		cap += max(t.nodes[i].max_hp, 0)
+		if t.nodes[i].alive {
+			sum += max(t.nodes[i].hp, 0)
+		}
+	}
+	if cap <= 0.01 {
+		return t.intact
+	}
+	return clampf(sum / cap, 0, 1)
+}
+
+tower_clear_wounds :: proc(t: ^Tower) {
+	t.wounds = {}
+	t.wound_count = 0
+}
+
+// Two quant steps of the 8-bit wire. Pack/unpack of the same HP must not look
+// like a chip, or every snapshot would stamp a scar.
+tower_hp_wire_eps :: proc(max_hp: f32) -> f32 {
+	return max(max_hp, 0.01) * (2.0 / 255.0)
+}
+
+// Outer skin of a node, away from the core. Mining from a lane hits this
+// face, so a scar stamped here stays on the beam even after the damaged
+// node rises up the spiral.
+tower_node_outward_face :: proc(t: ^Tower, center: vec3) -> vec3 {
+	xy := vec3{center.x, center.y, 0}
+	if len2_vec3(xy) < 0.0001 {
+		return center + vec3{t.node_radius, 0, 0}
+	}
+	return center + norm_vec3(xy) * t.node_radius
+}
+
+tower_stamp_wound :: proc(t: ^Tower, pos: vec3, radius: f32) {
+	if t == nil || t.node_radius < 0.05 {
+		return
+	}
+	r := clampf(radius, t.node_radius * 0.18, t.node_radius * 0.80)
+	merge_r := t.node_radius * 0.70
+	merge_r2 := merge_r * merge_r
+	for i in 0 ..< t.wound_count {
+		w := &t.wounds[i]
+		d := pos - w.pos
+		if d.x * d.x + d.y * d.y + d.z * d.z <= merge_r2 {
+			w.pos = {(w.pos.x + pos.x) * 0.5, (w.pos.y + pos.y) * 0.5, (w.pos.z + pos.z) * 0.5}
+			w.radius = min(t.node_radius * 0.80, w.radius + r * 0.40)
+			return
+		}
+	}
+	if t.wound_count < TOWER_WOUND_MAX {
+		t.wounds[t.wound_count] = {pos, r}
+		t.wound_count += 1
+		return
+	}
+	smallest := 0
+	for i in 1 ..< TOWER_WOUND_MAX {
+		if t.wounds[i].radius < t.wounds[smallest].radius {
+			smallest = i
+		}
+	}
+	t.wounds[smallest] = {pos, r}
 }
 
 tower_donate_count :: proc(build_r: f32) -> int {
@@ -691,6 +781,8 @@ tower_mine :: proc(
 		}
 	}
 	t.last_bite_n = hit_n
+	hp_node := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	tower_stamp_wound(t, t.last_bite, t.node_radius * (0.22 + 0.30 * clampf(removed / max(hp_node, 0.01), 0, 1)))
 	tower_resort_nodes(t)
 	tower_recompute(t)
 	tower_touch(world, t)
@@ -735,6 +827,7 @@ tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int) -> (gained: i
 	}
 	tower_resort_nodes(t)
 	tower_recompute(t)
+	tower_clear_wounds(t)
 	tower_touch(world, t)
 	return gained, true
 }
@@ -791,6 +884,20 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	if len(src) < t.max_count {
 		return
 	}
+	old_live := t.live_count
+	old_pos: [MAX_NODES_PER_TOWER]vec3
+	old_hp: [MAX_NODES_PER_TOWER]f32
+	had: [MAX_NODES_PER_TOWER]bool
+	for rank in 0 ..< old_live {
+		idx := t.sorted_indices[rank]
+		if idx < 0 || idx >= t.max_count {
+			continue
+		}
+		old_pos[idx] = tower_node_spiral_pos(t, rank)
+		old_hp[idx] = t.nodes[idx].hp
+		had[idx] = true
+	}
+
 	hp_max := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
 	changed := false
 	for i in 0 ..< t.max_count {
@@ -825,6 +932,30 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	}
 	tower_resort_nodes(t)
 	tower_recompute(t)
+	if t.live_count > old_live {
+		tower_clear_wounds(t)
+	} else {
+		n_chip := 0
+		for i in 0 ..< t.max_count {
+			eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
+			if had[i] && old_hp[i] > t.nodes[i].hp + eps {
+				n_chip += 1
+			}
+		}
+		// A live bite hits a handful of overlapping nodes. A full GameState
+		// catch-up chips most of the tower at once; skip scars there.
+		if n_chip > 0 && n_chip <= TOWER_WOUND_MAX * 2 {
+			for i in 0 ..< t.max_count {
+				eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
+				if !had[i] || old_hp[i] <= t.nodes[i].hp + eps {
+					continue
+				}
+				lost := (old_hp[i] - t.nodes[i].hp) / max(old_hp[i], 0.01)
+				face := tower_node_outward_face(t, old_pos[i])
+				tower_stamp_wound(t, face, t.node_radius * (0.22 + 0.30 * clampf(lost, 0, 1)))
+			}
+		}
+	}
 	if changed {
 		tower_bump(t)
 	}
@@ -913,14 +1044,11 @@ tower_paint_occupancy :: proc(t: ^Tower, dst: []u8) {
 			continue
 		}
 		p := tower_node_spiral_pos(t, rank)
-		hp_frac := clampf(node.hp / max(node.max_hp, 0.01), 0, 1)
-		
-		// Aggressive radius scaling: 100% HP = full radius, 50% HP = 60% radius,
-		// 25% HP = 40% radius, 10% HP = 28% radius. This makes chip damage
-		// dramatically visible without needing occupancy modulation (which could
-		// drop low-HP nodes below the 0.5 march iso and create hitbox/visual desync).
-		r := t.node_radius * (0.20 + 0.80 * hp_frac)
-		
+		// Collision sphere, not an HP-scaled one. Chip damage is a shader scar
+		// at the bite; shrinking this on a 1 m grid either drops the node below
+		// the 0.5 iso or opens a hole the raycast still hits. Dead nodes are
+		// simply not painted, which is when the silhouette actually loses mass.
+		r := t.node_radius
 		span := r + PYLON_CELL
 		nx0, nx1 := tower_paint_span(p.x, span, PYLON_HALF_X, PYLON_NX)
 		ny0, ny1 := tower_paint_span(p.y, span, PYLON_HALF_Y, PYLON_NY)
@@ -1007,6 +1135,32 @@ tower_selftest :: proc() {
 	assert(ore > 0, "chip yields ore")
 	assert(t.live_count == 8, "chip does not kill")
 	assert(world.dirty[0], "chip dirties wire")
+	assert(t.wound_count > 0, "chip stamps a scar")
+	near := false
+	for i in 0 ..< t.wound_count {
+		d := t.wounds[i].pos - t.last_bite
+		if len2_vec3(d) < (t.node_radius * 1.5) * (t.node_radius * 1.5) {
+			near = true
+		}
+	}
+	assert(near, "scar sits on the bite")
+	assert(tower_mass_frac(t) < 1, "chip lowers mass")
+	assert(t.intact == 1, "chip does not change intact")
+
+	atlas: [PYLON_VOX]u8
+	tower_paint_occupancy(t, atlas[:])
+	local := tower_node_spiral_pos(t, 0)
+	gx, gy, gz := ore_local_to_cell(local)
+	gx = clamp_int(gx, 0, PYLON_NX - 1)
+	gy = clamp_int(gy, 0, PYLON_NY - 1)
+	gz = clamp_int(gz, 0, PYLON_NZ - 1)
+	assert(atlas[ore_index(gx, gy, gz)] > 128, "live node still paints above iso")
+
+	same: [MAX_NODES_PER_TOWER]u8
+	tower_pack_nodes(t, same[:])
+	wounds_before := t.wound_count
+	tower_unpack_nodes(t, same[:])
+	assert(t.wound_count == wounds_before, "identical unpack does not add scars")
 
 	// Kill splash must visit every overlapping node even as they die.
 	t.tough = 0.01
@@ -1034,6 +1188,7 @@ tower_selftest :: proc() {
 	assert(built, "donate builds")
 	assert(gained > 0, "donate gained")
 	assert(t.live_count == min(before + gained, t.max_count), "donate live_count")
+	assert(t.wound_count == 0, "rebuild clears scars")
 
 	// Analytic ray from outside hits the node we aimed at.
 	center := tower_node_world_pos(t, 0)
