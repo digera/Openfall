@@ -115,9 +115,9 @@ MINION_BUILD_REACH  :: f32(2.6)  // how close to the rock a hop has to get
 // would never reach the centre.
 PYLON_REBUILD_FRAC :: f32(0.85)
 
-// How much of the golden pylon's silhouette has to be back before the team that
-// put most of it there has won the round.
-CENTRE_CLAIM_FRAC :: f32(0.80)
+// The golden pylon must be fully rebuilt before the team that put most of it
+// there has won the round.
+CENTRE_CLAIM_FRAC :: f32(1.0)
 
 // Only fodder pay out, and only in their own team's ore. This is the renewable
 // trickle the whole economy runs on: kill their wave, walk over their rock.

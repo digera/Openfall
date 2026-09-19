@@ -61,4 +61,4 @@ Flattening a lane tower does **not** open a super-minion push. It turns that tea
 
 Essence does not end the round. The clock (12 minutes) is the backstop: highest essence, or a draw.
 
-While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when it closes (`CENTRE_CLAIM_FRAC` of the original) wins.
+While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when the tower is fully rebuilt wins.

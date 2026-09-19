@@ -32,7 +32,7 @@ Match :: struct {
 
 	// The golden pylon has been flattened and the stump is up for rebuilding.
 	// `centre_build` is the voxels each team's waves have put back into it
-	// since; whoever has laid the most when the silhouette closes wins.
+	// since; whoever has laid the most when it is fully rebuilt wins.
 	centre_open:    bool,
 	centre_build:   [TEAM_COUNT]f32,
 
@@ -158,7 +158,7 @@ match_spend_ore :: proc(match: ^Match, team: Team_ID, kind: Ore_Kind, amount: f3
 //
 // While it stands it is only the richest rock in the arena. The moment it is
 // gone the centre is a stump every team's wave will hop, and the first team to
-// have laid most of the silhouette back when it closes takes the round. That is
+// have laid the most when the tower is fully rebuilt takes the round. That is
 // the one win condition that belongs to this map: three teams fighting over who
 // gets to finish the tower they all just knocked down.
 match_centre_tick :: proc(match: ^Match, towers: ^Tower_World) {
