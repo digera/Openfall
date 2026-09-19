@@ -9,6 +9,10 @@ import "core:math"
 // On the server this field is used once, to stamp each column's max height.
 // Hits and collision use the coarse occupancy grid. The GPU keeps a twin of
 // the hull and grain for shading; the marched surface is occupancy plus grain.
+//
+// Visual only. Occupancy is authoritative; grain can sit ±PYLON_GRAIN_AMP
+// outside the hull, and PYLON_COLLIDE_SLACK is what stops you walking through
+// the extra rock you can see.
 
 PYLON_GRAIN_AMP  :: f32(0.16)  // surface displacement, as a fraction of base radius
 PYLON_GRAIN_FREQ :: f32(2.10)

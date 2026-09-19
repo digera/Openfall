@@ -8,6 +8,9 @@ import "core:math"
 // column. The pretty rock is a client shader of this occupancy; it is not
 // replicated and the server never marches it. Gravity forbids holes, so the
 // wire form is just 64 column heights.
+//
+// This grid is the collision surface. The visual SDF can sit a little further
+// out (grain), and PYLON_COLLIDE_SLACK is the pad that keeps them aligned.
 
 PYLON_NX  :: 8
 PYLON_NY  :: 8

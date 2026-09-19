@@ -1816,14 +1816,17 @@ void main() {
         float vein = pylon_vein(py_local, sh.z);
 
         albedo = stone * (0.72 + 0.45 * pylon_grain(py_local, sh.y, sh.z));
-        // Fresh breaks are pale where the rock has been powdered.
-        albedo = mix(albedo, albedo * 0.7 + vec3(0.30, 0.29, 0.30), (1.0 - cut) * 0.45);
+        // Fresh breaks are pale where the rock has been powdered, and brighter
+        // to make damage immediately readable.
+        albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), (1.0 - cut) * 0.60);
         // Seams run through the whole body, so a cut across one exposes it in
         // cross-section and it burns; on the skin only a hint shows through.
-        emissive += tint * vein * (0.14 + 2.4 * (1.0 - cut));
+        // Increased cut-face emissive intensity for clearer damage feedback.
+        emissive += tint * vein * (0.14 + 3.2 * (1.0 - cut));
         emissive += tint * pow(1.0 - ndv, 3.0) * 0.12;
         spec_pow = 18.0;
-        spec_amt = 0.05 + 0.12 * (1.0 - cut);
+        // More specular on cut faces: they're crystalline cross-sections.
+        spec_amt = 0.05 + 0.18 * (1.0 - cut);
     } else if (mat == MAT_CHUNK) {
         vec4 ch = chunks[ch_idx];
         float ore = chunk_fx[ch_idx].x;

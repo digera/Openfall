@@ -19,6 +19,10 @@ import "core:math"
 // in the character sense, which is exactly why targeted spells cannot touch
 // them -- Call Lightning has nothing to lock onto and needs no special case.
 // Only positional damage carves ore.
+//
+// Occupancy plus PYLON_COLLIDE_SLACK is collision. Beams go through
+// pylon_raycast; projectiles through world_point_free → pylon_blocks_point.
+// The client SDF is the picture, not the hit.
 
 Pylon_ID :: u8
 MAX_PYLONS :: 7

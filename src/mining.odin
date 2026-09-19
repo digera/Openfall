@@ -129,18 +129,45 @@ body_blocks_beam :: proc(world: ^Entity_World, caster: Entity_ID, origin, dir: v
 // because the projectile system is shared with the client and has no server
 // handle to thread through -- the same reason `world_point_free` finds the map
 // boxes that way.
+//
+// The projectile stops at the last free point, a sub-step short of occupancy.
+// `pylon_at_point` still finds the tower (same cylinder reject collision uses),
+// but `pylon_mine` maps `at` to a cell -- and that cell is often empty air,
+// so a small blast radius carves nothing. Snap onto the remaining rock first.
 mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 	if g_pylons == nil {
 		return
 	}
-	// The blast has to find the rock it hit. A projectile stops a little short
-	// of the surface, so probe with a generous pad.
-	id, ok := pylon_at_point(g_pylons, at, max(radius, 0.5))
+	pad := max(radius, 0.5) + PYLON_CELL
+	id, ok := pylon_at_point(g_pylons, at, pad)
 	if !ok {
 		return
 	}
+	p := pylon_get(g_pylons, id)
+	g := pylon_grid(g_pylons, id)
+	if p == nil || g == nil {
+		return
+	}
+
+	hit := at
+	local := pylon_to_local(p, at)
+	if !ore_grid_blocks_point(g, local, 0) {
+		// Aim at what is still standing, not the original silhouette -- a
+		// chewed tower's mid-height may be air.
+		mid := p.base + vec3{0, 0, (p.bound_z0 + p.bound_z1) * 0.5}
+		dir := mid - at
+		ray_len := len_vec3(dir)
+		if ray_len > 0.01 {
+			dir = dir / ray_len
+			t, _, _, _, _, hit_ok := ore_grid_raycast(g, local, pylon_dir_to_local(p, dir), ray_len + pad)
+			if hit_ok {
+				hit = at + dir * t
+			}
+		}
+	}
+
 	r := max(MINE_BITE_MIN_R, radius * BLAST_RADIUS_MULT)
-	ore, mined := pylon_mine(g_pylons, id, at, r, BLAST_AMOUNT, owner, team)
+	ore, mined := pylon_mine(g_pylons, id, hit, r, BLAST_AMOUNT, owner, team)
 	if !mined {
 		return
 	}
