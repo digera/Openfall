@@ -60,6 +60,30 @@ The client unpacks HP, re-sorts locally, and paints the occupancy atlas from
 the resulting spiral. Collision on the client uses the same node spheres as
 the server.
 
+## Damage Visualization (Client Paint)
+
+**Problem:** The original node paint used subtle radius scaling (62%–100% based
+on HP) that made chip damage nearly invisible in the coarse 1m occupancy grid,
+especially with heavily overlapping spiral neighbors.
+
+**Fix (current):**
+- **Aggressive radius scaling:** 100% HP = full radius, 50% HP = ~45% radius,
+  25% HP = ~30% radius. Node shrinkage is now dramatic and readable.
+- **Occupancy intensity modulation:** Damaged nodes paint at reduced intensity
+  (100% HP = full, 50% HP = 70%, 0% HP = 40% base). This makes chips visible
+  even when radius overlap hides size changes.
+- **Result:** While mining, tower silhouette visibly deforms, thins, and loses
+  mass. Chip damage is readable before nodes die. Node deaths create clear gaps
+  in the shell.
+
+**Authority vs Paint:**
+- Server: `Tower_World` in `tower_nodes.odin` (nodes with HP, spiral position)
+- Client: `tower_paint_occupancy` paints nodes → 8×8×20 occupancy atlas →
+  shader marches the 0.5 iso with grain (unchanged from pylon era)
+- No dual authority: `g_pylons` / `Pylon_World` gameplay instances removed;
+  `pylons.odin` kept only for shared helpers (`ore_color`, `team_ore`,
+  `ore_grid` structure, constants)
+
 ## Out of scope
 
 Smooth node morphing between ranks, a custom node mesh, and bot pathing that

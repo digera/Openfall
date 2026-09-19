@@ -913,8 +913,17 @@ tower_paint_occupancy :: proc(t: ^Tower, dst: []u8) {
 			continue
 		}
 		p := tower_node_spiral_pos(t, rank)
-		frac := clampf(node.hp / max(node.max_hp, 0.01), 0, 1)
-		r := t.node_radius * (0.62 + 0.38 * frac)
+		hp_frac := clampf(node.hp / max(node.max_hp, 0.01), 0, 1)
+		
+		// Aggressive radius scaling: 100% HP = full radius, 50% HP = ~45% radius, 
+		// 25% HP = ~30% radius. This makes chip damage dramatically visible.
+		r := t.node_radius * (0.20 + 0.80 * hp_frac)
+		
+		// Reduce occupancy intensity for damaged nodes: full HP paints solid,
+		// half HP paints at 70% intensity. This makes chips readable even when
+		// radius change is subtle due to overlapping neighbors.
+		hp_occ_scale := 0.40 + 0.60 * hp_frac
+		
 		span := r + PYLON_CELL
 		nx0, nx1 := tower_paint_span(p.x, span, PYLON_HALF_X, PYLON_NX)
 		ny0, ny1 := tower_paint_span(p.y, span, PYLON_HALF_Y, PYLON_NY)
@@ -925,7 +934,10 @@ tower_paint_occupancy :: proc(t: ^Tower, dst: []u8) {
 				for x in nx0 ..= nx1 {
 					c := ore_voxel_center(x, y, z)
 					d := len_vec3(c - p) - r
-					occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
+					base_occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
+					// Scale down occupancy for damaged nodes so they look visibly
+					// thinner/weaker even when overlapping with full-HP neighbors
+					occ := base_occ * hp_occ_scale
 					if occ > 0 {
 						tower_paint_add(dst, x, y, z, occ)
 					}
