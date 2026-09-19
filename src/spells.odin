@@ -14,7 +14,7 @@ Spell_ID :: enum u8 {
 	Arcane_Missile = 1,    // bouncing bolt, pops after its ricochets run out
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
-	Frost_Lance    = 4,    // slow piercing lance, heavy damage + slow
+	Frost_Lance    = 4,    // straight piercing lance, heavy damage + slow
 	Friendly_Heal  = 5,    // wind-up mend: caster and a targeted ally
 	Call_Lightning = 6,    // bolt from the sky onto the crosshair's target
 	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
@@ -134,7 +134,8 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		range         = 11,
 	},
 
-	// Drifts in slowly and spears everyone lined up behind the first target.
+	// Dead straight: no drop, holds its heading until a wall or a body.
+	// Spears everyone lined up behind the first target.
 	.Frost_Lance = {
 		id            = .Frost_Lance,
 		name          = "Frost Lance",
@@ -144,10 +145,10 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cast_time     = 0.9,
 		payload       = .Projectile,
 		target_filter = .Enemy,
-		proj_speed    = 13,
+		proj_speed    = 16,
 		proj_lifetime = 5.0,
 		proj_radius   = 0.28,
-		proj_gravity  = 0.1,
+		proj_gravity  = 0,
 		proj_pierce   = 4,
 		damage        = 68,
 		slow_ticks    = 180, // 3 s

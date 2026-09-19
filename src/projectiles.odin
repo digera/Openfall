@@ -24,8 +24,8 @@ PROJECTILE_REST_SPEED :: f32(1.5)
 // outgoing shot toward the nearest living enemy the bounce can see. Radius is
 // lane-scale so a bank in a fight finds that fight, not the next one. Blend
 // keeps the geometric bounce; 1 would replace it with a homing shot.
-ARCANE_MISSILE_SEEK_RADIUS :: f32(10.0)
-ARCANE_MISSILE_SEEK_BLEND  :: f32(0.5)
+ARCANE_MISSILE_SEEK_RADIUS :: f32(12.0)
+ARCANE_MISSILE_SEEK_BLEND  :: f32(0.6)
 
 Projectile_ID :: u32
 
