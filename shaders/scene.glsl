@@ -595,7 +595,10 @@ float pylon_density(int i, vec3 lp) {
     vec3 uvw = vec3(g.x / PYLON_NX_F,
                     g.y / PYLON_NY_F,
                     (g.z + float(i) * PYLON_NZ_F) / PYLON_ATLAS_NZ);
-    return texture(sampler3D(pylon_tex, pylon_smp), uvw).r;
+    // Explicit LOD, not `texture`: this is called from the marcher's loop, and an
+    // implicit mip derivative inside a loop whose trip count varies per pixel is
+    // a gradient instruction HLSL will not compile. There is one mip anyway.
+    return textureLod(sampler3D(pylon_tex, pylon_smp), uvw, 0.0).r;
 }
 
 // Positive in mined-out space, ~0 on the cut face, negative in remaining ore.
@@ -1770,7 +1773,7 @@ void main() {
         albedo = mix(albedo, albedo * 0.7 + vec3(0.30, 0.29, 0.30), (1.0 - cut) * 0.45);
         // Seams run through the whole body, so a cut across one exposes it in
         // cross-section and it burns; on the skin only a hint shows through.
-        emissive += tint * vein * (0.22 + 2.4 * (1.0 - cut));
+        emissive += tint * vein * (0.14 + 2.4 * (1.0 - cut));
         emissive += tint * pow(1.0 - ndv, 3.0) * 0.12;
         spec_pow = 18.0;
         spec_amt = 0.05 + 0.12 * (1.0 - cut);

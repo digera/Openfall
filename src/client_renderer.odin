@@ -378,13 +378,13 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 	})
 	r.bind.views[VIEW_pylon_tex] = r.pylon_view
 	r.bind.samplers[SMP_pylon_smp] = r.pylon_smp
-	// Upload something before the first draw: the image is stream_update, so
-	// until it is written its contents are undefined and the towers would come
-	// up as noise.
+	// Untouched ore everywhere, so a slab with no grid behind it reads as solid
+	// rather than as a tower that has been mined out of existence. Not uploaded
+	// here: an image takes one update per frame, and the first frame's is the
+	// one that carries the real grids.
 	for &b in pylon_atlas {
 		b = 255
 	}
-	sg.update_image(r.pylon_tex, {mip_levels = {0 = {ptr = &pylon_atlas, size = PYLON_ATLAS_BYTES}}})
 
 	r.pass_action = {
 		colors = {0 = {load_action = .CLEAR, clear_value = {0.02, 0.02, 0.04, 1}}},
