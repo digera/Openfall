@@ -53,6 +53,7 @@ layout(binding=1) uniform fs_params {
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
     vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
+    vec4 target_mark;       // xyz sticky target centre, w = 0 none, 1 hostile, 2 friendly
 };
 
 in vec3 ray_origin;
@@ -270,6 +271,43 @@ vec3 arc_glow(vec3 ro, vec3 rd, float tmax, vec3 a, vec3 b, float radius, float 
     // Soft halo along the straight line under the crackle.
     sum += tint * segment_glow(ro, rd, tmax, a, b, radius * 5.0) * 0.45;
     return sum;
+}
+
+// Four corner brackets framing the sticky target, in the target's own place in
+// the world rather than pinned to the middle of the screen. Red says the mark
+// is hostile, green says it is an ally the heal will reach. The frame is turned
+// to face the eye, so it reads the same from any approach instead of thinning
+// to a line when the arena is crossed sideways. Its span stays the width of a
+// body, which is what makes it look like a frame around something; only the
+// stroke thickens with range, so a mark across the plaza is still a mark rather
+// than a sub-pixel shimmer.
+vec3 target_mark_glow(vec3 ro, vec3 rd, float tmax, vec3 centre, float relation) {
+    if (relation < 0.5) return vec3(0.0);
+    vec3 tint = (relation < 1.5) ? vec3(1.00, 0.26, 0.16) : vec3(0.38, 1.00, 0.36);
+
+    vec3 to_mark = centre - ro;
+    float dist = length(to_mark);
+    if (dist < 0.6) return vec3(0.0);
+    vec3 view = to_mark / dist;
+    // Standing directly over a target makes world up useless as a reference,
+    // so the frame rolls onto another axis rather than going to pieces.
+    vec3 ref = abs(view.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right = normalize(cross(view, ref));
+    vec3 up = cross(right, view);
+
+    const float span = 0.62;   // half-width of the frame, about a robe across
+    const float arm  = 0.26;   // how far each corner runs before it stops
+    float thick = max(0.030, dist * 0.0025);
+
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 4; i++) {
+        float sx = (i == 0 || i == 2) ? -1.0 : 1.0;
+        float sy = (i < 2) ? 1.0 : -1.0;
+        vec3 corner = centre + right * (sx * span) + up * (sy * span);
+        sum += segment_glow(ro, rd, tmax, corner, corner - right * (sx * arm), thick);
+        sum += segment_glow(ro, rd, tmax, corner, corner - up * (sy * arm), thick);
+    }
+    return tint * sum * 1.4;
 }
 
 // ---------------------------------------------------------------------------
@@ -1270,6 +1308,8 @@ void main() {
             aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
         }
     }
+
+    aura += target_mark_glow(ro, rd, glow_tmax, target_mark.xyz, target_mark.w);
 
     // --- Lightning: a jagged bolt from well above the walls onto the target ---
     for (int i = 0; i < 4; i++) {

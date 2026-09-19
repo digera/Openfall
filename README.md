@@ -157,6 +157,8 @@ The selected entity goes up with every input, and targeted spells land on it —
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
 
+**Target brackets:** The sticky target is framed in the world by four corner brackets around the wisp — red for a hostile mark, green for an ally the heal will reach. The frame turns to face the eye, so it reads the same whichever way the arena is crossed, and its stroke thickens with range so a mark on the far side of the plaza is still a mark. It rides the drawn body, bob and all, and only a wisp near enough to be drawn gets one: a frame around nothing marks nothing. Nothing is drawn with no target, or once the target is down.
+
 ### Names, the scoreboard and the combat log
 
 Every hit in the game goes through one procedure on the server, `combat_apply_damage`, and every death through one transition in `entity_tick_death_respawn`. The scoreline and the combat log both read from those two places rather than from the spells, so a new damage source is scored and logged without touching either feature, and the two can never disagree about who hit whom.
