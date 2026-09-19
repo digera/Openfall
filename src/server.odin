@@ -90,6 +90,7 @@ server_init :: proc(server: ^Server, port: u16) -> bool {
 	// Towers must exist before anything asks the world whether a point is free:
 	// they are part of the collision set now.
 	tower_world_init(&server.towers)
+	nav_flow_init(&server.towers)
 	ore_chunk_world_init(&server.chunks)
 	minion_world_init(&server.minions)
 	server.match = match_init()
@@ -207,6 +208,7 @@ server_tick :: proc(server: ^Server) {
 
 server_round_reset :: proc(server: ^Server) {
 	tower_world_reset(&server.towers)
+	nav_flow_sync(&server.towers)
 	ore_chunk_world_reset(&server.chunks)
 	mining_reset(&server.mining)
 	minion_world_reset(&server.minions)

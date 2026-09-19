@@ -125,6 +125,27 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 	return l.z >= -b.half.z - 0.05 && l.z <= b.half.z + grow
 }
 
+// Floors and cover only. Towers are a separate stamp so the minion flow field
+// can rebuild from a handful of disks instead of re-testing every cell.
+world_map_point_free :: proc(p: vec3, pad: f32) -> bool {
+	in_floor := false
+	for i in 0 ..< NUM_FLOOR_BOXES {
+		if box_contains(&world_floor_boxes[i], p, -pad) {
+			in_floor = true
+			break
+		}
+	}
+	if !in_floor {
+		return false
+	}
+	for i in 0 ..< NUM_SOLID_BOXES {
+		if box_contains(&world_solid_boxes[i], p, pad) {
+			return false
+		}
+	}
+	return true
+}
+
 // A point is free if it lies inside the walkable union (shrunk by pad), outside
 // every solid box (grown by pad), and not inside standing ore.
 //
@@ -135,20 +156,8 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 // instead of four. `tower_blocks_point` rejects on a bound cylinder first, so a
 // point nowhere near a tower costs seven distance compares and no occupancy.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
-	in_floor := false
-	for i in 0..<NUM_FLOOR_BOXES {
-		if box_contains(&world_floor_boxes[i], p, -pad) {
-			in_floor = true
-			break
-		}
-	}
-	if !in_floor {
+	if !world_map_point_free(p, pad) {
 		return false
-	}
-	for i in 0..<NUM_SOLID_BOXES {
-		if box_contains(&world_solid_boxes[i], p, pad) {
-			return false
-		}
 	}
 	if g_towers != nil && tower_blocks_point(g_towers, p, pad) {
 		return false

@@ -151,8 +151,10 @@ Minion :: struct {
 	retarget:    f32,
 
 	swipe_cd: f32,
-	steer:    f32,
-	steer_t:  f32,
+	wiggle:    f32,  // committed lateral when the stream stalls, -1 / 0 / +1
+	wiggle_t:  f32,
+	stuck_t:   f32,
+	stuck_at:  vec3,
 	age:      f32,
 }
 
@@ -655,43 +657,151 @@ minion_prey_pos :: proc(m: ^Minion, world: ^Minion_World, entities: ^Entity_Worl
 // ---------------------------------------------------------------------------
 // Movement
 
-// Walk toward `goal` through the lane graph, sliding along whatever is in the
-// way. Deliberately lighter than the character solver: a minion has no jump, no
-// air control and no stamina, and it never leaves the floor plane.
+@(private = "file")
+minion_rot_xy :: proc(d: vec3, a: f32) -> vec3 {
+	c := math.cos(a)
+	s := math.sin(a)
+	return {c * d.x - s * d.y, s * d.x + c * d.y, 0}
+}
+
+// Same corridor in the lane graph: a charge can run straight (crates are a
+// local problem). Different corridor: the void between lanes is a wall, and
+// the flow field is what knows to go via the plaza.
+@(private = "file")
+minion_same_corridor :: proc(from, to: vec3) -> bool {
+	rf := world_region(from)
+	rt := world_region(to)
+	if rf.kind == .Plaza && rt.kind == .Plaza {
+		return true
+	}
+	if rf.kind != .Plaza && rt.kind != .Plaza && rf.team == rt.team {
+		return true
+	}
+	return false
+}
+
+// Probe a fan around `desired` and pick the opening that still points at the
+// goal. Roomy gaps beat tight ones, so a crate in a 9 m lane always loses to
+// the centreline side rather than the wall pocket the old hash-steer picked.
+@(private = "file")
+minion_clear_dir :: proc(pos: vec3, desired: vec3) -> vec3 {
+	dir := norm_vec3(vec3{desired.x, desired.y, 0})
+	if len2_vec3(dir) < 0.01 {
+		return {}
+	}
+	angles := [7]f32{0, 0.40, -0.40, 0.80, -0.80, 1.20, -1.20}
+	best := dir
+	best_score := f32(-1)
+	for a in angles {
+		d := minion_rot_xy(dir, a)
+		probe := pos + d * 1.35 + vec3{0, 0, MINION_HEIGHT_M * 0.5}
+		if !world_point_free(probe, MINION_RADIUS_M) {
+			continue
+		}
+		score: f32 = 1
+		if world_point_free(probe, MINION_RADIUS_M + 0.55) {
+			score = 3
+		} else if world_point_free(probe, MINION_RADIUS_M + 0.25) {
+			score = 2
+		}
+		score -= abs(a) * 0.15
+		if score > best_score {
+			best_score = score
+			best = d
+		}
+	}
+	if best_score < 0 {
+		return dir
+	}
+	return best
+}
+
+@(private = "file")
+minion_nudge_free :: proc(m: ^Minion) {
+	if minion_spot_free(m.pos) {
+		return
+	}
+	for k in 0 ..< 8 {
+		a := f32(k) * (PI_F32 * 0.25)
+		try := m.pos + vec3{math.cos(a), math.sin(a), 0} * 0.30
+		if minion_spot_free(try) {
+			m.pos = try
+			m.pos.z = WORLD_FLOOR_Z
+			return
+		}
+	}
+}
+
+// Walk toward `goal`. Advance and rebuild follow a flow field so crates and
+// standing towers are downhill, not a coin-flip. A same-lane rush still
+// charges the body -- the field would drag it toward a pylon -- but uses the
+// same clearance fan so a crate between them is a detour, not a pin.
+// Deliberately lighter than the character solver: no jump, no air, floor only.
 @(private = "file")
 minion_move :: proc(m: ^Minion, goal: vec3, dt: f32) {
-	wp := nav_next_waypoint(m.pos, goal)
-	dir := norm_vec3(vec3{wp.x - m.pos.x, wp.y - m.pos.y, 0})
+	minion_nudge_free(m)
+
+	to_goal := vec3{goal.x - m.pos.x, goal.y - m.pos.y, 0}
+	if len2_vec3(to_goal) < 0.04 {
+		return
+	}
+
+	dir: vec3
+	use_flow := m.mode != .Rush || !minion_same_corridor(m.pos, goal)
+	if use_flow {
+		field := nav_flow_field_for(goal)
+		if flow, ok := nav_flow_dir(field, m.pos); ok {
+			if len2_vec3(flow) < 0.01 {
+				return
+			}
+			dir = flow
+		}
+	}
+	if len2_vec3(dir) < 0.01 {
+		wp := nav_next_waypoint(m.pos, goal)
+		dir = norm_vec3(vec3{wp.x - m.pos.x, wp.y - m.pos.y, 0})
+	}
 	if len2_vec3(dir) < 0.01 {
 		return
 	}
 
-	// Commit to a side when the way ahead is blocked; re-rolling every tick
-	// makes a wave oscillate in place at a crate.
-	m.steer_t -= dt
-	probe := m.pos + dir * 1.2 + vec3{0, 0, MINION_HEIGHT_M * 0.5}
-	if !world_point_free(probe, MINION_RADIUS_M) {
-		if m.steer == 0 || m.steer_t <= 0 {
-			a := math.atan2(dir.y, dir.x)
-			left := vec3{math.cos(a + 0.9), math.sin(a + 0.9), 0}
-			right := vec3{math.cos(a - 0.9), math.sin(a - 0.9), 0}
-			lf := world_point_free(m.pos + left * 1.2 + vec3{0, 0, MINION_HEIGHT_M * 0.5}, MINION_RADIUS_M)
-			rf := world_point_free(m.pos + right * 1.2 + vec3{0, 0, MINION_HEIGHT_M * 0.5}, MINION_RADIUS_M)
-			if lf && !rf {
-				m.steer = 1
-			} else if rf && !lf {
-				m.steer = -1
-			} else if m.steer == 0 {
-				m.steer = (hash_u32(u32(m.id)) & 1) == 0 ? -1 : 1
-			}
-			m.steer_t = 0.8
-		}
-	} else if m.steer_t <= 0 {
-		m.steer = 0
+	// Spread the stream a little so a wave is a ribbon, not a single file.
+	h := hash_u32(u32(m.id) * 2654435761)
+	lat := (f32(h & 255) / 255.0) * 2.0 - 1.0
+	side := vec3{-dir.y, dir.x, 0}
+	dir = norm_vec3(dir + side * (0.16 * lat))
+
+	m.wiggle_t -= dt
+	if m.wiggle_t <= 0 {
+		m.wiggle = 0
 	}
-	if m.steer != 0 {
-		a := math.atan2(dir.y, dir.x) + 0.9 * m.steer
-		dir = {math.cos(a), math.sin(a), 0}
+	m.stuck_t += dt
+	if m.stuck_t >= 0.65 {
+		moved := vec3{m.pos.x - m.stuck_at.x, m.pos.y - m.stuck_at.y, 0}
+		if len2_vec3(moved) < 0.35 * 0.35 {
+			left := minion_rot_xy(dir, 1.1)
+			right := minion_rot_xy(dir, -1.1)
+			lf := world_point_free(m.pos + left * 1.4 + vec3{0, 0, MINION_HEIGHT_M * 0.5}, MINION_RADIUS_M)
+			rf := world_point_free(m.pos + right * 1.4 + vec3{0, 0, MINION_HEIGHT_M * 0.5}, MINION_RADIUS_M)
+			if lf && !rf {
+				m.wiggle = 1
+			} else if rf && !lf {
+				m.wiggle = -1
+			} else {
+				m.wiggle = (h & 1) == 0 ? -1 : 1
+			}
+			m.wiggle_t = 0.9
+		}
+		m.stuck_at = m.pos
+		m.stuck_t = 0
+	}
+	if m.wiggle != 0 {
+		dir = norm_vec3(dir + side * (0.85 * m.wiggle))
+	}
+
+	dir = minion_clear_dir(m.pos, dir)
+	if len2_vec3(dir) < 0.01 {
+		return
 	}
 
 	step := dir * (m.speed * dt)
@@ -699,15 +809,21 @@ minion_move :: proc(m: ^Minion, goal: vec3, dt: f32) {
 	if minion_spot_free(try) {
 		m.pos = try
 	} else {
-		try = m.pos
-		try.x += step.x
-		if minion_spot_free(try) {
-			m.pos.x = try.x
-		}
-		try = m.pos
-		try.y += step.y
-		if minion_spot_free(try) {
-			m.pos.y = try.y
+		// Slide along the thing we hit, not along the world axes -- lanes are
+		// at 120° and axis-separation is what parked waves on crate faces.
+		from := m.pos + vec3{0, 0, MINION_HEIGHT_M * 0.5}
+		hit := try + vec3{0, 0, MINION_HEIGHT_M * 0.5}
+		n := world_surface_normal(from, hit, MINION_RADIUS_M)
+		n.z = 0
+		n = norm_vec3(n)
+		slide := dir - n * (n.x * dir.x + n.y * dir.y)
+		if len2_vec3(slide) > 0.01 {
+			slide = norm_vec3(slide)
+			try2 := m.pos + slide * (m.speed * dt)
+			if minion_spot_free(try2) {
+				m.pos = try2
+				dir = slide
+			}
 		}
 	}
 	m.pos.z = WORLD_FLOOR_Z
@@ -746,6 +862,8 @@ minions_tick :: proc(
 	if !live || match.state != .Active {
 		return
 	}
+
+	nav_flow_sync(towers)
 
 	// --- Waves ---------------------------------------------------------------
 	world.wave_timer -= dt
