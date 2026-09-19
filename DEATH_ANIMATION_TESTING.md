@@ -1,87 +1,75 @@
-# Death Animation Testing Guide
+# Death Animation Testing
 
-## Build Requirements
+The death animation is split between `robe_simulate` in `src/client_renderer.odin`,
+which times the phases per wisp, and `shaders/scene.glsl`, which draws them. The
+timing is checked by eye; the hand-off between the two halves is what this guide
+is mostly for, because a wisp that is never submitted to the shader animates
+perfectly and invisibly.
 
-Before testing, the shader must be compiled with `sokol-shdc`:
+## Build
 
-**Windows:**
+The shader must be recompiled, since `robe_fx[i].y` and the `DEATH_*` constants
+changed:
+
 ```powershell
-.\build.ps1
+.\build.ps1        # regenerates src\scene.odin from shaders\scene.glsl
 ```
 
-**Linux:**
 ```bash
 ./build_graphical_client.sh
 ```
 
-This will regenerate `src/scene.odin` from `shaders/scene.glsl` with the updated uniforms and constants.
+`.\check.ps1` type-checks all three targets without linking, which is quicker
+when only the Odin side changed.
 
-## Visual Testing
+## The timeline
 
-### 1. Basic Death Animation
-1. Launch server: `.\bin\nexus_server.exe` (or `./bin/nexus_server`)
-2. Launch client: `.\bin\nexus_client.exe` (or `./bin/nexus_client`)
-3. Join a team and find a bot or another player
-4. Deal fatal damage and observe:
-   - **0.0-0.4s:** Robe inflates smoothly, brightening as it swells
-   - **At 0.4s:** Robe and motes vanish, bright flash appears
-   - **0.4-0.52s:** Flash fades quickly
-   - **After 0.52s:** Wisp is hidden until respawn (4 seconds from death)
+| Phase | Length | What happens |
+| --- | --- | --- |
+| Swell | 0.40 s | Robe, hood and motes ease out to 1.8x; cloth and face gain up to 1.5 additive tint; the hood's halo widens with them and the stone under the wisp lights up to 2.5x |
+| Burst | 0.12 s | Body gone in one frame; a team-coloured sphere with a white core grows from 0.8 m to 2.0 m and fades as `(1 - t)²`; the ground flare peaks at 4x and falls to nothing |
+| Gone | until respawn | Nothing drawn, and the wisp stops lighting anything |
 
-### 2. Multiple Simultaneous Deaths
-1. Set up a scenario with multiple bots
-2. Use AoE spells (Arcane Orb, Call Lightning splash) to kill several at once
-3. Verify each wisp animates independently with proper timing
+At 60 fps the swell is about 23 frames and the burst about 8, so the robe's last
+drawn frame is near 1.73x rather than exactly 1.8x. That is sampling, not a bug.
 
-### 3. Spectator View
-1. Have one player die
-2. Another player watches from various distances and angles
-3. Verify the animation is visible and synchronized for all viewers
+## What to look for
 
-### 4. First-Person Death
-1. Let the local player die
-2. Verify:
-   - No crash or rendering artifacts
-   - The respawn countdown still shows
-   - If implemented, local flash effect feels appropriate
+1. **A kill in plain sight.** Robe and motes swell together and brighten. The
+   motes must ride outward with the cloth, not disappear inside it. The burst
+   blooms from where the face was, not from the wisp's feet.
+2. **Respawn.** The wisp comes back whole, at full size, with its cloth hanging
+   at rest, and it is visible. An invisible respawned wisp means `death_t` was
+   not cleared.
+3. **A second death.** The same wisp must swell and burst again.
+4. **Deaths out of sight.** Watch a wisp die, look away and back: it stays gone.
+   Join a server where someone is already dead: they stay gone until they
+   respawn, with no burst on the frame you first see them. A burst nobody
+   watched is never replayed.
+5. **A wisp killed from full health.** It must not shrink on the frame it dies -
+   the server zeroes health, and the swell starts from the size everyone just
+   saw, not from the smallest.
+6. **Several at once.** Kill a group with Arcane Orb or Call Lightning splash;
+   each wisp keeps its own timer and bursts on its own beat.
+7. **Your own death.** No wisp is drawn for the local player, so this is
+   unchanged: the screen desaturates and the respawn count runs down. There is
+   no first-person flash.
 
-## Performance Testing
+## Load
 
-Run with `NEXUS_BOT_DEBUG=true` to see bot positions, then:
+```powershell
+$env:BOTS_PER_TEAM = "5"
+.\bin\nexus_server.exe
+```
 
-1. Spawn multiple bots: `$env:BOTS_PER_TEAM = "5"` (Windows) or `BOTS_PER_TEAM=5` (Linux)
-2. Trigger multiple deaths in quick succession
-3. Monitor frame rate - should remain stable (the pop flash is cheap, similar to existing impact effects)
+The burst is one more `corona` glow and one more point light, on the same budget
+as an impact, so frame time should not move when several wisps go at once.
 
-## Edge Cases
+## Limits
 
-### Rapid Death/Respawn
-1. Set fast respawn with modified `RESPAWN_DELAY_SEC` in `death_respawn.odin` (optional)
-2. Kill and respawn the same wisp multiple times
-3. Verify animation resets properly each time
-
-### Lag/Interpolation
-1. Simulate packet loss or high latency
-2. Verify the death animation triggers on the correct frame when snapshots arrive
-3. Remote wisps already use interpolation for position - death animation should sync with that
-
-### Death While Moving
-1. Kill a wisp that's sprinting or mid-air
-2. Verify the cloth simulation during inflate respects momentum
-3. The pop should still trigger cleanly regardless of velocity
-
-## Rendering Details
-
-**Inflate timing:** 0.40 seconds
-- Robe radii scale: 1.0 → 1.8x (quadratic ease-out)
-- Brightness: 0.0 → 1.5 additive tint (quadratic)
-
-**Pop timing:** 0.12 seconds
-- Flash radius: 0.8m → 2.0m
-- Intensity: 1.0 → 0.0 (quadratic falloff)
-
-## Known Limitations
-
-- No sound effects (out of scope for this PR)
-- First-person death doesn't add a local camera flash (could be added later)
-- The cloth stops simulating after the pop; if respawn happens mid-animation (shouldn't in normal gameplay), the robe resets cleanly via the `settled = false` path
+- No sound on death.
+- A wisp that drops out of the nearest sixteen mid-swell is dropped from the
+  animation and stays gone, the same way distant cloth stops being simulated.
+- The first frame after the burst ends is still submitted, with a flash faded to
+  roughly `1e-13` of its peak. It costs one wisp slot for one frame and is not
+  visible.
