@@ -108,13 +108,13 @@ ore_name :: proc(kind: Ore_Kind) -> string {
 // ---------------------------------------------------------------------------
 // Tuning
 
-// Lane pylons are slim enough to walk around inside a 9 m lane; the golden one
-// only has to fit the plaza.
-PYLON_NEAR_HEIGHT :: f32(14.0)
+// Lane pylons stay well under the 14 m arena ceiling so the whole column is
+// in view from the floor. Gold is taller, still with headroom.
+PYLON_NEAR_HEIGHT :: f32(6.0)
 PYLON_NEAR_RADIUS :: f32(2.4)
-PYLON_FAR_HEIGHT  :: f32(12.0)
+PYLON_FAR_HEIGHT  :: f32(5.5)
 PYLON_FAR_RADIUS  :: f32(2.2)
-PYLON_GOLD_HEIGHT :: f32(19.0)
+PYLON_GOLD_HEIGHT :: f32(9.0)
 PYLON_GOLD_RADIUS :: f32(3.6)
 
 // Divides incoming carve amount. The golden pylon is meant to take a
