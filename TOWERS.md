@@ -9,22 +9,22 @@ spheres the server raycasts.
 
 Each tower is a thin core plus a spiral of overlapping ore nodes.
 
-- **Core.** Vertical cylinder, radius 0.55 m. While any node is alive the
-  shaft stays at design height (`tower_column_height(max_count)`), so high
-  slots stay inside the bound volume and holes read against the last-stand
-  column. Flattened towers drop the core and stop blocking. Derived, not
-  synced. Thin on purpose: it does not swallow beams the way a fat pillar
-  would.
+- **Core.** Vertical cylinder, radius 0.55 m. Height covers the highest
+  occupied slot (`tower_column_height(highest_live + 1)`), so a live cap
+  stays inside the bound and a packed collapse actually shortens the tower.
+  Flattened towers drop the core and stop blocking. Derived, not synced.
+  Thin on purpose: it does not swallow beams the way a fat pillar would.
 - **Nodes.** 24 / 12 / 12 for gold / near-lane / far-lane. Each has a stable
   `Node_ID`, HP, and an alive flag. Identity for damage is the ID. Spatial
   slot is the array index. Radius is a fraction of the full-tower pitch, not
   the old hex circumradius, so a node is one course of the pylon rather than
   a boulder through the floor.
-- **Spiral.** Node position is a stable function of array index, not HP rank.
+- **Spiral.** Node position is a function of array index, not HP rank.
   Slot 0 sits on the floor (centre at `node_radius`); the last slot kisses
   the cap. Position is a golden-angle helix wrapped on the core. Damage and
   death omit a sphere; they do not move neighbours. Rebuild fills the first
-  dead slot, which is the same world point it died at.
+  dead slot (the same world point it died at, until a collapse packs the
+  column and that first dead slot is the new cap).
 
 The client draws that geometry analytically: one cylinder and one sphere per
 live slot, the same primitives the server raycasts. There is no occupancy
@@ -48,6 +48,32 @@ nodes emits N chunks. Gold toughness still divides incoming amount.
 A projectile that stops a hair short of the surface snaps to the nearest live
 node inside a short fallback, so side hits and core grazes still carve.
 
+## Collapse
+
+Holes stay until the column is unsound. A run of **three or more consecutive
+empty slots with live rock still above them** makes the tower eligible.
+Trailing empties at the cap do not count (compacting them would be a no-op;
+the shaft already shortened to the highest live slot).
+
+Every `TOWER_COLLAPSE_PERIOD` (3 s) an eligible tower rolls. Base chance is
+0.40 at a 3-gap, plus 0.12 per extra empty slot, capped at 0.85. On success
+live nodes pack into the lowest slots. `Node_ID` and HP ride with the node.
+`live_count` and `intact` do not change. The shaft drops to the new packed
+span, so the tower actually shrinks. Wounds clear; the settle is the
+feedback.
+
+Minion hops still fill the first dead slot. After a collapse that is the new
+top, so a wave grows the column back up rather than patching a hole that no
+longer exists.
+
+The wire does not grow: a collapse is just HP bytes moving to lower indices.
+The client notices a same-count gappy mask becoming packed and starts a
+`collapse_t` settle (1 → 0 over 0.9 s). Each live node corkscrews from its
+old helix slot toward its packed slot and slumps slightly toward the core at
+mid-morph. That 0..1 is the morph parameter SDF welding will drive when the
+analytic spheres become a deformed volume: smear along the same from-to
+path instead of rigid-body interpolating the spheres.
+
 ## Minion rebuild
 
 One hop restores `TOWER_DONATE_BASE` (2) nodes, plus up to
@@ -67,27 +93,30 @@ on smaller towers are zero. Snapshot still carries at most two dirty towers;
 GameState carries all seven. `SNAPSHOT_WORST_BYTES` stays under MTU.
 
 The client unpacks HP by array index. Collision and drawing use those same
-slots: the GPU gets max_count, spiral radius, stack step, and a 32-bit alive
-mask packed as two 16-bit floats (so a full mask cannot become a NaN).
+slots: the GPU gets max_count, spiral radius, stack step, a 32-bit alive
+mask packed as two 16-bit floats (so a full mask cannot become a NaN), and
+during a settle the previous alive mask plus `collapse_t`.
 
 ## Damage visualization
 
-Drawing matches collision: every live node is the full sphere at its fixed
-slot, dead nodes are omitted (visible holes), and the core stays at design
-height while the tower stands. Chip damage is a **scar** stamped at the bite
-(the outward face of the node that just lost HP). Repeated bites on the same
-aim merge into one growing scar. Geometry never moves due to HP changes, so
-a kill punches a hole that stays where you aimed.
+Drawing matches collision: every live node is the full sphere at its current
+slot, dead nodes are omitted (visible holes), and the core covers the
+highest occupied slot. Chip damage is a **scar** stamped at the bite (the
+outward face of the node that just lost HP). Repeated bites on the same aim
+merge into one growing scar. A kill punches a hole that stays where you
+aimed until a collapse packs the column.
 
 Lane light, apron dust, and the HUD use **mass** (`sum(hp) / sum(max_hp)`),
 not `intact`. `intact` is still `live_count / max_count` for scoring and
 minion rebuild. Lighting and the percent readout therefore move on the
-first chip, not the first kill.
+first chip, not the first kill. Collapse does not change mass or intact; it
+only rearranges where that mass sits.
 
 `g_pylons` / `Pylon_World` in `pylons.odin` are unused leftovers from the
 occupancy-grid era. Gameplay authority is `g_towers`.
 
 ## Out of scope
 
-Smooth node morphing, a custom node mesh, and bot pathing that aims at a
-specific low-HP node. Those can follow without changing the authority.
+SDF-welded collapse (the analytic corkscrew is the stand-in), a custom node
+mesh, and bot pathing that aims at a specific low-HP node. Those can follow
+without changing the authority.

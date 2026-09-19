@@ -7,18 +7,22 @@ import "core:slice"
 // Spiral shield-node tower authority.
 //
 // Gameplay is an array of overlapping ore nodes wrapped around a thin core.
-// Node_ID is identity. Spiral position is a stable function of array index
-// (slot 0 on the floor, last slot at the cap) so damage and death leave holes
-// instead of sliding a healthier neighbour under the aim. HP is still sorted
-// for bookkeeping; that sort must not move geometry. Hits address the Node_ID
-// found at the impact point. While any node lives the core stays at design
-// height — a thin last-stand shaft visible through the gaps. Minion hops
-// restore a handful of nodes, scaled by the wave's own-ore bolster, so a
-// flattened lane still takes about three unbuffed waves.
+// Node_ID is identity. Spiral position is a function of array index (slot 0
+// on the floor, last slot at the cap) so a bite leaves a hole instead of
+// sliding a healthier neighbour under the aim. HP is still sorted for
+// bookkeeping; that sort must not move geometry. Hits address the Node_ID
+// found at the impact point.
+//
+// Holes stay until the column is unsound: a run of three or more empty slots
+// with live rock still above them. Every few seconds that tower then has a
+// chance to collapse — live nodes pack into the lowest slots, the shaft
+// shortens to the new cap, and identity (id, HP) rides with the node. Minion
+// hops still fill the first dead slot, which after a collapse is the new top.
 //
 // The client draws this geometry analytically (core cylinder + node spheres)
-// from the same slot indices and alive mask. Chip scars live in the shader.
-// See TOWERS.md.
+// from the same slot indices and alive mask. A collapse is a helix settle
+// driven by collapse_t; SDF welding can later use that same 0..1 morph.
+// Chip scars live in the shader. See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -70,6 +74,16 @@ TOWER_DONATE_OWN_EXTRA :: 2
 // couple of splash nicks; the shader reads this many per tower.
 TOWER_WOUND_MAX :: 4
 #assert(TOWER_WOUND_MAX * MAX_PYLONS == 28)
+
+// Collapse: a hole of this many consecutive empty slots, with live rock
+// still above it, makes the column eligible to pack down. Rolls every
+// PERIOD seconds; bigger holes are more eager. ANIM is the client settle.
+TOWER_COLLAPSE_GAP              :: 3
+TOWER_COLLAPSE_PERIOD           :: f32(3.0)
+TOWER_COLLAPSE_CHANCE           :: f32(0.40)
+TOWER_COLLAPSE_CHANCE_PER_EXTRA :: f32(0.12)
+TOWER_COLLAPSE_CHANCE_MAX       :: f32(0.85)
+TOWER_COLLAPSE_ANIM             :: f32(0.90)
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,6 +141,17 @@ Tower :: struct {
 	wound_count: int,
 
 	touched: bool,
+
+	// Server: time since the last collapse roll while a hole is open.
+	collapse_timer: f32,
+	collapse_rolls: u32,
+
+	// Client visual only. Authority is the packed slots the moment the
+	// server collapses; these let the shader corkscrew from the gappy
+	// mask to the packed one. SDF welding can drive off collapse_t.
+	collapse_from_mask:   u32,
+	collapse_from_height: f32,
+	collapse_t:           f32,
 }
 
 Tower_World :: struct {
@@ -201,8 +226,8 @@ tower_configure :: proc(t: ^Tower, i: int) {
 }
 
 // Floor-to-cap packing for a full tower. Slot 0 sits on the floor, the last
-// slot kisses the design height. Those positions never move: a kill omits the
-// sphere, it does not reflow the helix.
+// slot kisses the design height. A kill omits the sphere; it does not reflow
+// the helix until a collapse packs live nodes into the lowest slots.
 @(private = "file")
 tower_layout :: proc(t: ^Tower) {
 	n := t.max_count
@@ -260,16 +285,35 @@ tower_build_full :: proc(t: ^Tower) {
 	tower_recompute(t)
 	tower_resort_nodes(t)
 	tower_clear_wounds(t)
+	tower_clear_collapse_visual(t)
+	t.collapse_timer = 0
+	t.collapse_rolls = 0
 	tower_bump(t)
 }
 
+tower_highest_live :: proc(t: ^Tower) -> int {
+	hi := -1
+	n := t.max_count
+	if n > MAX_NODES_PER_TOWER {
+		n = MAX_NODES_PER_TOWER
+	}
+	for i in 0 ..< n {
+		if t.nodes[i].alive {
+			hi = i
+		}
+	}
+	return hi
+}
+
 tower_recompute :: proc(t: ^Tower) {
-	// Standing towers keep the design shaft so high slots stay inside the
-	// bound volume. Flattened towers drop the core so they stop blocking.
+	// Shaft covers the highest occupied slot so a live cap still sits
+	// inside the bound, and a packed collapse actually shortens the tower.
+	// Flattened towers drop the core so they stop blocking.
 	if t.live_count <= 0 {
 		t.core_height = 0
 	} else {
-		t.core_height = tower_column_height(t, t.max_count)
+		hi := tower_highest_live(t)
+		t.core_height = tower_column_height(t, hi + 1)
 	}
 	t.intact = t.max_count > 0 ? f32(t.live_count) / f32(t.max_count) : 0
 }
@@ -313,8 +357,8 @@ tower_alive_mask :: proc(t: ^Tower) -> u32 {
 	return mask
 }
 
-// Node spiral position from ARRAY INDEX (stable), not HP rank.
-// Damage and death must not move geometry. Holes stay where you aimed.
+// Node spiral position from ARRAY INDEX, not HP rank.
+// Damage and death leave holes; only collapse reassigns indices.
 tower_node_spiral_pos :: proc(t: ^Tower, array_index: int) -> vec3 {
 	if array_index < 0 || array_index >= t.max_count {
 		return {}
@@ -746,8 +790,8 @@ tower_mine :: proc(
 	reach := max(radius, t.node_radius * 1.15)
 	reach2 := reach * reach
 
-	// Collect by array index. Geometry is stable, so killing a neighbour
-	// cannot slide a different node under this splash.
+	// Collect by array index. A kill cannot slide a neighbour under this
+	// splash; only a later collapse reassigns slots.
 	hit_idx: [MAX_NODES_PER_TOWER]int
 	n_hit := 0
 	for idx in 0 ..< t.max_count {
@@ -919,6 +963,174 @@ tower_reserve :: proc(world: ^Tower_World, id: Pylon_ID) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Collapse
+
+tower_packed_mask :: proc(live: int) -> u32 {
+	if live <= 0 {
+		return 0
+	}
+	if live >= 32 {
+		return 0xFFFFFFFF
+	}
+	return (u32(1) << u32(live)) - 1
+}
+
+tower_is_packed :: proc(t: ^Tower) -> bool {
+	return tower_alive_mask(t) == tower_packed_mask(t.live_count)
+}
+
+// Longest consecutive dead run that still has live rock above it. Trailing
+// empties at the cap do not count: compacting them would be a no-op.
+tower_longest_unsupported_gap :: proc(t: ^Tower) -> int {
+	best := 0
+	run := 0
+	n := t.max_count
+	if n > MAX_NODES_PER_TOWER {
+		n = MAX_NODES_PER_TOWER
+	}
+	for i in 0 ..< n {
+		if t.nodes[i].alive {
+			if run > best {
+				best = run
+			}
+			run = 0
+		} else {
+			run += 1
+		}
+	}
+	return best
+}
+
+tower_collapse_pending :: proc(t: ^Tower) -> bool {
+	if t.live_count <= 0 {
+		return false
+	}
+	if tower_is_packed(t) {
+		return false
+	}
+	return tower_longest_unsupported_gap(t) >= TOWER_COLLAPSE_GAP
+}
+
+tower_collapse_chance :: proc(gap: int) -> f32 {
+	extra := gap - TOWER_COLLAPSE_GAP
+	if extra < 0 {
+		extra = 0
+	}
+	c := TOWER_COLLAPSE_CHANCE + f32(extra) * TOWER_COLLAPSE_CHANCE_PER_EXTRA
+	if c > TOWER_COLLAPSE_CHANCE_MAX {
+		return TOWER_COLLAPSE_CHANCE_MAX
+	}
+	return c
+}
+
+// Pack live nodes into the lowest slots. Identity and HP ride with the node.
+// Returns whether anything actually moved.
+tower_compact_nodes :: proc(t: ^Tower) -> bool {
+	write := 0
+	moved := false
+	n := t.max_count
+	if n > MAX_NODES_PER_TOWER {
+		n = MAX_NODES_PER_TOWER
+	}
+	for read in 0 ..< n {
+		if !t.nodes[read].alive {
+			continue
+		}
+		if write != read {
+			t.nodes[write] = t.nodes[read]
+			t.nodes[read] = {}
+			moved = true
+		}
+		write += 1
+	}
+	return moved
+}
+
+tower_collapse_apply :: proc(world: ^Tower_World, t: ^Tower) -> bool {
+	if t == nil || !tower_compact_nodes(t) {
+		return false
+	}
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	tower_clear_wounds(t)
+	tower_touch(world, t)
+	return true
+}
+
+tower_collapse_tick :: proc(world: ^Tower_World, t: ^Tower, dt: f32) {
+	if !tower_collapse_pending(t) {
+		t.collapse_timer = 0
+		return
+	}
+	t.collapse_timer += dt
+	if t.collapse_timer < TOWER_COLLAPSE_PERIOD {
+		return
+	}
+	t.collapse_timer = 0
+	t.collapse_rolls += 1
+	h := hash_u32(u32(t.pylon_id) * 2654435761 + t.collapse_rolls * 2246822519 + t.version)
+	roll := f32(h & 0xFFFF) / 65536.0
+	if roll < tower_collapse_chance(tower_longest_unsupported_gap(t)) {
+		tower_collapse_apply(world, t)
+	}
+}
+
+tower_clear_collapse_visual :: proc(t: ^Tower) {
+	t.collapse_from_mask = 0
+	t.collapse_from_height = 0
+	t.collapse_t = 0
+}
+
+tower_begin_collapse_visual :: proc(t: ^Tower, from_mask: u32, from_height: f32) {
+	t.collapse_from_mask = from_mask
+	t.collapse_from_height = from_height
+	t.collapse_t = 1
+}
+
+tower_collapse_ease :: proc(t: f32) -> f32 {
+	u := clampf(1 - t, 0, 1)
+	return u * u * (3 - 2 * u)
+}
+
+tower_display_core_height :: proc(t: ^Tower) -> f32 {
+	if t.collapse_t <= 0.001 {
+		return t.core_height
+	}
+	u := tower_collapse_ease(t.collapse_t)
+	return t.collapse_from_height * (1 - u) + t.core_height * u
+}
+
+tower_world_visual_tick :: proc(world: ^Tower_World, dt: f32) {
+	step := dt / TOWER_COLLAPSE_ANIM
+	if step < 0 {
+		step = 0
+	}
+	for i in 0 ..< world.count {
+		t := &world.towers[i]
+		if t.collapse_t <= 0 {
+			continue
+		}
+		t.collapse_t -= step
+		if t.collapse_t < 0 {
+			t.collapse_t = 0
+		}
+	}
+}
+
+tower_unpack_is_collapse :: proc(old_mask: u32, old_live: int, new_mask: u32, new_live: int) -> bool {
+	if old_live != new_live || new_live <= 0 {
+		return false
+	}
+	if old_mask == new_mask {
+		return false
+	}
+	if new_mask != tower_packed_mask(new_live) {
+		return false
+	}
+	return old_mask != tower_packed_mask(old_live)
+}
+
+// ---------------------------------------------------------------------------
 // Wire
 
 tower_pack_nodes :: proc(t: ^Tower, dst: []u8) -> int {
@@ -939,11 +1151,37 @@ tower_pack_nodes :: proc(t: ^Tower, dst: []u8) -> int {
 	return MAX_NODES_PER_TOWER
 }
 
+tower_stamp_unpack_chips :: proc(t: ^Tower, had: [MAX_NODES_PER_TOWER]bool, old_hp: [MAX_NODES_PER_TOWER]f32, old_pos: [MAX_NODES_PER_TOWER]vec3) {
+	n_chip := 0
+	for i in 0 ..< t.max_count {
+		eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
+		if had[i] && old_hp[i] > t.nodes[i].hp + eps {
+			n_chip += 1
+		}
+	}
+	// A live bite hits a handful of overlapping nodes. A full GameState
+	// catch-up chips most of the tower at once; skip scars there.
+	if n_chip <= 0 || n_chip > TOWER_WOUND_MAX * 2 {
+		return
+	}
+	for i in 0 ..< t.max_count {
+		eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
+		if !had[i] || old_hp[i] <= t.nodes[i].hp + eps {
+			continue
+		}
+		lost := (old_hp[i] - t.nodes[i].hp) / max(old_hp[i], 0.01)
+		face := tower_node_outward_face(t, old_pos[i])
+		tower_stamp_wound(t, face, t.node_radius * (0.22 + 0.30 * clampf(lost, 0, 1)))
+	}
+}
+
 tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	if len(src) < t.max_count {
 		return
 	}
 	old_live := t.live_count
+	old_mask := tower_alive_mask(t)
+	old_height := t.core_height
 	old_pos: [MAX_NODES_PER_TOWER]vec3
 	old_hp: [MAX_NODES_PER_TOWER]f32
 	had: [MAX_NODES_PER_TOWER]bool
@@ -990,28 +1228,18 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	}
 	tower_resort_nodes(t)
 	tower_recompute(t)
-	if t.live_count > old_live {
+	new_mask := tower_alive_mask(t)
+	if tower_unpack_is_collapse(old_mask, old_live, new_mask, t.live_count) {
+		tower_begin_collapse_visual(t, old_mask, old_height)
 		tower_clear_wounds(t)
 	} else {
-		n_chip := 0
-		for i in 0 ..< t.max_count {
-			eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
-			if had[i] && old_hp[i] > t.nodes[i].hp + eps {
-				n_chip += 1
-			}
+		if old_mask != new_mask {
+			tower_clear_collapse_visual(t)
 		}
-		// A live bite hits a handful of overlapping nodes. A full GameState
-		// catch-up chips most of the tower at once; skip scars there.
-		if n_chip > 0 && n_chip <= TOWER_WOUND_MAX * 2 {
-			for i in 0 ..< t.max_count {
-				eps := tower_hp_wire_eps(max(t.nodes[i].max_hp, old_hp[i]))
-				if !had[i] || old_hp[i] <= t.nodes[i].hp + eps {
-					continue
-				}
-				lost := (old_hp[i] - t.nodes[i].hp) / max(old_hp[i], 0.01)
-				face := tower_node_outward_face(t, old_pos[i])
-				tower_stamp_wound(t, face, t.node_radius * (0.22 + 0.30 * clampf(lost, 0, 1)))
-			}
+		if t.live_count > old_live {
+			tower_clear_wounds(t)
+		} else {
+			tower_stamp_unpack_chips(t, had, old_hp, old_pos)
 		}
 	}
 	if changed {
@@ -1046,12 +1274,9 @@ tower_clear_dirty :: proc(world: ^Tower_World, ids: []Pylon_ID) {
 // Tick
 
 tower_world_tick :: proc(world: ^Tower_World, chunks: ^Ore_Chunk_World, dt: f32) {
-	_ = dt
 	for i in 0 ..< world.count {
 		t := &world.towers[i]
-		if !t.touched {
-			continue
-		}
+		tower_collapse_tick(world, t, dt)
 		// One dead node = one chunk carrying that node's full ore. Splash that
 		// kills N nodes credits N * node_ore, so this loop emits N chunks.
 		payout := tower_node_ore(t)
@@ -1170,7 +1395,8 @@ tower_selftest :: proc() {
 	assert(ok, "kill splash mines")
 	assert(t.live_count < 8, "kill splash reduces live_count")
 	if t.live_count > 0 {
-		assert(abs(t.core_height - t.design_height) < 0.001, "splash does not shrink the shaft")
+		hi := tower_highest_live(t)
+		assert(abs(t.core_height - tower_column_height(t, hi + 1)) < 0.001, "shaft covers the highest live slot")
 	} else {
 		assert(t.core_height == 0, "flattened tower drops the core")
 	}
@@ -1199,7 +1425,8 @@ tower_selftest :: proc() {
 	assert(built, "donate builds")
 	assert(gained > 0, "donate gained")
 	assert(t.live_count == min(before + gained, t.max_count), "donate live_count")
-	assert(abs(t.core_height - t.design_height) < 0.001, "rebuild keeps the design shaft")
+	hi_rebuild := tower_highest_live(t)
+	assert(abs(t.core_height - tower_column_height(t, hi_rebuild + 1)) < 0.001, "rebuild shaft covers the highest live slot")
 	assert(t.wound_count == 0, "rebuild clears scars")
 
 	// Analytic ray from outside hits the node we aimed at.
@@ -1229,6 +1456,96 @@ tower_selftest :: proc() {
 	assert(!dead_ok || dead_idx != 2, "dead slot is not a hit")
 	_, live_idx, live_ok := tower_node_at_point(t, live_center, 0.05)
 	assert(live_ok && live_idx == 3, "live neighbour still found at its slot")
+
+	// Two-hole gap is stable; three empty with live rock above is eligible.
+	tower_build_full(t)
+	t.nodes[2].alive = false
+	t.nodes[2].hp = 0
+	t.nodes[3].alive = false
+	t.nodes[3].hp = 0
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	assert(tower_longest_unsupported_gap(t) == 2, "two-hole gap length")
+	assert(!tower_collapse_pending(t), "two-hole gap does not collapse")
+	for _ in 0 ..< 8 {
+		tower_collapse_tick(&world, t, TOWER_COLLAPSE_PERIOD)
+	}
+	assert(!t.nodes[2].alive && t.nodes[4].alive, "two-hole gap stays put")
+
+	tower_build_full(t)
+	t.nodes[5].alive = false
+	t.nodes[5].hp = 0
+	t.nodes[6].alive = false
+	t.nodes[6].hp = 0
+	t.nodes[7].alive = false
+	t.nodes[7].hp = 0
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	assert(tower_longest_unsupported_gap(t) == 0, "trailing empties are not a hole")
+	assert(!tower_collapse_pending(t), "a missing cap does not collapse")
+	assert(abs(t.core_height - tower_column_height(t, 5)) < 0.001, "missing cap shortens the shaft")
+
+	tower_build_full(t)
+	for i in 1 ..= 3 {
+		t.nodes[i].alive = false
+		t.nodes[i].hp = 0
+	}
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	assert(tower_longest_unsupported_gap(t) == 3, "three-hole gap length")
+	assert(tower_collapse_pending(t), "three-hole gap is eligible")
+	assert(abs(t.core_height - t.design_height) < 0.001, "gappy tower stays as tall as the cap")
+	cap_id := t.nodes[7].id
+	cap_hp := t.nodes[7].hp
+	gappy_mask := tower_alive_mask(t)
+	gappy_h := t.core_height
+	gappy_live := t.live_count
+	gappy_wire: [MAX_NODES_PER_TOWER]u8
+	tower_pack_nodes(t, gappy_wire[:])
+	assert(tower_collapse_apply(&world, t), "three-hole gap packs")
+	assert(t.live_count == gappy_live, "collapse does not kill nodes")
+	assert(tower_is_packed(t), "collapse packs to the floor")
+	assert(t.nodes[4].id == cap_id && t.nodes[4].hp == cap_hp, "cap identity rides down")
+	assert(!t.nodes[5].alive && !t.nodes[7].alive, "high slots empty after pack")
+	assert(t.core_height < gappy_h, "collapse shortens the shaft")
+	assert(abs(t.core_height - tower_column_height(t, t.live_count)) < 0.001, "packed shaft matches live span")
+	assert(!tower_collapse_pending(t), "packed tower is not eligible")
+	packed_wire: [MAX_NODES_PER_TOWER]u8
+	tower_pack_nodes(t, packed_wire[:])
+	tower_unpack_nodes(t, gappy_wire[:])
+	tower_clear_collapse_visual(t)
+	assert(!tower_is_packed(t), "gappy unpack restored holes")
+	tower_unpack_nodes(t, packed_wire[:])
+	assert(t.collapse_t == 1, "packed unpack starts the settle")
+	assert(t.collapse_from_mask == gappy_mask, "settle remembers the gappy mask")
+	assert(abs(t.collapse_from_height - gappy_h) < 0.001, "settle remembers the tall shaft")
+	assert(t.wound_count == 0, "collapse does not stamp fake scars")
+
+	before_top := t.live_count
+	gained_top, built_top := tower_build(&world, 0, 1)
+	assert(built_top && gained_top == 1, "donate after collapse")
+	assert(t.nodes[before_top].alive, "donate grows the packed cap")
+	assert(tower_is_packed(t), "donate on a packed tower stays packed")
+
+	// Tick path: a 3-gap eventually packs.
+	tower_build_full(t)
+	for i in 0 ..= 2 {
+		t.nodes[i].alive = false
+		t.nodes[i].hp = 0
+	}
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	assert(tower_collapse_pending(t), "hollow base is eligible")
+	for _ in 0 ..< 80 {
+		if tower_is_packed(t) {
+			break
+		}
+		tower_collapse_tick(&world, t, TOWER_COLLAPSE_PERIOD)
+	}
+	assert(tower_is_packed(t), "hollow base eventually collapses")
+	assert(t.nodes[0].alive && !t.nodes[5].alive, "base collapse drops the remaining shell")
+	assert(t.core_height < t.design_height, "base collapse shrinks the tower")
+	assert(tower_collapse_chance(6) > tower_collapse_chance(3), "bigger holes collapse more eagerly")
 
 	// Production layouts: shell and core share the pylon's floor and ceiling.
 	counts := [3]int{TOWER_NODES_GOLD, TOWER_NODES_NEAR, TOWER_NODES_FAR}

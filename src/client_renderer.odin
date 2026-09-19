@@ -396,6 +396,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	fx := &gc.fx
 	in_match := gc.phase == .Playing || gc.phase == .In_Menu
 	playing := in_match && pred.initialized && !gc.is_spectating
+	tower_world_visual_tick(&world.towers, min(dt, 0.05))
 
 	// --- Camera --------------------------------------------------------------
 	base_pos: vec3
@@ -482,11 +483,13 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 
 	for i in 0..<MAX_PYLONS {
 		t := &world.towers.towers[i]
+		display_h := tower_display_core_height(t)
 		fs_params.pylons[i] = {t.base.x, t.base.y, t.base.z, t.yaw}
-		fs_params.pylon_shape[i] = {t.core_height, t.design_radius, t.seed, f32(u8(t.ore))}
+		fs_params.pylon_shape[i] = {display_h, t.design_radius, t.seed, f32(u8(t.ore))}
 		if t.live_count <= 0 {
 			fs_params.pylon_bound[i] = {0, 0, 0, 0}
 			fs_params.pylon_node_meta[i] = {}
+			fs_params.pylon_collapse[i] = {}
 		} else {
 			mask := tower_alive_mask(t)
 			fs_params.pylon_bound[i] = {f32(t.max_count), t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
@@ -495,6 +498,17 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				t.stack_step,
 				f32(mask & 0xFFFF),
 				f32(mask >> 16),
+			}
+			if t.collapse_t > 0.001 {
+				from := t.collapse_from_mask
+				fs_params.pylon_collapse[i] = {
+					t.collapse_t,
+					t.collapse_from_height,
+					f32(from & 0xFFFF),
+					f32(from >> 16),
+				}
+			} else {
+				fs_params.pylon_collapse[i] = {}
 			}
 		}
 		for k in 0 ..< TOWER_WOUND_MAX {

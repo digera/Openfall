@@ -42,6 +42,7 @@ layout(binding=1) uniform fs_params {
     vec4 pylon_shape[7];    // x core height, y design radius, z noise seed, w ore kind
     vec4 pylon_bound[7];    // x max node count, y node radius, z outer radius, w remaining mass 0..1
     vec4 pylon_node_meta[7]; // x spiral radius, y stack step, z alive bits 0..15, w alive bits 16..31
+    vec4 pylon_collapse[7]; // x settle 1->0, y from core height, z from-mask 0..15, w from-mask 16..31
     vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
@@ -443,10 +444,11 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // Ore pylons
 //
 // Same geometry as tower_raycast: a solid Z-up core cylinder with a golden-angle
-// spiral of node spheres at FIXED array-index slots. Analytic hits, no occupancy
+// spiral of node spheres at array-index slots. Analytic hits, no occupancy
 // atlas. Chip damage is a scar (pylon_wounds); dead slots are omitted (visible
-// holes) and the core stays at design height while the tower stands. Must stay
-// in lockstep with src/tower_nodes.odin.
+// holes). A collapse packs live nodes down; pylon_collapse.x is the 0..1 morph
+// (1 = still gappy, 0 = packed) so SDF welding can later smear along the same
+// from-to path. Must stay in lockstep with src/tower_nodes.odin.
 
 const float PYLON_GRAIN_FREQ = 2.10;
 const float PYLON_CORE_R = 0.55;                 // CORE_RADIUS
@@ -527,12 +529,25 @@ float pylon_vein(vec3 p, float seed) {
     return pow(clamp(v, 0.0, 1.0), 6.0);
 }
 
-// Node position from ARRAY INDEX (stable), not HP rank.
+// Node position from ARRAY INDEX, not HP rank.
 // Must match tower_node_spiral_pos in src/tower_nodes.odin.
 vec3 pylon_node_local(int array_index, float spiral_r, float step, float node_r) {
     float z = node_r + float(array_index) * step;
     float angle = float(array_index) * SPIRAL_GOLDEN_ANGLE;
     return vec3(cos(angle) * spiral_r, sin(angle) * spiral_r, z);
+}
+
+// k-th set bit in a 32-bit alive mask. Used to corkscrew a packed node
+// back toward the slot it occupied before the collapse.
+int pylon_nth_set(uint mask, int n) {
+    int seen = 0;
+    for (int i = 0; i < PYLON_NODE_MAX; i++) {
+        if ((mask & (1u << uint(i))) != 0u) {
+            if (seen == n) return i;
+            seen += 1;
+        }
+    }
+    return n;
 }
 
 // Finite Z-up cylinder on the origin. Twin of ray_cylinder_hit in src/math.odin,
@@ -636,16 +651,21 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
 
 // Core cylinder plus live node spheres in the tower's local frame.
 // part: 0 = core, 1 = node. Slots are fixed by array index; dead bits skip.
+// collapse.x > 0: lerp the k-th live node from the gappy from-mask toward
+// its packed slot, with a mid-morph slump toward the core. That 0..1 is the
+// morph SDF welding will drive when these become a deformed volume.
 bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
                        int max_count, float spiral_r, float step, uint alive_mask,
-                       float node_r, float outer_r, float max_t,
+                       float node_r, float outer_r, float max_t, vec4 collapse,
                        out float t, out vec3 n, out float part) {
     t = max_t;
     n = vec3(0.0, 0.0, 1.0);
     part = 0.0;
 
+    float clip_h = core_h;
+    if (collapse.x > 0.001) clip_h = max(core_h, collapse.y);
     float clip0, clip1;
-    if (!pylon_bound_clip(ro, rd, -0.02, core_h + 0.02, outer_r, max_t, clip0, clip1)) {
+    if (!pylon_bound_clip(ro, rd, -0.02, clip_h + 0.02, outer_r, max_t, clip0, clip1)) {
         return false;
     }
 
@@ -656,9 +676,22 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
 
     int nmax = max_count;
     if (nmax > PYLON_NODE_MAX) nmax = PYLON_NODE_MAX;
+    uint from_mask = uint(collapse.z + 0.5) | (uint(collapse.w + 0.5) << 16u);
+    int rank = 0;
     for (int k = 0; k < PYLON_NODE_MAX; k++) {
         if (k < nmax && ((alive_mask & (1u << uint(k))) != 0u)) {
             vec3 c = pylon_node_local(k, spiral_r, step, node_r);
+            if (collapse.x > 0.001) {
+                int from = pylon_nth_set(from_mask, rank);
+                vec3 c0 = pylon_node_local(from, spiral_r, step, node_r);
+                float u = 1.0 - clamp(collapse.x, 0.0, 1.0);
+                u = u * u * (3.0 - 2.0 * u);
+                c = mix(c0, c, u);
+                float sag = sin(u * 3.14159265);
+                c.xy *= 1.0 - 0.16 * sag;
+                c.z -= node_r * 0.10 * sag;
+            }
+            rank += 1;
             float et;
             vec3 en;
             if (intersect_sphere(ro, rd, c, node_r, PYLON_TMIN, best, et, en)) {
@@ -714,7 +747,7 @@ bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int 
         float lt;
         vec3 ln;
         float lp_part;
-        if (!pylon_trace_local(lo, ld, sh.x, max_count, spiral_r, step, alive_mask, b.y, b.z, t, lt, ln, lp_part)) continue;
+        if (!pylon_trace_local(lo, ld, sh.x, max_count, spiral_r, step, alive_mask, b.y, b.z, t, pylon_collapse[i], lt, ln, lp_part)) continue;
         vec3 lp = lo + ld * lt;
         t = lt;
         n = unrot_z(ln, s, c);
