@@ -40,7 +40,8 @@ layout(binding=1) uniform fs_params {
     vec4 solid_boxes[30];   // pairs, same layout
     vec4 pylons[7];         // xyz base centre on the floor, w yaw
     vec4 pylon_shape[7];    // x core height, y design radius, z noise seed, w ore kind
-    vec4 pylon_bound[7];    // x live node count, y node radius, z outer radius, w remaining mass 0..1
+    vec4 pylon_bound[7];    // x max node count, y node radius, z outer radius, w remaining mass 0..1
+    vec4 pylon_node_meta[7]; // x spiral radius, y stack step, z alive bits 0..15, w alive bits 16..31
     vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
@@ -442,10 +443,10 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // Ore pylons
 //
 // Same geometry as tower_raycast: a solid Z-up core cylinder with a golden-angle
-// spiral of overlapping node spheres around it. Analytic hits, no occupancy
-// atlas. Chip damage is a scar (pylon_wounds); dead nodes are omitted and the
-// core shortens with the live column so both stay floor-to-cap. Must stay in
-// lockstep with src/tower_nodes.odin.
+// spiral of node spheres at FIXED array-index slots. Analytic hits, no occupancy
+// atlas. Chip damage is a scar (pylon_wounds); dead slots are omitted (visible
+// holes) and the core stays at design height while the tower stands. Must stay
+// in lockstep with src/tower_nodes.odin.
 
 const float PYLON_GRAIN_FREQ = 2.10;
 const float PYLON_CORE_R = 0.55;                 // CORE_RADIUS
@@ -526,9 +527,11 @@ float pylon_vein(vec3 p, float seed) {
     return pow(clamp(v, 0.0, 1.0), 6.0);
 }
 
-vec3 pylon_node_local(int rank, float spiral_r, float step, float node_r) {
-    float z = node_r + float(rank) * step;
-    float angle = float(rank) * SPIRAL_GOLDEN_ANGLE;
+// Node position from ARRAY INDEX (stable), not HP rank.
+// Must match tower_node_spiral_pos in src/tower_nodes.odin.
+vec3 pylon_node_local(int array_index, float spiral_r, float step, float node_r) {
+    float z = node_r + float(array_index) * step;
+    float angle = float(array_index) * SPIRAL_GOLDEN_ANGLE;
     return vec3(cos(angle) * spiral_r, sin(angle) * spiral_r, z);
 }
 
@@ -632,10 +635,10 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
 }
 
 // Core cylinder plus live node spheres in the tower's local frame.
-// part: 0 = core, 1 = node. Node centres run from node_r to core_h - node_r
-// so the shell and the shaft share the same floor and cap.
+// part: 0 = core, 1 = node. Slots are fixed by array index; dead bits skip.
 bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
-                       float live, float node_r, float outer_r, float max_t,
+                       int max_count, float spiral_r, float step, uint alive_mask,
+                       float node_r, float outer_r, float max_t,
                        out float t, out vec3 n, out float part) {
     t = max_t;
     n = vec3(0.0, 0.0, 1.0);
@@ -651,14 +654,10 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
     vec3 bn = vec3(0.0, 0.0, 1.0);
     float bpart = 0.0;
 
-    int nlive = int(live + 0.5);
-    if (nlive > PYLON_NODE_MAX) nlive = PYLON_NODE_MAX;
-    float span = max(core_h - 2.0 * node_r, 0.0);
-    float step = span / max(live - 1.0, 1.0);
-    float spiral_r = PYLON_CORE_R + node_r * TOWER_NODE_WRAP;
-
+    int nmax = max_count;
+    if (nmax > PYLON_NODE_MAX) nmax = PYLON_NODE_MAX;
     for (int k = 0; k < PYLON_NODE_MAX; k++) {
-        if (k < nlive) {
+        if (k < nmax && ((alive_mask & (1u << uint(k))) != 0u)) {
             vec3 c = pylon_node_local(k, spiral_r, step, node_r);
             float et;
             vec3 en;
@@ -702,6 +701,11 @@ bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int 
         vec4 b = pylon_bound[i];
         if (b.w <= 0.002 || b.x < 0.5) continue;
         vec4 sh = pylon_shape[i];
+        vec4 meta = pylon_node_meta[i];
+        int max_count = int(b.x + 0.5);
+        float spiral_r = meta.x;
+        float step = meta.y;
+        uint alive_mask = uint(meta.z + 0.5) | (uint(meta.w + 0.5) << 16u);
         float yaw = pylons[i].w;
         float s = sin(yaw);
         float c = cos(yaw);
@@ -710,7 +714,7 @@ bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int 
         float lt;
         vec3 ln;
         float lp_part;
-        if (!pylon_trace_local(lo, ld, sh.x, b.x, b.y, b.z, t, lt, ln, lp_part)) continue;
+        if (!pylon_trace_local(lo, ld, sh.x, max_count, spiral_r, step, alive_mask, b.y, b.z, t, lt, ln, lp_part)) continue;
         vec3 lp = lo + ld * lt;
         t = lt;
         n = unrot_z(ln, s, c);

@@ -7,16 +7,18 @@ import "core:slice"
 // Spiral shield-node tower authority.
 //
 // Gameplay is an array of overlapping ore nodes wrapped around a thin core.
-// Node_ID is identity; spiral rank is derived from a sort on remaining HP
-// (high HP at the bottom, damaged nodes rise). Hits address the Node_ID found
-// at the impact point, never the slot, so a re-sort cannot hop damage onto a
-// neighbour mid-bite. Core height matches the live node column (floor to the
-// current cap) and is not synced. Minion hops restore a handful of nodes,
-// scaled by the wave's own-ore bolster, so a flattened lane still takes about
-// three unbuffed waves.
+// Node_ID is identity. Spiral position is a stable function of array index
+// (slot 0 on the floor, last slot at the cap) so damage and death leave holes
+// instead of sliding a healthier neighbour under the aim. HP is still sorted
+// for bookkeeping; that sort must not move geometry. Hits address the Node_ID
+// found at the impact point. While any node lives the core stays at design
+// height — a thin last-stand shaft visible through the gaps. Minion hops
+// restore a handful of nodes, scaled by the wave's own-ore bolster, so a
+// flattened lane still takes about three unbuffed waves.
 //
-// The client draws this geometry analytically (core cylinder + node spheres).
-// Chip scars live in the shader. See TOWERS.md.
+// The client draws this geometry analytically (core cylinder + node spheres)
+// from the same slot indices and alive mask. Chip scars live in the shader.
+// See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -29,19 +31,20 @@ TOWER_NODES_FAR     :: 12
 #assert(TOWER_NODES_GOLD <= MAX_NODES_PER_TOWER)
 #assert(TOWER_NODES_NEAR <= MAX_NODES_PER_TOWER)
 #assert(TOWER_NODES_FAR  <= MAX_NODES_PER_TOWER)
+#assert(MAX_NODES_PER_TOWER <= 32) // GPU alive mask is two 16-bit floats
 
 // Thin last-stand column. Nodes are the destructible shell; this is what is
 // left in the gaps once the shell is gone, not a fat pillar that swallows rays.
 CORE_RADIUS :: f32(0.55)
 
-// Phyllotaxis on a cylinder. Consecutive ranks are a golden step apart, so
-// neighbours in space are Fibonacci parastichies -- overlapping blobs, not a
-// string of beads with walkable holes.
+// Phyllotaxis on a cylinder. Consecutive slots are a golden step apart, so
+// neighbours in space are Fibonacci parastichies -- overlapping blobs, with
+// holes that read once a slot dies.
 SPIRAL_GOLDEN_ANGLE :: f32(2.399963229728653)
 
-// Node spheres are one course of the column: they sit on the floor, kiss the
-// cap, and wrap the core. Radius is a fraction of the full-tower pitch so a
-// kill shortens the silhouette by one course instead of popping a boulder that
+// Node spheres are one course of the column: slot 0 sits on the floor, the
+// last slot kisses the cap, and they wrap the core. Radius is a fraction of
+// the full-tower pitch so a dead slot is a missing course, not a boulder that
 // was hanging through the floor. Must stay in lockstep with shaders/scene.glsl.
 TOWER_NODE_RADIUS_STEPS :: f32(1.42)
 TOWER_NODE_WRAP         :: f32(0.20)
@@ -52,8 +55,8 @@ TOWER_NODE_WRAP         :: f32(0.20)
 NODE_HP_TEAM :: f32(12.0)
 NODE_HP_GOLD :: f32(16.0)
 
-// Ore from a fully mined node. Fraction of HP removed pays out as you chip,
-// so a bite that does not kill still sheds rock.
+// Ore from a fully mined node. Paid once, when the node dies: one chunk on
+// the ground maps to one dead slot. Chips scar the face but do not shed ore.
 NODE_ORE_TEAM :: f32(8.0)
 NODE_ORE_GOLD :: f32(18.0)
 
@@ -107,7 +110,8 @@ Tower :: struct {
 	max_count:    int,
 	next_node_id: Node_ID,
 
-	// rank 0 = highest HP. Spiral position is a function of rank.
+	// rank 0 = highest HP. Sorting is bookkeeping only; spiral position is
+	// a stable function of array index, not rank.
 	sorted_indices: [MAX_NODES_PER_TOWER]int,
 
 	core_height: f32,
@@ -196,9 +200,9 @@ tower_configure :: proc(t: ^Tower, i: int) {
 	t.yaw = f32((h >> 16) & 0xFFFF) / f32(0x10000) * (2 * PI_F32)
 }
 
-// Floor-to-cap packing for a full tower. Rank 0 sits on the floor, the last
-// rank kisses the design height, and the live column is that stack truncated
-// from the top as nodes die.
+// Floor-to-cap packing for a full tower. Slot 0 sits on the floor, the last
+// slot kisses the design height. Those positions never move: a kill omits the
+// sphere, it does not reflow the helix.
 @(private = "file")
 tower_layout :: proc(t: ^Tower) {
 	n := t.max_count
@@ -260,7 +264,13 @@ tower_build_full :: proc(t: ^Tower) {
 }
 
 tower_recompute :: proc(t: ^Tower) {
-	t.core_height = tower_column_height(t, t.live_count)
+	// Standing towers keep the design shaft so high slots stay inside the
+	// bound volume. Flattened towers drop the core so they stop blocking.
+	if t.live_count <= 0 {
+		t.core_height = 0
+	} else {
+		t.core_height = tower_column_height(t, t.max_count)
+	}
 	t.intact = t.max_count > 0 ? f32(t.live_count) / f32(t.max_count) : 0
 }
 
@@ -287,17 +297,35 @@ tower_outer_radius :: proc(t: ^Tower) -> f32 {
 	return t.spiral_radius + t.node_radius
 }
 
-tower_node_spiral_pos :: proc(t: ^Tower, rank: int) -> vec3 {
-	if rank < 0 {
+// Alive bits 0..max_count-1, packed for the GPU as two 16-bit integers.
+// Do not bitcast a u32 through f32: a 32-node mask can look like NaN.
+tower_alive_mask :: proc(t: ^Tower) -> u32 {
+	mask: u32 = 0
+	n := t.max_count
+	if n > MAX_NODES_PER_TOWER {
+		n = MAX_NODES_PER_TOWER
+	}
+	for k in 0 ..< n {
+		if t.nodes[k].alive {
+			mask |= u32(1) << u32(k)
+		}
+	}
+	return mask
+}
+
+// Node spiral position from ARRAY INDEX (stable), not HP rank.
+// Damage and death must not move geometry. Holes stay where you aimed.
+tower_node_spiral_pos :: proc(t: ^Tower, array_index: int) -> vec3 {
+	if array_index < 0 || array_index >= t.max_count {
 		return {}
 	}
-	z := t.node_radius + f32(rank) * t.stack_step
-	angle := f32(rank) * SPIRAL_GOLDEN_ANGLE
+	z := t.node_radius + f32(array_index) * t.stack_step
+	angle := f32(array_index) * SPIRAL_GOLDEN_ANGLE
 	return {math.cos(angle) * t.spiral_radius, math.sin(angle) * t.spiral_radius, z}
 }
 
-tower_node_world_pos :: proc(t: ^Tower, rank: int) -> vec3 {
-	return tower_to_world(t, tower_node_spiral_pos(t, rank))
+tower_node_world_pos :: proc(t: ^Tower, array_index: int) -> vec3 {
+	return tower_to_world(t, tower_node_spiral_pos(t, array_index))
 }
 
 tower_to_world :: proc(t: ^Tower, local: vec3) -> vec3 {
@@ -430,8 +458,7 @@ tower_hp_wire_eps :: proc(max_hp: f32) -> f32 {
 }
 
 // Outer skin of a node, away from the core. Mining from a lane hits this
-// face, so a scar stamped here stays on the beam even after the damaged
-// node rises up the spiral.
+// face, so a scar stamped here stays on the beam at the stable slot.
 tower_node_outward_face :: proc(t: ^Tower, center: vec3) -> vec3 {
 	xy := vec3{center.x, center.y, 0}
 	if len2_vec3(xy) < 0.0001 {
@@ -479,33 +506,33 @@ tower_donate_count :: proc(build_r: f32) -> int {
 	return n
 }
 
-tower_node_at_point :: proc(t: ^Tower, wp: vec3, pad: f32) -> (node_id: Node_ID, rank: int, ok: bool) {
+tower_node_at_point :: proc(t: ^Tower, wp: vec3, pad: f32) -> (node_id: Node_ID, array_index: int, ok: bool) {
 	local := tower_to_local(t, wp)
 	reach := t.node_radius + pad
 	reach2 := reach * reach
 	best_d2 := reach2
-	best_rank := -1
+	best_index := -1
 	best_id := Node_ID(0)
-	for rank in 0 ..< t.live_count {
-		node := tower_node_at_rank(t, rank)
-		if node == nil || !node.alive {
+	for idx in 0 ..< t.max_count {
+		node := &t.nodes[idx]
+		if !node.alive {
 			continue
 		}
-		pos := tower_node_spiral_pos(t, rank)
+		pos := tower_node_spiral_pos(t, idx)
 		dx := local.x - pos.x
 		dy := local.y - pos.y
 		dz := local.z - pos.z
 		d2 := dx * dx + dy * dy + dz * dz
 		if d2 <= best_d2 {
 			best_d2 = d2
-			best_rank = rank
+			best_index = idx
 			best_id = node.id
 		}
 	}
-	if best_rank < 0 {
+	if best_index < 0 {
 		return 0, -1, false
 	}
-	return best_id, best_rank, true
+	return best_id, best_index, true
 }
 
 tower_in_bound :: proc(t: ^Tower, wp: vec3, pad: f32) -> bool {
@@ -567,12 +594,12 @@ tower_raycast :: proc(world: ^Tower_World, ro, rd: vec3, max_t: f32) -> (t: f32,
 			continue
 		}
 
-		for rank in 0 ..< tw.live_count {
-			node := tower_node_at_rank(tw, rank)
-			if node == nil || !node.alive {
+		for idx in 0 ..< tw.max_count {
+			node := &tw.nodes[idx]
+			if !node.alive {
 				continue
 			}
-			center := tower_node_world_pos(tw, rank)
+			center := tower_node_world_pos(tw, idx)
 			if d, ok := ray_sphere_hit(ro, rdn, center, tw.node_radius, best); ok {
 				best = d
 				found_tower = i
@@ -643,9 +670,9 @@ tower_normal_world :: proc(world: ^Tower_World, id: Pylon_ID, wp: vec3) -> vec3 
 	}
 	local := tower_to_local(t, wp)
 
-	_, rank, ok := tower_node_at_point(t, wp, t.node_radius)
+	_, idx, ok := tower_node_at_point(t, wp, t.node_radius)
 	if ok {
-		pos := tower_node_spiral_pos(t, rank)
+		pos := tower_node_spiral_pos(t, idx)
 		d := local - pos
 		if len2_vec3(d) > 0.01 {
 			return tower_dir_to_world(t, norm_vec3(d))
@@ -719,25 +746,23 @@ tower_mine :: proc(
 	reach := max(radius, t.node_radius * 1.15)
 	reach2 := reach * reach
 
-	// Snapshot ranks, then damage by array index. Killing a node must not
-	// shorten the loop, and a re-sort must not move a neighbour under the
-	// splash mid-bite.
-	ranks := t.live_count
+	// Collect by array index. Geometry is stable, so killing a neighbour
+	// cannot slide a different node under this splash.
 	hit_idx: [MAX_NODES_PER_TOWER]int
 	n_hit := 0
-	for rank in 0 ..< ranks {
-		node := tower_node_at_rank(t, rank)
-		if node == nil || !node.alive {
+	for idx in 0 ..< t.max_count {
+		node := &t.nodes[idx]
+		if !node.alive {
 			continue
 		}
-		pos := tower_node_spiral_pos(t, rank)
+		pos := tower_node_spiral_pos(t, idx)
 		dx := local.x - pos.x
 		dy := local.y - pos.y
 		dz := local.z - pos.z
 		if dx * dx + dy * dy + dz * dz > reach2 {
 			continue
 		}
-		hit_idx[n_hit] = t.sorted_indices[rank]
+		hit_idx[n_hit] = idx
 		n_hit += 1
 	}
 
@@ -747,19 +772,19 @@ tower_mine :: proc(
 		fallback2 := (reach + t.node_radius) * (reach + t.node_radius)
 		best_i := -1
 		best_d2 := fallback2
-		for rank in 0 ..< ranks {
-			node := tower_node_at_rank(t, rank)
-			if node == nil || !node.alive {
+		for idx in 0 ..< t.max_count {
+			node := &t.nodes[idx]
+			if !node.alive {
 				continue
 			}
-			pos := tower_node_spiral_pos(t, rank)
+			pos := tower_node_spiral_pos(t, idx)
 			dx := local.x - pos.x
 			dy := local.y - pos.y
 			dz := local.z - pos.z
 			d2 := dx * dx + dy * dy + dz * dz
 			if d2 < best_d2 {
 				best_d2 = d2
-				best_i = t.sorted_indices[rank]
+				best_i = idx
 			}
 		}
 		if best_i >= 0 {
@@ -794,10 +819,10 @@ tower_mine :: proc(
 			continue
 		}
 		removed += lost
-		ore += (lost / max(node.max_hp, 0.01)) * tower_node_ore(t)
 		if node.hp <= 0 {
 			node.alive = false
 			killed += 1
+			ore += tower_node_ore(t)
 		}
 	}
 
@@ -807,8 +832,8 @@ tower_mine :: proc(
 
 	t.last_miner = miner
 	t.last_bite = local
-	if _, rank, node_ok := tower_node_at_point(t, at, t.node_radius * 2); node_ok {
-		pos := tower_node_spiral_pos(t, rank)
+	if _, idx, node_ok := tower_node_at_point(t, at, t.node_radius * 2); node_ok {
+		pos := tower_node_spiral_pos(t, idx)
 		d := local - pos
 		if len2_vec3(d) > 0.01 {
 			hit_n = norm_vec3(d)
@@ -922,12 +947,11 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 	old_pos: [MAX_NODES_PER_TOWER]vec3
 	old_hp: [MAX_NODES_PER_TOWER]f32
 	had: [MAX_NODES_PER_TOWER]bool
-	for rank in 0 ..< old_live {
-		idx := t.sorted_indices[rank]
-		if idx < 0 || idx >= t.max_count {
+	for idx in 0 ..< t.max_count {
+		if !t.nodes[idx].alive {
 			continue
 		}
-		old_pos[idx] = tower_node_spiral_pos(t, rank)
+		old_pos[idx] = tower_node_spiral_pos(t, idx)
 		old_hp[idx] = t.nodes[idx].hp
 		had[idx] = true
 	}
@@ -1028,14 +1052,17 @@ tower_world_tick :: proc(world: ^Tower_World, chunks: ^Ore_Chunk_World, dt: f32)
 		if !t.touched {
 			continue
 		}
-		for t.ore_debt >= ORE_PER_CHUNK {
-			t.ore_debt -= ORE_PER_CHUNK
+		// One dead node = one chunk carrying that node's full ore. Splash that
+		// kills N nodes credits N * node_ore, so this loop emits N chunks.
+		payout := tower_node_ore(t)
+		for t.ore_debt + 0.001 >= payout && payout > 0.001 {
+			t.ore_debt -= payout
 			local := t.last_bite
 			if len2_vec3(local) < 0.01 {
 				local = {t.spiral_radius, 0, t.core_height * 0.5}
 			}
 			wp := tower_to_world(t, local)
-			ore_chunk_spawn_loose(chunks, t.ore, wp + vec3{0, 0, 0.5}, ORE_PER_CHUNK)
+			ore_chunk_spawn_loose(chunks, t.ore, wp + vec3{0, 0, 0.5}, payout)
 		}
 	}
 }
@@ -1075,12 +1102,12 @@ tower_selftest :: proc() {
 		assert(t.nodes[idx].alive, "sorted node alive")
 	}
 
-	// Fractional chip must register. The old int(hp-delta) path dropped every
-	// 0.60 bite and never dirtied the tower.
+	// Fractional chip must register and scar, but does not pay ore.
 	pos := tower_node_world_pos(t, 0)
+	slot5_before := tower_node_spiral_pos(t, 5)
 	ore, ok := tower_mine(&world, 0, pos, t.node_radius, 0.60, 1, .Alpha)
 	assert(ok, "fractional chip mines")
-	assert(ore > 0, "chip yields ore")
+	assert(ore == 0, "chip does not yield ore (only death does)")
 	assert(t.live_count == 8, "chip does not kill")
 	assert(world.dirty[0], "chip dirties wire")
 	assert(t.wound_count > 0, "chip stamps a scar")
@@ -1094,14 +1121,18 @@ tower_selftest :: proc() {
 	assert(near, "scar sits on the bite")
 	assert(tower_mass_frac(t) < 1, "chip lowers mass")
 	assert(t.intact == 1, "chip does not change intact")
+	slot5_after_chip := tower_node_spiral_pos(t, 5)
+	assert(abs(slot5_after_chip.x - slot5_before.x) < 0.0001, "chip does not move slot 5 x")
+	assert(abs(slot5_after_chip.y - slot5_before.y) < 0.0001, "chip does not move slot 5 y")
+	assert(abs(slot5_after_chip.z - slot5_before.z) < 0.0001, "chip does not move slot 5 z")
 
 	base := tower_node_spiral_pos(t, 0)
-	assert(abs(base.z - t.node_radius) < 0.001, "rank 0 sits on the floor")
+	assert(abs(base.z - t.node_radius) < 0.001, "slot 0 sits on the floor")
 	radial := math.sqrt(base.x * base.x + base.y * base.y)
-	assert(abs(radial - t.spiral_radius) < 0.001, "rank 0 on the spiral")
-	top := tower_node_spiral_pos(t, t.live_count - 1)
-	assert(abs(top.z + t.node_radius - t.design_height) < 0.001, "last node kisses the cap")
-	assert(abs(t.core_height - tower_column_height(t, t.live_count)) < 0.001, "core tracks the live column")
+	assert(abs(radial - t.spiral_radius) < 0.001, "slot 0 on the spiral")
+	top := tower_node_spiral_pos(t, t.max_count - 1)
+	assert(abs(top.z + t.node_radius - t.design_height) < 0.001, "last slot kisses the cap")
+	assert(abs(t.core_height - tower_column_height(t, t.max_count)) < 0.001, "standing core stays at design height")
 
 	same: [MAX_NODES_PER_TOWER]u8
 	tower_pack_nodes(t, same[:])
@@ -1109,18 +1140,44 @@ tower_selftest :: proc() {
 	tower_unpack_nodes(t, same[:])
 	assert(t.wound_count == wounds_before, "identical unpack does not add scars")
 
+	// Isolated kill: one low-HP slot dies, neighbours keep their positions,
+	// ore pays exactly one node, core does not shrink.
+	for i in 0 ..< t.max_count {
+		t.nodes[i].hp = t.nodes[i].max_hp
+		t.nodes[i].alive = true
+	}
+	t.nodes[3].hp = 0.05
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	kill_pos := tower_node_world_pos(t, 3)
+	slot7_before := tower_node_spiral_pos(t, 7)
+	ore, ok = tower_mine(&world, 0, kill_pos, t.node_radius, 0.60, 1, .Alpha)
+	assert(ok, "kill bite mines")
+	assert(!t.nodes[3].alive, "low slot dies")
+	assert(t.nodes[7].alive, "far slot survives a local bite")
+	assert(abs(ore - tower_node_ore(t)) < 0.001, "one death pays one node of ore")
+	slot7_after := tower_node_spiral_pos(t, 7)
+	assert(abs(slot7_after.x - slot7_before.x) < 0.0001, "kill does not move slot 7 x")
+	assert(abs(slot7_after.y - slot7_before.y) < 0.0001, "kill does not move slot 7 y")
+	assert(abs(slot7_after.z - slot7_before.z) < 0.0001, "kill does not move slot 7 z")
+	assert(abs(t.core_height - t.design_height) < 0.001, "kill leaves the shaft at design height")
+	assert((tower_alive_mask(t) & (u32(1) << 3)) == 0, "dead slot cleared in alive mask")
+	assert((tower_alive_mask(t) & (u32(1) << 7)) != 0, "live slot set in alive mask")
+
 	// Kill splash must visit every overlapping node even as they die.
 	t.tough = 0.01
 	_, ok = tower_mine(&world, 0, pos, t.node_radius * 3, 50, 1, .Alpha)
 	assert(ok, "kill splash mines")
 	assert(t.live_count < 8, "kill splash reduces live_count")
-	assert(abs(t.core_height - tower_column_height(t, t.live_count)) < 0.001, "kill shortens core with the shell")
 	if t.live_count > 0 {
-		floor_pos := tower_node_spiral_pos(t, 0)
-		assert(abs(floor_pos.z - t.node_radius) < 0.001, "remaining stack still sits on the floor")
-		cap_pos := tower_node_spiral_pos(t, t.live_count - 1)
-		assert(abs(cap_pos.z + t.node_radius - t.core_height) < 0.001, "remaining stack meets the live cap")
+		assert(abs(t.core_height - t.design_height) < 0.001, "splash does not shrink the shaft")
+	} else {
+		assert(t.core_height == 0, "flattened tower drops the core")
 	}
+	floor_pos := tower_node_spiral_pos(t, 0)
+	assert(abs(floor_pos.z - t.node_radius) < 0.001, "slot 0 still on the floor after splash")
+	cap_pos := tower_node_spiral_pos(t, t.max_count - 1)
+	assert(abs(cap_pos.z + t.node_radius - t.design_height) < 0.001, "last slot still at the design cap")
 	for rank in 0 ..< t.live_count {
 		node := tower_node_at_rank(t, rank)
 		assert(node != nil && node.alive, "post-kill ranks are live")
@@ -1142,15 +1199,36 @@ tower_selftest :: proc() {
 	assert(built, "donate builds")
 	assert(gained > 0, "donate gained")
 	assert(t.live_count == min(before + gained, t.max_count), "donate live_count")
-	assert(abs(t.core_height - tower_column_height(t, t.live_count)) < 0.001, "rebuild grows core with the shell")
+	assert(abs(t.core_height - t.design_height) < 0.001, "rebuild keeps the design shaft")
 	assert(t.wound_count == 0, "rebuild clears scars")
 
 	// Analytic ray from outside hits the node we aimed at.
 	center := tower_node_world_pos(t, 0)
+	if !t.nodes[0].alive {
+		for i in 0 ..< t.max_count {
+			if t.nodes[i].alive {
+				center = tower_node_world_pos(t, i)
+				break
+			}
+		}
+	}
 	ro := center + vec3{6, 0, 0}
 	rd := norm_vec3(center - ro)
 	_, _, _, hit := tower_raycast(&world, ro, rd, 20)
 	assert(hit, "raycast hits a standing tower")
+
+	// A dead slot is omitted from collision; a live neighbour stays hittable.
+	tower_build_full(t)
+	t.nodes[2].alive = false
+	t.nodes[2].hp = 0
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	dead_center := tower_node_world_pos(t, 2)
+	live_center := tower_node_world_pos(t, 3)
+	_, dead_idx, dead_ok := tower_node_at_point(t, dead_center, 0.01)
+	assert(!dead_ok || dead_idx != 2, "dead slot is not a hit")
+	_, live_idx, live_ok := tower_node_at_point(t, live_center, 0.05)
+	assert(live_ok && live_idx == 3, "live neighbour still found at its slot")
 
 	// Production layouts: shell and core share the pylon's floor and ceiling.
 	counts := [3]int{TOWER_NODES_GOLD, TOWER_NODES_NEAR, TOWER_NODES_FAR}
@@ -1167,9 +1245,16 @@ tower_selftest :: proc() {
 		assert(p.live_count == p.max_count, "production live_count")
 		assert(abs(p.core_height - p.design_height) < 0.002, "production full tower is floor to cap")
 		lo := tower_node_spiral_pos(&p, 0)
-		assert(abs(lo.z - p.node_radius) < 0.002, "production rank 0 on the floor")
-		hi := tower_node_spiral_pos(&p, p.live_count - 1)
-		assert(abs(hi.z + p.node_radius - p.design_height) < 0.002, "production last node at the cap")
+		assert(abs(lo.z - p.node_radius) < 0.002, "production slot 0 on the floor")
+		hi := tower_node_spiral_pos(&p, p.max_count - 1)
+		assert(abs(hi.z + p.node_radius - p.design_height) < 0.002, "production last slot at the cap")
 		assert(p.node_radius < p.design_height / f32(p.max_count) * 2, "nodes are one course, not the old hex boulders")
+		p.nodes[0].alive = false
+		p.nodes[0].hp = 0
+		tower_resort_nodes(&p)
+		tower_recompute(&p)
+		assert(abs(p.core_height - p.design_height) < 0.002, "production shaft stays up through holes")
+		hi2 := tower_node_spiral_pos(&p, p.max_count - 1)
+		assert(abs(hi2.z - hi.z) < 0.0001, "production cap slot does not move after a floor kill")
 	}
 }
