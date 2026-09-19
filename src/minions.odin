@@ -812,7 +812,7 @@ minions_tick :: proc(
 		} else if m.mode == .Rebuild && m.has_pylon {
 			t := tower_get(towers, m.objective)
 			if t != nil {
-				reach := SPIRAL_BASE_RADIUS + MINION_BUILD_REACH
+				reach := CORE_RADIUS + NODE_RADIUS + MINION_BUILD_REACH
 				if len2_vec3(vec3{t.base.x - m.pos.x, t.base.y - m.pos.y, 0}) <= reach * reach {
 					minion_donate(world, towers, match, m, i)
 					continue

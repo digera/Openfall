@@ -22,6 +22,9 @@ MAX_NODES_PER_TOWER :: 32
 // Core vertical step per live node
 STACK_STEP :: f32(0.42)
 
+// Core is thin: just the stack column, not the full spiral base
+CORE_RADIUS :: f32(0.6)
+
 // Spiral parameters: nodes wrap around core in golden-angle spiral
 SPIRAL_TURNS_PER_HEIGHT :: f32(1.8)
 SPIRAL_BASE_RADIUS :: f32(2.8)
@@ -66,6 +69,10 @@ Tower :: struct {
 	live_count:  int,
 	max_count:   int,  // design capacity for this tower
 	next_node_id: Node_ID,
+
+	// Sorted indices: maps rank → array index (rank 0 = highest hp node)
+	// Updated on damage/death/build. Spiral position is derived from rank.
+	sorted_indices: [MAX_NODES_PER_TOWER]int,
 
 	// Derived state (not synced, computed from live_count)
 	core_height: f32,
@@ -224,7 +231,7 @@ tower_resort_nodes :: proc(t: ^Tower) {
 		return
 	}
 
-	// Gather live nodes
+	// Gather live nodes with their array indices
 	keys: [MAX_NODES_PER_TOWER]Tower_Node_Sort_Key
 	n := 0
 	for i in 0 ..< t.max_count {
@@ -242,7 +249,26 @@ tower_resort_nodes :: proc(t: ^Tower) {
 		return a.node_id < b.node_id
 	})
 
-	// Nothing else to do: spiral slot is derived on-demand from rank
+	// Store sorted array indices: sorted_indices[rank] = array_index
+	for rank in 0 ..< n {
+		t.sorted_indices[rank] = keys[rank].index
+	}
+	// Clear unused ranks
+	for rank in n ..< MAX_NODES_PER_TOWER {
+		t.sorted_indices[rank] = -1
+	}
+}
+
+// Get node at given rank (0 = highest hp)
+tower_node_at_rank :: proc(t: ^Tower, rank: int) -> ^Tower_Node {
+	if rank < 0 || rank >= t.live_count {
+		return nil
+	}
+	idx := t.sorted_indices[rank]
+	if idx < 0 || idx >= t.max_count {
+		return nil
+	}
+	return &t.nodes[idx]
 }
 
 // ---------------------------------------------------------------------------
@@ -273,20 +299,19 @@ tower_node_at_point :: proc(t: ^Tower, wp: vec3, pad: f32) -> (node_id: Node_ID,
 	local := tower_to_local(t, wp)
 	reach2 := (NODE_RADIUS + pad) * (NODE_RADIUS + pad)
 
-	// Check live nodes in sort order
-	rank_iter := 0
-	for i in 0 ..< t.max_count {
-		if !t.nodes[i].alive {
+	// Check live nodes in sorted rank order
+	for rank in 0 ..< t.live_count {
+		node := tower_node_at_rank(t, rank)
+		if node == nil || !node.alive {
 			continue
 		}
-		pos := tower_node_spiral_pos(rank_iter, t.core_height)
+		pos := tower_node_spiral_pos(rank, t.core_height)
 		dx := local.x - pos.x
 		dy := local.y - pos.y
 		dz := local.z - pos.z
 		if dx * dx + dy * dy + dz * dz <= reach2 {
-			return t.nodes[i].id, rank_iter, true
+			return node.id, rank, true
 		}
-		rank_iter += 1
 	}
 	return 0, -1, false
 }
@@ -311,10 +336,9 @@ tower_blocks_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> bool {
 
 		local := tower_to_local(t, wp)
 		
-		// Check core (vertical cylinder)
+		// Check core (thin cylinder)
 		if local.z >= 0 && local.z <= t.core_height {
-			core_r2 := SPIRAL_BASE_RADIUS * SPIRAL_BASE_RADIUS
-			if local.x * local.x + local.y * local.y <= core_r2 {
+			if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
 				return true
 			}
 		}
@@ -368,7 +392,7 @@ tower_raycast :: proc(world: ^Tower_World, ro, rd: vec3, max_t: f32) -> (t: f32,
 
 			// Core hit?
 			if p.z >= 0 && p.z <= tw.core_height {
-				if p.x * p.x + p.y * p.y <= SPIRAL_BASE_RADIUS * SPIRAL_BASE_RADIUS {
+				if p.x * p.x + p.y * p.y <= CORE_RADIUS * CORE_RADIUS {
 					if t_sample < best {
 						best = t_sample
 						found_tower = i
@@ -449,9 +473,9 @@ tower_normal_world :: proc(world: ^Tower_World, id: Pylon_ID, wp: vec3) -> vec3 
 	}
 	local := tower_to_local(t, wp)
 	
-	// Check core
+	// Check core (thin cylinder)
 	if local.z >= 0 && local.z <= t.core_height {
-		if local.x * local.x + local.y * local.y <= SPIRAL_BASE_RADIUS * SPIRAL_BASE_RADIUS {
+		if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
 			// Core: radial normal
 			n := norm_vec3(vec3{local.x, local.y, 0})
 			return tower_dir_to_world(t, n)
@@ -503,7 +527,7 @@ tower_at_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> (id: Pylon_ID
 		
 		// Core?
 		if local.z >= 0 && local.z <= t.core_height {
-			if local.x * local.x + local.y * local.y <= SPIRAL_BASE_RADIUS * SPIRAL_BASE_RADIUS {
+			if local.x * local.x + local.y * local.y <= CORE_RADIUS * CORE_RADIUS {
 				return Pylon_ID(i), true
 			}
 		}
@@ -542,11 +566,10 @@ tower_mine :: proc(
 	removed := 0
 	killed := 0
 
-	// Damage nodes in splash radius
-	rank := 0
-	for i in 0 ..< t.max_count {
-		node := &t.nodes[i]
-		if !node.alive {
+	// Damage nodes in splash radius (iterate by sorted rank)
+	for rank in 0 ..< t.live_count {
+		node := tower_node_at_rank(t, rank)
+		if node == nil || !node.alive {
 			continue
 		}
 		pos := tower_node_spiral_pos(rank, t.core_height)
@@ -554,7 +577,6 @@ tower_mine :: proc(
 		dy := local.y - pos.y
 		dz := local.z - pos.z
 		if dx * dx + dy * dy + dz * dz > reach2 {
-			rank += 1
 			continue
 		}
 
@@ -570,7 +592,6 @@ tower_mine :: proc(
 			t.live_count -= 1
 			killed += 1
 		}
-		rank += 1
 	}
 
 	if removed == 0 {
@@ -636,7 +657,7 @@ tower_build_point :: proc(world: ^Tower_World, id: Pylon_ID, turn: int) -> vec3 
 	// Land on top of core
 	z := t.core_height
 	a := f32(turn) * 2.39996
-	r := SPIRAL_BASE_RADIUS * 0.5
+	r := CORE_RADIUS * 0.8
 	return {math.cos(a) * r, math.sin(a) * r, z}
 }
 
