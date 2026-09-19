@@ -164,22 +164,19 @@ client_frame :: proc "c" () {
 			_ = input_consume_slot(slot)
 		}
 
-	case .Playing:
+	case .Playing, .In_Menu:
 		if gc.client_world.local_time - gc.last_packet_time > CONNECTION_LOSS_SEC {
 			fmt.println("[Client] Connection lost, returning to lobby")
 			client_reset_to_lobby(gc)
 			break
 		}
-		client_handle_input(gc, dt)
-		client_step_simulation(gc, dt)
-
-	case .In_Menu:
-		client_release_mouse()
-		// Drop any active charges when menu is open
-		if gc.charging_spell != .None {
-			client_drop_charge(gc)
+		if gc.phase == .In_Menu {
+			client_release_mouse()
+			client_handle_menu_input(gc)
+		} else {
+			client_handle_input(gc, dt)
+			client_step_simulation(gc, dt)
 		}
-		client_handle_menu_input(gc)
 	}
 
 	client_audio_update(gc, dt)
@@ -265,6 +262,8 @@ client_reset_to_lobby :: proc(gc: ^Game_Client) {
 	gc.hello_timer = 0
 	gc.history_count = 0
 	gc.sim_accum = 0
+	gc.is_spectating = false
+	gc.menu_selected = 0
 }
 
 client_poll_network :: proc(gc: ^Game_Client) {
@@ -291,8 +290,8 @@ client_poll_network :: proc(gc: ^Game_Client) {
 			}
 
 		case .Server_Welcome:
-			if gc.phase == .Playing {
-				// Team switch completed while already playing
+			if gc.phase == .Playing || gc.phase == .In_Menu {
+				// Team switch completed while already in the match
 				old_team := gc.client_world.local_team
 				gc.client_world.local_entity_id = packet.welcome.your_entity_id
 				gc.client_world.local_team = packet.welcome.team
@@ -300,14 +299,20 @@ client_poll_network :: proc(gc: ^Game_Client) {
 					gc.view_yaw = wrap_angle(team_angle(packet.welcome.team) + f32(math.PI))
 					gc.view_pitch = 0
 				}
-				gc.is_spectating = (packet.welcome.team == .Spectator)
+				gc.is_spectating = packet.welcome.team == .Spectator
+				gc.phase = .Playing
+				gc.history_count = 0
+				gc.sim_accum = 0
+				gc.cooldowns = {}
+				gc.client_world.prediction.initialized = false
+				client_drop_charge(gc)
 				fmt.printf("[Client] Switched from %s to %s", team_name(old_team), team_name(packet.welcome.team))
 				if packet.welcome.your_entity_id != INVALID_ENTITY {
 					fmt.printf(" as entity %d\n", packet.welcome.your_entity_id)
 				} else {
 					fmt.printf("\n")
 				}
-			} else if gc.phase != .Playing {
+			} else {
 				client_world_reset_session(&gc.client_world)
 				gc.client_world.local_entity_id = packet.welcome.your_entity_id
 				gc.client_world.local_team = packet.welcome.team
@@ -320,7 +325,7 @@ client_poll_network :: proc(gc: ^Game_Client) {
 				gc.history_count = 0
 				gc.sim_accum = 0
 				gc.cooldowns = {}
-				gc.is_spectating = (packet.welcome.team == .Spectator)
+				gc.is_spectating = packet.welcome.team == .Spectator
 				gc.phase = .Playing
 				fmt.printf("[Client] Joined %s", team_name(packet.welcome.team))
 				if packet.welcome.your_entity_id != INVALID_ENTITY {
@@ -331,7 +336,7 @@ client_poll_network :: proc(gc: ^Game_Client) {
 			}
 
 		case .Server_Snapshot:
-			if gc.phase == .Playing {
+			if gc.phase == .Playing || gc.phase == .In_Menu {
 				snap := packet.snapshot
 				client_world_apply_snapshot(&gc.client_world, &snap)
 			}
@@ -663,18 +668,13 @@ client_handle_menu_input :: proc(gc: ^Game_Client) {
 				team := team_from_index(idx)
 				if client_team_allowed(gc, team) {
 					gc.chosen_team = team
-					gc.is_spectating = false
-					network_client_send_join(&gc.network, team)
-					gc.phase = .Playing
+					network_client_send_join(&gc.network, team, gc.player_name)
 					fmt.printf("[Client] Switching to team %s\n", team_name(team))
 				} else {
 					fmt.printf("[Client] Cannot join %s - most populated\n", team_name(team))
 				}
 			} else if idx == 3 {
-				// Spectate
-				gc.is_spectating = true
-				network_client_send_join(&gc.network, .Spectator)
-				gc.phase = .Playing
+				network_client_send_join(&gc.network, .Spectator, gc.player_name)
 				fmt.println("[Client] Entering spectator mode")
 			}
 		}

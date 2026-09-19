@@ -363,7 +363,8 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	world := &gc.client_world
 	pred := &world.prediction
 	fx := &gc.fx
-	playing := gc.phase == .Playing && pred.initialized
+	in_match := gc.phase == .Playing || gc.phase == .In_Menu
+	playing := in_match && pred.initialized && !gc.is_spectating
 
 	// --- Camera --------------------------------------------------------------
 	base_pos: vec3
@@ -371,6 +372,9 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	pitch := gc.view_pitch
 	if playing {
 		base_pos = client_prediction_render_pos(pred, gc.render_alpha)
+	} else if in_match {
+		// Spectator / no body yet: free-look from above the plaza.
+		base_pos = {0, 0, 6}
 	} else {
 		// Lobby camera: slow orbit above the plaza looking at the center
 		a := r.world_t * 0.10
@@ -680,7 +684,7 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	// Stats line (always)
 	sdtx.color3f(0.78, 0.76, 0.70)
 	sdtx.printf("NEXUS ARENA  %.0f fps  %.1f ms", r.last_fps, r.frame_ms)
-	if gc.phase == .Playing {
+	if gc.phase == .Playing || gc.phase == .In_Menu {
 		rate, total := client_prediction_stats(&world.prediction)
 		_, _, since := network_client_stats(&gc.network)
 		sdtx.color3f(0.55, 0.53, 0.50)

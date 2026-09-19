@@ -40,14 +40,15 @@ team_color :: proc(team: Team_ID) -> vec3 {
 	return {0.6, 0.6, 0.6}
 }
 
-// 0..2 for real teams, 3 for Spectator, -1 for None
+// 0..2 for playing teams, -1 for None / Spectator.
+// Spectator is not a [TEAM_COUNT] slot; never use this as an array index
+// without checking idx >= 0.
 team_index :: proc(team: Team_ID) -> int {
 	switch team {
 	case .Alpha: return 0
 	case .Beta:  return 1
 	case .Gamma: return 2
-	case .Spectator: return 3
-	case .None:  return -1
+	case .Spectator, .None: return -1
 	}
 	return -1
 }

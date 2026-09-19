@@ -227,36 +227,21 @@ server_process_packets :: proc(server: ^Server) {
 				// Already in: handle team switch
 				client := &server.clients[slot]
 				if client.team != join.team {
-					// Team switch requested
-					reject := server_validate_join(server, join.team)
+					reject := server_validate_join(server, join.team, true)
 					if reject != .None {
 						server_send_lobby(server, from, reject)
 						continue
 					}
-					// Destroy old entity if switching from a playing team
+					if !server_apply_team_switch(server, client, join.team, join.name) {
+						server_send_lobby(server, from, .Server_Full)
+						continue
+					}
+					fmt.printf("[Server] Client %v switched to %s", from, team_name(join.team))
 					if client.entity_id != INVALID_ENTITY {
-						entity_destroy(&server.world, client.entity_id)
-					}
-					// Create new entity for the new team (unless spectating)
-					client.team = join.team
-					if join.team != .Spectator {
-						counts := server_human_counts(server)
-						spawn_slot := counts[team_index(join.team)]
-						spawn_pos := team_spawn_position(join.team, spawn_slot)
-						yaw := wrap_angle(team_angle(join.team) + 3.14159265)
-						client.entity_id = entity_spawn(&server.world, spawn_pos, join.team, yaw)
-						if client.entity_id == INVALID_ENTITY {
-							fmt.eprintln("[Server] Failed to spawn player entity on team switch")
-							server_send_lobby(server, from, .Server_Full)
-							continue
-						}
-						fmt.printf("[Server] Client %v switched to %s as entity %d\n",
-							from, team_name(join.team), client.entity_id)
+						fmt.printf(" as entity %d\n", client.entity_id)
 					} else {
-						client.entity_id = INVALID_ENTITY
-						fmt.printf("[Server] Client %v switched to spectator\n", from)
+						fmt.printf("\n")
 					}
-					bots_rebalance(server)
 				}
 				client.last_packet = time.tick_now()
 				server_send_welcome(server, slot)
@@ -493,19 +478,17 @@ server_human_counts :: proc(server: ^Server) -> [TEAM_COUNT]int {
 	return counts
 }
 
-server_validate_join :: proc(server: ^Server, team: Team_ID) -> Lobby_Reject {
-	if server.client_count >= MAX_CLIENTS {
+server_validate_join :: proc(server: ^Server, team: Team_ID, already_connected := false) -> Lobby_Reject {
+	if !already_connected && server.client_count >= MAX_CLIENTS {
 		return .Server_Full
+	}
+	if team == .Spectator {
+		return .None
 	}
 	idx := team_index(team)
 	if idx < 0 {
 		return .Invalid_Team
 	}
-	// Spectator is always allowed
-	if team == .Spectator {
-		return .None
-	}
-	// Real teams need to pass population checks
 	counts := server_human_counts(server)
 	if counts[idx] >= TEAM_SIZE {
 		return .Team_Most_Populated
@@ -532,14 +515,50 @@ server_resolve_name :: proc(requested: Player_Name, id: Entity_ID) -> Player_Nam
 	return out
 }
 
+// Move an already-connected client onto another team (or spectator).
+// Counts the destination before the team field changes so spawn slots stay
+// correct, and copies the name onto the new body.
+@(private = "file")
+server_apply_team_switch :: proc(server: ^Server, client: ^Client_Slot, team: Team_ID, requested_name: Player_Name) -> bool {
+	name := requested_name
+	if client.entity_id != INVALID_ENTITY {
+		if name.len == 0 {
+			name = server.world.names[client.entity_id]
+		}
+		entity_destroy(&server.world, client.entity_id)
+		client.entity_id = INVALID_ENTITY
+	}
+
+	if team == .Spectator {
+		client.team = .Spectator
+		bots_rebalance(server)
+		return true
+	}
+
+	counts := server_human_counts(server)
+	spawn_slot := counts[team_index(team)]
+	spawn_pos := team_spawn_position(team, spawn_slot)
+	yaw := wrap_angle(team_angle(team) + 3.14159265)
+	new_id := entity_spawn(&server.world, spawn_pos, team, yaw)
+	if new_id == INVALID_ENTITY {
+		fmt.eprintln("[Server] Failed to spawn player entity on team switch")
+		return false
+	}
+	client.entity_id = new_id
+	client.team = team
+	server.world.names[new_id] = server_resolve_name(name, new_id)
+	bots_rebalance(server)
+	return true
+}
+
 server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_ID, requested_name: Player_Name) -> int {
 	if server.client_count >= MAX_CLIENTS {
 		return -1
 	}
-	
+
 	player_id: Entity_ID = INVALID_ENTITY
-	
-	// Spectators don't get an entity
+
+	// Spectators don't get an entity, and must not write names[INVALID_ENTITY].
 	if team != .Spectator {
 		counts := server_human_counts(server)
 		spawn_slot := counts[team_index(team)]
@@ -551,9 +570,8 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 			fmt.eprintln("[Server] Failed to spawn player entity")
 			return -1
 		}
+		server.world.names[player_id] = server_resolve_name(requested_name, player_id)
 	}
-
-	server.world.names[player_id] = server_resolve_name(requested_name, player_id)
 
 	idx := server.client_count
 	server.clients[idx] = Client_Slot{
@@ -620,7 +638,13 @@ server_send_snapshots :: proc(server: ^Server) {
 	for ci in 0..<server.client_count {
 		client := &server.clients[ci]
 		self_id := client.entity_id
-		self_pos := server.world.characters[self_id].pos
+		self_pos: vec3
+		if self_id == INVALID_ENTITY {
+			// Spectators have no body; interest-manage from the plaza.
+			self_pos = {}
+		} else {
+			self_pos = server.world.characters[self_id].pos
+		}
 
 		snapshot := Server_Snapshot_Packet{
 			tick_id        = server.tick_id,
