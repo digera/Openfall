@@ -49,13 +49,19 @@ $env:SERVER_IP = "127.0.0.1"
 .\bin\nexus_client.exe
 ```
 
-On connect the client shows a team-select screen with live player counts. Press `1` / `2` / `3` to join Ember / Tide / Verdant. You cannot join the team that currently has strictly the most players.
+On connect the client shows a team-select screen with live player counts and a name field. Type a name of up to sixteen characters and press `Enter` to finish it, then `1` / `2` / `3` to join Ember / Tide / Verdant. The field has to be finished before the number keys mean teams rather than letters, and leaving it blank gets you a `Player-NN`. You cannot join the team that currently has strictly the most players.
 
-Headless prediction/network test (joins the least-populated team, walks around for 30 s, reports correction rate):
+In a match, hold `Tab` for the scoreboard.
+
+`NEXUS_PORT` moves both ends off the default 27015, so a second server can run beside a live one.
+
+Headless prediction/network test (joins the least-populated team, walks around for 30 s, reports correction rate, and prints the roster and combat log it received). `NEXUS_TEST_NAME` sets the name it joins under; `NEXUS_TEST_FIGHT=1` sends it to the middle of the arena shooting, which is what exercises the scoreline and the combat log:
 
 ```powershell
 .\bin\nexus_client_test.exe
 ```
+
+`check.ps1` type-checks the server, client and test client without linking, which `build.ps1` cannot do while a server is holding `bin\`. `run_wire_test.ps1` builds all three into `%TEMP%` and runs a server plus two named clients against each other end to end.
 
 ## Configuration
 
@@ -135,9 +141,21 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 
 **Context-aware targeting:** The sticky target respects the selected spell. Offensive spells (Missile, Orb, Lance, Call Lightning, Thunderbolt) only stick to enemies. Heal only sticks to teammates (not yourself). Switching spells clears an invalid target or retargets under the crosshair to a valid one, so the bar stays predictable when you swap slots mid-fight.
 
-The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. Friendly Heal reads it the same way for the ally half: point at the teammate you mean to keep alive and they are mended with you. Without a teammate under the crosshair it still mends you. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. Friendly Heal reads it the same way for the ally half: point at the teammate you mean to keep alive and they are mended with you. Without a teammate under the crosshair it still mends you. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. The name under the crosshair comes from the roster (below), so it is the name its owner typed and it is the same on every screen.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
+
+### Names, the scoreboard and the combat log
+
+Every hit in the game goes through one procedure on the server, `combat_apply_damage`, and every death through one transition in `entity_tick_death_respawn`. The scoreline and the combat log both read from those two places rather than from the spells, so a new damage source is scored and logged without touching either feature, and the two can never disagree about who hit whom.
+
+Who is playing, what they are called and how they are doing ride a **roster** packet at 2 Hz, separate from the snapshot. The snapshot is interest-managed — it carries the nearest twenty-one bodies, because that is all you can see — and names and scores are the opposite shape: you need them for players you cannot see, and they change a few times a minute rather than sixty. Putting them in the snapshot would have meant paying for every name on every body thirty times a second and cutting the number of visible bodies to afford it. In their own packet they cost about a kilobyte every half second and the snapshot keeps its bodies. It also means the scoreboard behind `Tab` is the whole match rather than your neighbours, and a name stays put when its owner steps behind a wall.
+
+Combat events do belong in the snapshot: they are addressed to one player, they are wanted the instant they happen, and they are gone a second later. Each client is sent only the lines it is party to. Damage from the same attacker with the same spell inside a second is folded into one line whose tally climbs, named by a sequence number — without that a lit Thunderbolt would push sixty lines a second and nothing else would ever be readable. The same sequence number is how a line survives packet loss: the server replays it until it ages out, and a client that already has it updates it in place instead of printing it twice.
+
+Names are fixed-size on the wire and in memory, never Odin strings, because a name arrives inside a receive buffer that is reused on the next packet. They are stripped to printable ASCII when they are read off the wire, since a name reaches every HUD in the match.
+
+The snapshot and roster byte budgets are `#assert`ed against `MAX_PACKET_SIZE` from the per-record sizes in `network.odin`: adding a field to a replicated record breaks the build rather than silently truncating packets in the first crowded fight.
 
 ## Rendering
 
@@ -153,3 +171,22 @@ Other players are wisps: a hooded robe with nothing inside it but light, and thr
 ./bin/nexus_server
 ./bin/nexus_client
 ```
+
+## Deploy (primord.io)
+
+Builds both binaries locally, uploads one archive, then on the VPS installs the Linux dedicated server and publishes the Windows client for download. The VPS does not compile.
+
+- **Linux server** via WSL → `/opt/nexus-arena/nexus_server` + systemd
+- **Windows client** via `build.ps1 -Target client -Release` → `/downloads/nexus_client.exe` (under the site document root when present)
+
+Needs WSL with `gcc` or `clang` for the server build.
+
+```powershell
+.\deploy.ps1 -User root -IdentityFile $env:USERPROFILE\.ssh\id_ed25519
+.\deploy.ps1 -User root -Status
+.\deploy.ps1 -User root -Logs
+```
+
+Client download: `https://primord.io/downloads/nexus_client.exe`
+
+Options: `-SkipBuild`, `-Binary` / `-ClientBinary`, `-DownloadDir` (override publish path), `-Interactive` (password auth).

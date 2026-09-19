@@ -134,6 +134,41 @@ Client_World :: struct {
 	// Sticky soft target. Drawn under the crosshair, and sent up with every
 	// input so a targeted spell lands on it once the server has validated it.
 	target_id:        Entity_ID,
+
+	// Who is in the match and how they are doing, from the roster packet.
+	// Indexed by entity id and independent of what is in view, so a name stays
+	// put when its owner walks behind a wall and the scoreboard lists the whole
+	// match rather than the neighbours.
+	roster:           [MAX_ENTITIES]Client_Roster_Slot,
+
+	// Recent combat addressed to the local player.
+	combat_log:       [MAX_COMBAT_LOG_LINES]Client_Combat_Line,
+}
+
+Client_Roster_Slot :: struct {
+	present: bool,
+	team:    Team_ID,
+	is_bot:  bool,
+	name:    Player_Name,
+	stats:   Combat_Stats,
+}
+
+MAX_COMBAT_LOG_LINES :: 5
+COMBAT_LOG_HOLD_SEC  :: f32(4.0)
+COMBAT_LOG_FADE_SEC  :: f32(1.0)
+
+// One line of the log. `seq` is the server's name for it: an arriving event
+// with a seq already on screen updates that line instead of adding another,
+// which is both how a repeated packet is ignored and how a beam shows up as
+// one tally climbing rather than a wall of identical lines.
+Client_Combat_Line :: struct {
+	live:       bool,
+	seq:        u8,
+	event_type: Combat_Event_Type,
+	other_id:   Entity_ID,
+	spell_id:   Spell_ID,
+	damage:     u16,
+	age:        f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +383,8 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.have_server_tick = false
 	world.have_game_state = false
 	world.target_id = INVALID_ENTITY
+	world.roster = {}
+	world.combat_log = {}
 }
 
 // Estimated server tick at which remote entities should be displayed.
@@ -420,6 +457,82 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	client_world_apply_projectiles(world, snapshot)
 	client_world_apply_strikes(world, snapshot)
 	client_world_apply_beams(world, snapshot)
+	client_world_apply_combat_events(world, snapshot)
+}
+
+// The roster replaces wholesale: it is the server's complete answer to "who is
+// here", so anyone missing from it has left.
+client_world_apply_roster :: proc(world: ^Client_World, roster: ^Server_Roster_Packet) {
+	world.roster = {}
+	for i in 0..<int(roster.count) {
+		e := &roster.entries[i]
+		if e.id == INVALID_ENTITY || e.id >= MAX_ENTITIES {
+			continue
+		}
+		world.roster[e.id] = Client_Roster_Slot{
+			present = true,
+			team    = e.team,
+			is_bot  = e.is_bot,
+			name    = e.name,
+			stats   = e.stats,
+		}
+	}
+}
+
+// What to call an entity. Prefers the roster, falls back to the id, and works
+// for the local player and bots alike.
+client_world_name :: proc(world: ^Client_World, id: Entity_ID) -> string {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return "?"
+	}
+	slot := &world.roster[id]
+	return player_name_display(&slot.name, id, slot.is_bot)
+}
+
+@(private = "file")
+client_world_apply_combat_events :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	for i in 0..<int(snapshot.combat_event_count) {
+		evt := &snapshot.combat_events[i]
+
+		// A line we already have: the server is either replaying it against
+		// packet loss or the tally has grown. Either way, refresh in place.
+		existing: ^Client_Combat_Line
+		for k in 0..<MAX_COMBAT_LOG_LINES {
+			if world.combat_log[k].live && world.combat_log[k].seq == evt.seq {
+				existing = &world.combat_log[k]
+				break
+			}
+		}
+		if existing != nil {
+			if evt.damage > existing.damage {
+				existing.damage = evt.damage
+				existing.age = 0
+			}
+			continue
+		}
+
+		// Otherwise take a free line, else the one closest to fading out.
+		slot := 0
+		oldest: f32 = -1
+		for k in 0..<MAX_COMBAT_LOG_LINES {
+			if !world.combat_log[k].live {
+				slot = k
+				break
+			}
+			if world.combat_log[k].age > oldest {
+				oldest = world.combat_log[k].age
+				slot = k
+			}
+		}
+		world.combat_log[slot] = Client_Combat_Line{
+			live       = true,
+			seq        = evt.seq,
+			event_type = evt.event_type,
+			other_id   = evt.other_id,
+			spell_id   = evt.spell_id,
+			damage     = evt.damage,
+		}
+	}
 }
 
 BEAM_STALE_SEC :: f64(0.2)
@@ -650,6 +763,17 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	world.hit_marker = max(world.hit_marker - dt * 4.0, 0)
 	client_prediction_decay_offset(&world.prediction, dt)
+
+	for i in 0..<MAX_COMBAT_LOG_LINES {
+		line := &world.combat_log[i]
+		if !line.live {
+			continue
+		}
+		line.age += dt
+		if line.age >= COMBAT_LOG_HOLD_SEC + COMBAT_LOG_FADE_SEC {
+			line^ = {}
+		}
+	}
 
 	if !client_world_target_valid(world, world.target_id) {
 		world.target_id = INVALID_ENTITY

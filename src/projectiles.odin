@@ -271,9 +271,11 @@ projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, target_id: Entity_ID) {
 	proj := &world.projectiles[slot]
 
-	// Copy out of the SOA array, mutate, store back.
+	combat_apply_damage(entity_world, proj.owner_id, target_id, proj.spell_id, proj.damage)
+
+	// Copy out of the SOA array, mutate, store back. Read after the damage
+	// landed so the health printed below is the health that is there.
 	target := entity_world.characters[target_id]
-	target.health -= proj.damage
 	if proj.slow_ticks > 0 {
 		target.slow_ticks = max(target.slow_ticks, proj.slow_ticks)
 	}
@@ -294,7 +296,7 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 	if direct != INVALID_ENTITY {
 		projectile_apply_direct(world, entity_world, slot, direct)
 	}
-	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
+	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.spell_id, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
 	projectile_destroy(world, slot)
 }
 
@@ -307,6 +309,7 @@ splash_damage :: proc(
 	owner_id: Entity_ID,
 	owner_team: Team_ID,
 	direct: Entity_ID,
+	spell_id: Spell_ID,
 	damage, radius, knockback: f32,
 ) {
 	if radius <= 0 || damage <= 0 {
@@ -332,10 +335,12 @@ splash_damage :: proc(
 			continue
 		}
 		falloff := 1.0 - 0.5 * (dist / radius)
-		target.health -= damage * falloff
+		combat_apply_damage(entity_world, owner_id, id, spell_id, damage * falloff)
 		if knockback > 0 {
+			// Re-read: the damage above went through the array, not this copy.
+			target = entity_world.characters[entity_idx]
 			character_apply_impulse(&target, d, knockback * falloff)
+			entity_world.characters[entity_idx] = target
 		}
-		entity_world.characters[entity_idx] = target
 	}
 }
