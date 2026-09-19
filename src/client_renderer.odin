@@ -484,10 +484,20 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		t := &world.towers.towers[i]
 		fs_params.pylons[i] = {t.base.x, t.base.y, t.base.z, t.yaw}
 		fs_params.pylon_shape[i] = {t.core_height, t.design_radius, t.seed, f32(u8(t.ore))}
+		// Pack alive bitmask (32 bits for up to 32 nodes) and max_count into pylon_bound
+		alive_mask: u32 = 0
+		for k in 0 ..< t.max_count {
+			if t.nodes[k].alive {
+				alive_mask |= (1 << u32(k))
+			}
+		}
 		if t.live_count <= 0 {
 			fs_params.pylon_bound[i] = {0, 0, 0, 0}
+			fs_params.pylon_node_meta[i] = {0, 0, 0, 0}
 		} else {
 			fs_params.pylon_bound[i] = {f32(t.live_count), t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
+			// x = max_count, y = spiral_radius, z = stack_step, w = alive_mask as f32
+			fs_params.pylon_node_meta[i] = {f32(t.max_count), t.spiral_radius, t.stack_step, f32(alive_mask)}
 		}
 		for k in 0 ..< TOWER_WOUND_MAX {
 			idx := i * TOWER_WOUND_MAX + k
