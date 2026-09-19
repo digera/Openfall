@@ -39,8 +39,8 @@ layout(binding=1) uniform fs_params {
     vec4 floor_boxes[22];   // pairs: (center.xyz, sin yaw), (half.xyz, cos yaw)
     vec4 solid_boxes[30];   // pairs, same layout
     vec4 pylons[7];         // xyz base centre on the floor, w yaw
-    vec4 pylon_shape[7];    // x height, y circumradius, z noise seed, w ore kind
-    vec4 pylon_bound[7];    // x local z0, y local z1, z radius, w remaining mass 0..1
+    vec4 pylon_shape[7];    // x core height, y design radius, z noise seed, w ore kind
+    vec4 pylon_bound[7];    // x live node count, y node radius, z outer radius, w remaining mass 0..1
     vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
@@ -61,11 +61,6 @@ layout(binding=1) uniform fs_params {
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
     vec4 target_mark;       // xyz sticky target centre, w = 0 none, 1 hostile, 2 friendly
 };
-
-// Every pylon's damage field, stacked along Z into one volume: slab i covers
-// [i*PYLON_NZ, (i+1)*PYLON_NZ). One byte per voxel, 255 = untouched ore.
-layout(binding=0) uniform texture3D pylon_tex;
-layout(binding=0) uniform sampler pylon_smp;
 
 in vec3 ray_origin;
 in vec3 ray_dir;
@@ -446,31 +441,18 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // ---------------------------------------------------------------------------
 // Ore pylons
 //
-// Gameplay authority is the shield-node spiral on the CPU. This atlas is paint
-// of live node spheres plus the thin core. The marched surface is the 0.5 iso
-// of that occupancy plus grain that exists only here. Chip damage is a scar
-// (pylon_wounds); killed nodes leave the atlas. Two clients may disagree on
-// wrinkles. They may not disagree on which nodes exist.
+// Same geometry as tower_raycast: a solid Z-up core cylinder with a golden-angle
+// spiral of overlapping node spheres around it. Analytic hits, no occupancy
+// atlas. Chip damage is a scar (pylon_wounds); dead nodes are omitted and the
+// core shortens with live_count. Must stay in lockstep with src/tower_nodes.odin.
 
-const float PYLON_GRAIN_AMP  = 0.16;
 const float PYLON_GRAIN_FREQ = 2.10;
-const float PYLON_CAP_START  = 0.82;
-const float PYLON_CAP_WAIST  = 0.62;
-const float PYLON_CUT_BODY   = -0.02;
-
-const float PYLON_CELL   = 1.0;
-const float PYLON_NX_F   = 8.0;
-const float PYLON_NY_F   = 8.0;
-const float PYLON_NZ_F   = 20.0;
-const float PYLON_HALF_X = PYLON_NX_F * PYLON_CELL * 0.5;
-const float PYLON_HALF_Y = PYLON_NY_F * PYLON_CELL * 0.5;
-const float PYLON_ATLAS_NZ = PYLON_NZ_F * float(NPYLON);
-
-// Occupancy SDF is a half-cell band, so a step cap of 0.5 m is the most the
-// field can honestly report. A standing tower is fewer steps than the old
-// 25 cm field, not more.
-const int PYLON_TRACE_STEPS = 64;
-const float PYLON_EPS = 0.02;
+const float PYLON_CORE_R = 0.55;                 // CORE_RADIUS
+const float TOWER_SPIRAL_RADIUS_FRAC = 0.55;
+const float SPIRAL_GOLDEN_ANGLE = 2.399963229728653;
+const float SPIRAL_RADIUS_GROWTH = 0.015;
+const int PYLON_NODE_MAX = 32;
+const float PYLON_TMIN = 0.02;
 
 vec3 ore_tint(float ore) {
     if (ore < 1.5) return vec3(1.00, 0.44, 0.24);   // ember
@@ -544,77 +526,64 @@ float pylon_vein(vec3 p, float seed) {
     return pow(clamp(v, 0.0, 1.0), 6.0);
 }
 
-// Hexagon of circumradius r, centred on the origin.
-float pylon_sd_hex(vec2 p, float r) {
-    const float kx = -0.8660254;
-    const float ky = 0.5;
-    const float kz = 0.57735;
-    vec2 q = abs(p);
-    float d = 2.0 * min(kx * q.x + ky * q.y, 0.0);
-    q -= vec2(kx, ky) * d;
-    q -= vec2(clamp(q.x, -kz * r, kz * r), r);
-    return length(q) * ((q.y >= 0.0) ? 1.0 : -1.0);
+vec3 pylon_node_local(int rank, float spiral_r, float step) {
+    float z = float(rank) * step;
+    float angle = float(rank) * SPIRAL_GOLDEN_ANGLE;
+    float radius = spiral_r + z * SPIRAL_RADIUS_GROWTH;
+    return vec3(cos(angle) * radius, sin(angle) * radius, z);
 }
 
-float pylon_radius_at(float z, float height, float radius) {
-    float t = clamp(z / max(height, 0.01), 0.0, 1.0);
-    float waist = radius * PYLON_CAP_WAIST;
-    if (t <= PYLON_CAP_START) return mix(radius, waist, t / PYLON_CAP_START);
-    return waist * (1.0 - (t - PYLON_CAP_START) / (1.0 - PYLON_CAP_START));
+// Finite Z-up cylinder on the origin. Twin of ray_cylinder_hit in src/math.odin,
+// with a surface normal. NaN-free on every path (see intersect_sphere).
+bool intersect_z_cylinder(vec3 ro, vec3 rd, float radius, float z0, float z1,
+                          float tmin, float tmax, out float t, out vec3 n) {
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+
+    float enter = 0.0;
+    float exit = tmax;
+    float miss = 0.0;
+
+    if (abs(rd.z) < 1e-6) {
+        if (ro.z < z0 || ro.z > z1) miss = 1.0;
+    } else {
+        float inv = 1.0 / rd.z;
+        float a = (z0 - ro.z) * inv;
+        float b = (z1 - ro.z) * inv;
+        enter = max(enter, min(a, b));
+        exit = min(exit, max(a, b));
+    }
+
+    float qa = rd.x * rd.x + rd.y * rd.y;
+    float qc = ro.x * ro.x + ro.y * ro.y - radius * radius;
+    if (qa < 1e-12) {
+        if (qc > 0.0) miss = 1.0;
+    } else {
+        float qb = ro.x * rd.x + ro.y * rd.y;
+        float disc = qb * qb - qa * qc;
+        float root = sqrt(max(disc, 0.0));
+        float ia = 1.0 / max(qa, 1e-12);
+        enter = max(enter, (-qb - root) * ia);
+        exit = min(exit, (-qb + root) * ia);
+        if (disc < 0.0) miss = 1.0;
+    }
+
+    float tt = (enter < tmin) ? exit : enter;
+    if (miss > 0.5 || enter > exit || tt < tmin || tt > tmax) return false;
+    t = tt;
+    vec3 p = ro + rd * t;
+    float cap_lo = abs(p.z - z0);
+    float cap_hi = abs(p.z - z1);
+    float xy_len = length(p.xy);
+    float side_d = abs(xy_len - radius);
+    vec3 n_side = vec3(p.xy / max(xy_len, 1e-4), 0.0);
+    vec3 n_cap = vec3(0.0, 0.0, (cap_hi < cap_lo) ? 1.0 : -1.0);
+    n = (min(cap_lo, cap_hi) < side_d) ? n_cap : n_side;
+    return true;
 }
 
-float pylon_sdf_hull(vec3 p, float height, float radius) {
-    float r = pylon_radius_at(p.z, height, radius);
-    float d_xy = pylon_sd_hex(p.xy, max(r, 0.001));
-    float half_h = height * 0.5;
-    float d_z = abs(p.z - half_h) - half_h;
-    vec2 outside = vec2(max(d_xy, 0.0), max(d_z, 0.0));
-    return min(max(d_xy, d_z), 0.0) + length(outside);
-}
-
-float pylon_sdf_body(vec3 p, float height, float radius, float seed) {
-    float d = pylon_sdf_hull(p, height, radius);
-    return d + radius * PYLON_GRAIN_AMP * (pylon_grain(p, radius, seed) * 2.0 - 1.0);
-}
-
-// How far the true surface can lag behind the hull distance: the taper tilts the
-// sides and the grain adds slope, so a full step on the hull overshoots.
-float pylon_step_scale(float height, float radius) {
-    float cap_slope = (radius * PYLON_CAP_WAIST) / max((1.0 - PYLON_CAP_START) * height, 0.01);
-    float taper = sqrt(1.0 + cap_slope * cap_slope);
-    float fbm_w = 0.65 + 0.35 * 2.13;
-    float grain_slope = 2.6 * (PYLON_GRAIN_AMP * 2.0) * PYLON_GRAIN_FREQ * fbm_w;
-    return 1.0 / (taper + grain_slope);
-}
-
-// Trilinear occupancy in pylon i's slab of the atlas. The clamp keeps the
-// filter footprint inside the slab, so no pylon bleeds into its neighbour.
-float pylon_occ(int i, vec3 lp) {
-    vec3 g = vec3((lp.x + PYLON_HALF_X) / PYLON_CELL,
-                  (lp.y + PYLON_HALF_Y) / PYLON_CELL,
-                  lp.z / PYLON_CELL);
-    g = clamp(g, vec3(0.5), vec3(PYLON_NX_F - 0.5, PYLON_NY_F - 0.5, PYLON_NZ_F - 0.5));
-    vec3 uvw = vec3(g.x / PYLON_NX_F,
-                    g.y / PYLON_NY_F,
-                    (g.z + float(i) * PYLON_NZ_F) / PYLON_ATLAS_NZ);
-    // Explicit LOD, not `texture`: this is called from the marcher's loop, and an
-    // implicit mip derivative inside a loop whose trip count varies per pixel is
-    // a gradient instruction HLSL will not compile. There is one mip anyway.
-    return textureLod(sampler3D(pylon_tex, pylon_smp), uvw, 0.0).r;
-}
-
-// Smooth occupancy iso, plus grain that exists only in this shader. Grain is
-// displacement in the occupancy band so empty air cannot grow rock.
-float pylon_occ_sdf(int i, vec3 lp, float radius, float seed) {
-    float occ = pylon_occ(i, lp);
-    float d = (0.5 - occ) * PYLON_CELL;
-    float band = occ * (1.0 - occ) * 4.0;
-    d += PYLON_CELL * PYLON_GRAIN_AMP * (pylon_grain(lp, radius, seed) * 2.0 - 1.0) * band;
-    return d;
-}
-
-// Bite scars in tower-local space. The occupancy iso stays on the collision
-// sphere; this only powders and lights the face you are mining.
+// Bite scars in tower-local space. Collision stays on the node sphere; this
+// only powders and lights the face you are mining.
 float pylon_scar(int i, vec3 lp) {
     float s = 0.0;
     for (int k = 0; k < 4; k++) {
@@ -626,12 +595,7 @@ float pylon_scar(int i, vec3 lp) {
     return s;
 }
 
-float pylon_sdf_local(int i, vec3 p, float height, float radius, float seed) {
-    return pylon_occ_sdf(i, p, radius, seed);
-}
-
-// Clip a ray to a Z-aligned cylinder in local space. Twin of pylon_bound_clip
-// in src/pylon_sdf.odin.
+// Clip a ray to a Z-aligned cylinder in local space. Twin of tower_bound_clip.
 bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float max_t,
                       out float t0, out float t1) {
     float enter = 0.0;
@@ -668,61 +632,90 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
     return true;
 }
 
-// Sphere-trace one pylon in its own frame. Negative on a miss. The bound
-// cylinder is the live-cell AABB, so a stump does not pay for empty air above.
-float pylon_trace_local(int i, vec3 ro, vec3 rd, float height, float radius, float seed,
-                        float z0, float z1, float bound_r, float max_t) {
-    float t, end;
-    if (!pylon_bound_clip(ro, rd, z0, z1, bound_r, max_t, t, end)) return -1.0;
+// Core cylinder plus live node spheres in the tower's local frame.
+// part: 0 = core, 1 = node.
+bool pylon_trace_local(vec3 ro, vec3 rd, float core_h, float design_r,
+                       float live, float node_r, float outer_r, float max_t,
+                       out float t, out vec3 n, out float part) {
+    t = max_t;
+    n = vec3(0.0, 0.0, 1.0);
+    part = 0.0;
 
-    float max_step = PYLON_CELL * 0.5;
-
-    for (int s = 0; s < PYLON_TRACE_STEPS; s++) {
-        if (t > end) return -1.0;
-        vec3 p = ro + rd * t;
-        float d = pylon_occ_sdf(i, p, radius, seed);
-        if (d < PYLON_EPS) return t;
-        float prev = t;
-        t += clamp(d, PYLON_EPS, max_step);
-        if (t <= prev) t = prev + PYLON_EPS;
+    float clip0, clip1;
+    if (!pylon_bound_clip(ro, rd, -node_r, core_h + node_r, outer_r, max_t, clip0, clip1)) {
+        return false;
     }
-    return -1.0;
+
+    bool hit = false;
+    float best = max_t;
+    vec3 bn = vec3(0.0, 0.0, 1.0);
+    float bpart = 0.0;
+
+    int nlive = int(live + 0.5);
+    if (nlive > PYLON_NODE_MAX) nlive = PYLON_NODE_MAX;
+    float step = core_h / max(live, 1.0);
+    float spiral_r = design_r * TOWER_SPIRAL_RADIUS_FRAC;
+
+    for (int k = 0; k < PYLON_NODE_MAX; k++) {
+        if (k < nlive) {
+            vec3 c = pylon_node_local(k, spiral_r, step);
+            float et;
+            vec3 en;
+            if (intersect_sphere(ro, rd, c, node_r, PYLON_TMIN, best, et, en)) {
+                best = et;
+                bn = en;
+                bpart = 1.0;
+                hit = true;
+            }
+        }
+    }
+
+    if (core_h > 0.01) {
+        float et;
+        vec3 en;
+        if (intersect_z_cylinder(ro, rd, PYLON_CORE_R, 0.0, core_h, PYLON_TMIN, best, et, en)) {
+            best = et;
+            bn = en;
+            bpart = 0.0;
+            hit = true;
+        }
+    }
+
+    if (!hit) return false;
+    t = best;
+    n = bn;
+    part = bpart;
+    return true;
 }
 
-vec3 pylon_normal_local(int i, vec3 p, float height, float radius, float seed) {
-    // Floored at a quarter cell: any tighter and the central difference reads
-    // the trilinear ramp as noise and the cut faces come out sparkling.
-    float e = max(clamp(radius * 0.006, 0.004, 0.03), PYLON_CELL * 0.25);
-    return normalize(vec3(
-        pylon_sdf_local(i, p + vec3(e, 0.0, 0.0), height, radius, seed) - pylon_sdf_local(i, p - vec3(e, 0.0, 0.0), height, radius, seed),
-        pylon_sdf_local(i, p + vec3(0.0, e, 0.0), height, radius, seed) - pylon_sdf_local(i, p - vec3(0.0, e, 0.0), height, radius, seed),
-        pylon_sdf_local(i, p + vec3(0.0, 0.0, e), height, radius, seed) - pylon_sdf_local(i, p - vec3(0.0, 0.0, e), height, radius, seed)));
-}
-
-// Nearest pylon along the ray. `local` comes back so the material stage can
-// re-evaluate the body without redoing the transform.
-bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out vec3 local) {
+// Nearest pylon along the ray. `local` and `part` come back so the material
+// stage can tell core from node without redoing the transform.
+bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out vec3 local, out float part) {
     bool hit = false;
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
     idx = 0;
     local = vec3(0.0);
+    part = 0.0;
     for (int i = 0; i < NPYLON; i++) {
         vec4 b = pylon_bound[i];
-        if (b.w <= 0.002 || b.y <= b.x) continue;   // mined flat: nothing to draw
+        if (b.w <= 0.002 || b.x < 0.5) continue;
         vec4 sh = pylon_shape[i];
         float yaw = pylons[i].w;
         float s = sin(yaw);
         float c = cos(yaw);
         vec3 lo = rot_z(ro - pylons[i].xyz, s, c);
         vec3 ld = rot_z(rd, s, c);
-        float lt = pylon_trace_local(i, lo, ld, sh.x, sh.y, sh.z, b.x, b.y, b.z, t);
-        if (lt < 0.0) continue;
+        float lt;
+        vec3 ln;
+        float lp_part;
+        if (!pylon_trace_local(lo, ld, sh.x, sh.y, b.x, b.y, b.z, t, lt, ln, lp_part)) continue;
         vec3 lp = lo + ld * lt;
         t = lt;
-        n = unrot_z(pylon_normal_local(i, lp, sh.x, sh.y, sh.z), s, c);
+        n = unrot_z(ln, s, c);
         idx = i;
         local = lp;
+        part = lp_part;
         hit = true;
     }
     return hit;
@@ -1463,9 +1456,10 @@ void main() {
 
     int py_idx = 0;
     vec3 py_local = vec3(0.0);
+    float py_part = 0.0;
     float pyt;
     vec3 pyn;
-    if (pylon_trace(ro, rd, best, pyt, pyn, py_idx, py_local)) {
+    if (pylon_trace(ro, rd, best, pyt, pyn, py_idx, py_local, py_part)) {
         best = pyt; hit_n = pyn; mat = MAT_PYLON;
     }
 
@@ -1667,7 +1661,7 @@ void main() {
         float standing = pylon_bound[i].w;
         if (standing <= 0.002) continue;
         vec3 tint = ore_tint(pylon_shape[i].w);
-        float h = pylon_shape[i].x * standing;
+        float h = pylon_shape[i].x;
         vec3 c = pylons[i].xyz + vec3(0.0, 0.0, h * 0.55);
         float pulse = 0.80 + 0.20 * sin(WORLD_T * 1.7 + float(i));
         aura += tint * corona(ro, rd, glow_tmax, c, pylon_shape[i].y * 1.2) * 0.22 * standing * pulse;
@@ -1822,27 +1816,25 @@ void main() {
         vec3 tint = ore_tint(ore);
         vec3 stone = ore_stone(ore);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
-
-        // A face well inside the original hull is a cut: worked rock, seams
-        // open. The original skin of a still-full column stays dull.
-        float body = pylon_sdf_hull(py_local, sh.x, sh.y);
-        float cut = smoothstep(PYLON_CUT_BODY - 0.35, PYLON_CUT_BODY + 0.08, body);
+        float grain = pylon_grain(py_local, max(sh.y, 0.5), sh.z);
         float vein = pylon_vein(py_local, sh.z);
-
-        albedo = stone * (0.72 + 0.45 * pylon_grain(py_local, sh.y, sh.z));
-        // Fresh breaks are pale where the rock has been powdered, and brighter
-        // to make damage immediately readable. Scars from chips use the same
-        // language so a beam on the face reads before any node dies.
         float scar = pylon_scar(py_idx, py_local);
-        float worked = max(1.0 - cut, scar);
-        albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), worked * 0.60);
-        // Seams run through the whole body, so a cut across one exposes it in
-        // cross-section and it burns; on the skin only a hint shows through.
-        emissive += tint * vein * (0.14 + 3.2 * worked);
-        emissive += tint * scar * (0.45 + 0.35 * vein);
-        emissive += tint * pow(1.0 - ndv, 3.0) * 0.12;
-        spec_pow = 18.0;
-        spec_amt = 0.05 + 0.18 * worked;
+
+        if (py_part < 0.5) {
+            albedo = stone * (0.50 + 0.18 * grain);
+            albedo = mix(albedo, tint * 0.28, 0.16);
+            emissive += tint * (0.06 + 0.16 * vein);
+            spec_pow = 32.0;
+            spec_amt = 0.14;
+        } else {
+            albedo = stone * (0.78 + 0.38 * grain);
+            albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), scar * 0.60);
+            emissive += tint * vein * (0.18 + 2.6 * scar);
+            emissive += tint * scar * 0.45;
+            emissive += tint * pow(1.0 - ndv, 3.0) * 0.10;
+            spec_pow = 18.0;
+            spec_amt = 0.06 + 0.16 * scar;
+        }
     } else if (mat == MAT_CHUNK) {
         vec4 ch = chunks[ch_idx];
         float ore = chunk_fx[ch_idx].x;
@@ -2015,7 +2007,7 @@ void main() {
         for (int i = 0; i < NPYLON; i++) {
             float standing = pylon_bound[i].w;
             if (standing <= 0.002) continue;
-            vec3 c = pylons[i].xyz + vec3(0.0, 0.0, pylon_shape[i].x * standing * 0.5);
+            vec3 c = pylons[i].xyz + vec3(0.0, 0.0, pylon_shape[i].x * 0.5);
             color += albedo * point_light(hp, hit_n, c, ore_tint(pylon_shape[i].w), 9.0 * standing, 22.0);
         }
         for (int i = 0; i < NCHUNK; i++) {

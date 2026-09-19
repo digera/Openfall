@@ -4,9 +4,10 @@ import "core:math"
 
 // Ore chunks: the lumps that come off a pylon and can be carried home.
 //
-// These are deliberately *not* voxel bodies. The towers are occupancy stacks;
-// what falls off them is cargo. A chunk is a grainy ellipsoid that samples its
-// parent pylon's own noise field, so it still reads as a piece of that rock.
+// These are deliberately *not* voxel bodies. The towers are a core plus node
+// spheres; what falls off them is cargo. A chunk is a grainy ellipsoid that
+// samples its parent pylon's own noise field, so it still reads as a piece of
+// that rock.
 //
 // Chunks are server-authoritative and replicated as small snapshot records.
 

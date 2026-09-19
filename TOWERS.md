@@ -2,8 +2,8 @@
 
 Gameplay authority for the seven ore towers. Replaces the occupancy-grid
 pylon: damage, collision, minion rebuild and scoring all go through
-`src/tower_nodes.odin`. The occupancy atlas the client marches is paint of
-this state, not a second source of truth.
+`src/tower_nodes.odin`. The client draws the same core cylinder and node
+spheres the server raycasts.
 
 ## What a tower is
 
@@ -20,7 +20,9 @@ Each tower is a thin core plus a spiral of overlapping ore nodes.
   of beads. Outer extent stays close to the old hex circumradius so a 9 m
   lane still has a shoulder.
 
-Hits address the Node_ID found at the impact point. After the bite, live
+The client draws that geometry analytically: one cylinder and one sphere per
+live node, the same primitives the server raycasts. There is no occupancy
+atlas. Hits address the Node_ID found at the impact point. After the bite, live
 nodes re-sort by `hp DESC, Node_ID ASC`. A later bite at the same aim may
 find a different node in that slot; the bite that just happened cannot hop.
 
@@ -56,24 +58,17 @@ Quantized node HP, 32 bytes per tower, 0 = dead. Alive nodes never pack as 0
 on smaller towers are zero. Snapshot still carries at most two dirty towers;
 GameState carries all seven. `SNAPSHOT_WORST_BYTES` stays under MTU.
 
-The client unpacks HP, re-sorts locally, and paints the occupancy atlas from
-the resulting spiral. Collision on the client uses the same node spheres as
-the server.
+The client unpacks HP, re-sorts locally, and rebuilds the spiral. Collision
+and drawing on the client use the same node spheres as the server.
 
 ## Damage visualization
 
-The occupancy atlas is 1 m cells. Node spheres are ~1.1–1.7 m. HP-scaling
-those radii either does nothing the grid can show, or drops a low-HP node
-below the 0.5 march iso while the raycast still hits the full sphere. The
-HP-sort spiral makes it worse: a chipped node rises, a healthy one takes its
-slot, and the face you are mining stays full-size.
-
-So paint and collision stay in lockstep — every live node is the collision
-sphere, dead nodes are omitted, core height is `live_count * stack_step`.
-Chip damage is a **scar** stamped at the bite (the outward face of the node
-that just lost HP). The scar survives the re-sort, so the beam's impact
-powders and lights up even as that node climbs the spiral. Repeated bites
-on the same face merge into one growing scar.
+Drawing matches collision: every live node is the full sphere, dead nodes are
+omitted, core height is `live_count * stack_step`. Chip damage is a **scar**
+stamped at the bite (the outward face of the node that just lost HP). The scar
+survives the re-sort, so the beam's impact powders and lights up even as that
+node climbs the spiral. Repeated bites on the same face merge into one growing
+scar.
 
 Lane light, apron dust, and the HUD use **mass** (`sum(hp) / sum(max_hp)`),
 not `intact`. `intact` is still `live_count / max_count` for scoring and

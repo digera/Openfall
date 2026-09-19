@@ -207,22 +207,7 @@ Client_Renderer :: struct {
 	// after the wisps, so the positions have to outlive the loop that made them.
 	// w is 1 where there is an orb at all.
 	orbs:         [MAX_ENTITIES]vec4,
-
-	// Occupancy atlas painted from shield nodes. The marcher is unchanged;
-	// this is the picture of tower authority, not a second occupancy grid.
-	pylon_tex:    sg.Image,
-	pylon_view:   sg.View,
-	pylon_smp:    sg.Sampler,
-	tower_seen:   [MAX_PYLONS]u32,
 }
-
-// The atlas stacks slabs along Z. Trilinear filtering therefore has to be kept
-// off the seams between them, which the shader does by clamping its sample
-// coordinate half a texel inside each slab.
-PYLON_ATLAS_NZ    :: PYLON_NZ * MAX_PYLONS
-PYLON_ATLAS_BYTES :: PYLON_NX * PYLON_NY * PYLON_ATLAS_NZ
-
-@(private = "file") pylon_atlas: [PYLON_ATLAS_BYTES]u8
 
 // ---------------------------------------------------------------------------
 // Camera feel
@@ -348,36 +333,6 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 		label = "scene",
 	})
 
-	r.pylon_tex = sg.make_image({
-		type = ._3D,
-		usage = {stream_update = true},
-		width = PYLON_NX,
-		height = PYLON_NY,
-		num_slices = PYLON_ATLAS_NZ,
-		pixel_format = .R8,
-		label = "pylon_occupancy",
-	})
-	r.pylon_view = sg.make_view({
-		texture = {image = r.pylon_tex},
-		label = "pylon_occupancy_view",
-	})
-	// Linear in all three axes: the surface the marcher finds is the 0.5 iso of
-	// the filtered occupancy. Clamped, because a sample that wrapped would
-	// merge one tower into the next.
-	r.pylon_smp = sg.make_sampler({
-		min_filter = .LINEAR,
-		mag_filter = .LINEAR,
-		wrap_u = .CLAMP_TO_EDGE,
-		wrap_v = .CLAMP_TO_EDGE,
-		wrap_w = .CLAMP_TO_EDGE,
-		label = "pylon_occupancy_smp",
-	})
-	r.bind.views[VIEW_pylon_tex] = r.pylon_view
-	r.bind.samplers[SMP_pylon_smp] = r.pylon_smp
-	for &b in pylon_atlas {
-		b = 0
-	}
-
 	r.pass_action = {
 		colors = {0 = {load_action = .CLEAR, clear_value = {0.02, 0.02, 0.04, 1}}},
 	}
@@ -388,28 +343,6 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 	sdtx.shutdown()
 	sg.shutdown()
-}
-
-// Paint each dirty tower's nodes into the occupancy atlas the shader already
-// marches. Instant, not lerped: a node dying is a chunk leaving, not a column
-// compacting.
-@(private = "file")
-client_renderer_upload_towers :: proc(r: ^Client_Renderer, world: ^Tower_World, dt: f32) {
-	_ = dt
-	dirty := false
-	for i in 0 ..< MAX_PYLONS {
-		t := &world.towers[i]
-		if t.version == r.tower_seen[i] && r.tower_seen[i] != 0 {
-			continue
-		}
-		off := i * PYLON_VOX
-		tower_paint_occupancy(t, pylon_atlas[off:off + PYLON_VOX])
-		r.tower_seen[i] = t.version
-		dirty = true
-	}
-	if dirty {
-		sg.update_image(r.pylon_tex, {mip_levels = {0 = {ptr = &pylon_atlas, size = PYLON_ATLAS_BYTES}}})
-	}
 }
 
 // Render type codes for the shader's spell_tint; an appearance, not the
@@ -547,15 +480,14 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		fs_params.solid_boxes[2 * i + 1] = c
 	}
 
-	client_renderer_upload_towers(r, &world.towers, dt)
 	for i in 0..<MAX_PYLONS {
 		t := &world.towers.towers[i]
 		fs_params.pylons[i] = {t.base.x, t.base.y, t.base.z, t.yaw}
-		fs_params.pylon_shape[i] = {t.design_height, t.design_radius, t.seed, f32(u8(t.ore))}
+		fs_params.pylon_shape[i] = {t.core_height, t.design_radius, t.seed, f32(u8(t.ore))}
 		if t.live_count <= 0 {
 			fs_params.pylon_bound[i] = {0, 0, 0, 0}
 		} else {
-			fs_params.pylon_bound[i] = {0, t.core_height + t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
+			fs_params.pylon_bound[i] = {f32(t.live_count), t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
 		}
 		for k in 0 ..< TOWER_WOUND_MAX {
 			idx := i * TOWER_WOUND_MAX + k

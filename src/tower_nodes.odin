@@ -14,9 +14,8 @@ import "core:slice"
 // synced. Minion hops restore a handful of nodes, scaled by the wave's own-ore
 // bolster, so a flattened lane still takes about three unbuffed waves.
 //
-// The occupancy atlas the client marches is paint of this state, not a second
-// authority: live node spheres at collision radius, thin core, chip scars in
-// the shader. See TOWERS.md.
+// The client draws this geometry analytically (core cylinder + node spheres).
+// Chip scars live in the shader. See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -81,8 +80,8 @@ Tower_Node :: struct {
 	alive:  bool,
 }
 
-// Client-visual bite mark, tower-local. Collision ignores this; the occupancy
-// atlas paints the full node sphere so the marched iso matches the hit.
+// Client-visual bite mark, tower-local. Collision ignores this; the shader
+// powders the face so a chip reads before the node dies.
 Tower_Wound :: struct {
 	pos:    vec3,
 	radius: f32,
@@ -985,91 +984,6 @@ tower_clear_dirty :: proc(world: ^Tower_World, ids: []Pylon_ID) {
 }
 
 // ---------------------------------------------------------------------------
-// Occupancy paint (client visual only)
-
-@(private = "file")
-tower_paint_add :: proc(dst: []u8, x, y, z: int, occ: f32) {
-	if x < 0 || x >= PYLON_NX || y < 0 || y >= PYLON_NY || z < 0 || z >= PYLON_NZ {
-		return
-	}
-	v := u8(clampf(occ, 0, 1) * 255.0 + 0.5)
-	i := ore_index(x, y, z)
-	if v > dst[i] {
-		dst[i] = v
-	}
-}
-
-@(private = "file")
-tower_paint_span :: proc(c: f32, r: f32, half: f32, n: int) -> (lo, hi: int) {
-	lo = int(math.floor((c - r + half) / PYLON_CELL))
-	hi = int(math.floor((c + r + half) / PYLON_CELL))
-	return clamp_int(lo, 0, n - 1), clamp_int(hi, 0, n - 1)
-}
-
-tower_paint_occupancy :: proc(t: ^Tower, dst: []u8) {
-	if len(dst) < PYLON_VOX {
-		return
-	}
-	for i in 0 ..< PYLON_VOX {
-		dst[i] = 0
-	}
-	if t.live_count <= 0 {
-		return
-	}
-
-	// Finite cylinder SDF: occ 0.5 at the surface so the existing occupancy
-	// marcher finds the same iso it did for voxel columns.
-	core_r := CORE_RADIUS
-	h := t.core_height
-	x0, x1 := tower_paint_span(0, core_r + PYLON_CELL, PYLON_HALF_X, PYLON_NX)
-	y0, y1 := tower_paint_span(0, core_r + PYLON_CELL, PYLON_HALF_Y, PYLON_NY)
-	z1 := clamp_int(int(math.ceil((h + PYLON_CELL) / PYLON_CELL)), 0, PYLON_NZ - 1)
-	for z in 0 ..= z1 {
-		for y in y0 ..= y1 {
-			for x in x0 ..= x1 {
-				c := ore_voxel_center(x, y, z)
-				radial := math.sqrt(c.x * c.x + c.y * c.y)
-				d := max(radial - core_r, max(-c.z, c.z - h))
-				occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
-				if occ > 0 {
-					tower_paint_add(dst, x, y, z, occ)
-				}
-			}
-		}
-	}
-
-	for rank in 0 ..< t.live_count {
-		node := tower_node_at_rank(t, rank)
-		if node == nil || !node.alive {
-			continue
-		}
-		p := tower_node_spiral_pos(t, rank)
-		// Collision sphere, not an HP-scaled one. Chip damage is a shader scar
-		// at the bite; shrinking this on a 1 m grid either drops the node below
-		// the 0.5 iso or opens a hole the raycast still hits. Dead nodes are
-		// simply not painted, which is when the silhouette actually loses mass.
-		r := t.node_radius
-		span := r + PYLON_CELL
-		nx0, nx1 := tower_paint_span(p.x, span, PYLON_HALF_X, PYLON_NX)
-		ny0, ny1 := tower_paint_span(p.y, span, PYLON_HALF_Y, PYLON_NY)
-		nz0 := clamp_int(int(math.floor((p.z - span) / PYLON_CELL)), 0, PYLON_NZ - 1)
-		nz1 := clamp_int(int(math.floor((p.z + span) / PYLON_CELL)), 0, PYLON_NZ - 1)
-		for z in nz0 ..= nz1 {
-			for y in ny0 ..= ny1 {
-				for x in nx0 ..= nx1 {
-					c := ore_voxel_center(x, y, z)
-					d := len_vec3(c - p) - r
-					occ := clampf(0.5 - d / PYLON_CELL, 0, 1)
-					if occ > 0 {
-						tower_paint_add(dst, x, y, z, occ)
-					}
-				}
-			}
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Tick
 
 tower_world_tick :: proc(world: ^Tower_World, chunks: ^Ore_Chunk_World, dt: f32) {
@@ -1147,14 +1061,11 @@ tower_selftest :: proc() {
 	assert(tower_mass_frac(t) < 1, "chip lowers mass")
 	assert(t.intact == 1, "chip does not change intact")
 
-	atlas: [PYLON_VOX]u8
-	tower_paint_occupancy(t, atlas[:])
-	local := tower_node_spiral_pos(t, 0)
-	gx, gy, gz := ore_local_to_cell(local)
-	gx = clamp_int(gx, 0, PYLON_NX - 1)
-	gy = clamp_int(gy, 0, PYLON_NY - 1)
-	gz = clamp_int(gz, 0, PYLON_NZ - 1)
-	assert(atlas[ore_index(gx, gy, gz)] > 128, "live node still paints above iso")
+	base := tower_node_spiral_pos(t, 0)
+	assert(abs(base.z) < 0.001, "rank 0 sits at the base")
+	radial := math.sqrt(base.x * base.x + base.y * base.y)
+	assert(abs(radial - t.spiral_radius) < 0.001, "rank 0 on the spiral")
+	assert(t.core_height == f32(t.live_count) * t.stack_step, "core tracks live_count")
 
 	same: [MAX_NODES_PER_TOWER]u8
 	tower_pack_nodes(t, same[:])
