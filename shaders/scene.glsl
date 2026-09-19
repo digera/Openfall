@@ -47,7 +47,7 @@ layout(binding=1) uniform fs_params {
     vec4 wisp_aim[16];      // xyz aim direction (unit), w = charge 0..1
     vec4 robes[16];         // xyz hem ring centre, w = body yaw
     vec4 robe_waists[16];   // xyz waist ring centre, w = hem yaw (pleat twist)
-    vec4 robe_fx[16];       // x flutter 0..1
+    vec4 robe_fx[16];       // x flutter 0..1, y seconds since this wisp died (0 = alive)
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
@@ -444,12 +444,58 @@ vec3 wisp_glow_center(vec4 w) {
     return w.xyz + vec3(0.0, 0.0, 0.52 * (0.82 + 0.18 * fract(w.w)));
 }
 
-// The motes only; the cloth and the face are the robe's.
-bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float tmin, float tmax, out float t, out vec3 n, out float part) {
+// Death: a wisp that is killed swells where it fell, as though the light inside
+// were filling the cloth, and then bursts into a flash the colour of its team.
+// robe_fx[i].y is the seconds since it died (0 while it lives), timed on the CPU
+// so every client sees the same swell and the same burst.
+const float DEATH_SWELL_SEC = 0.40;   // how long the robe fills before it goes
+const float DEATH_POP_SEC   = 0.12;   // how long the flash it bursts into lasts
+const float DEATH_SWELL     = 1.8;    // how much bigger the robe is when it bursts
+const float DEATH_GLOW      = 1.5;    // how much harder the light inside shines by then
+const float DEATH_FLARE     = 4.0;    // how much harder the burst lights the stone than a living wisp
+
+// How far the wisp has filled: 1 while it lives, easing out to DEATH_SWELL, so
+// the swell is quick at first and slows as the cloth runs out.
+float death_swell(float death_t) {
+    if (death_t <= 0.0) return 1.0;
+    float f = min(death_t / DEATH_SWELL_SEC, 1.0);
+    return 1.0 + f * f * (DEATH_SWELL - 1.0);
+}
+
+// How much brighter the light inside is: 0 while the wisp lives, up to
+// DEATH_GLOW just before it bursts.
+float death_glow(float death_t) {
+    if (death_t <= 0.0) return 0.0;
+    float f = min(death_t / DEATH_SWELL_SEC, 1.0);
+    return f * f * DEATH_GLOW;
+}
+
+// 0 -> 1 across the flash; below 0 while the robe is still filling, above 1 once
+// the wisp is gone.
+float death_pop_frac(float death_t) {
+    return (death_t - DEATH_SWELL_SEC) / DEATH_POP_SEC;
+}
+
+// The body itself is gone from the moment it bursts.
+bool death_burst(float death_t) {
+    return death_t > DEATH_SWELL_SEC;
+}
+
+// How hard a wisp lights what is around it through its death: brighter as it
+// fills, a flare as it bursts, and then out.
+float death_light(float death_t) {
+    float pop = death_pop_frac(death_t);
+    if (pop <= 0.0) return 1.0 + death_glow(death_t);
+    return DEATH_FLARE * max(1.0 - pop, 0.0);
+}
+
+// The motes only; the cloth and the face are the robe's. `swell` carries them out
+// with the robe as it fills, so they are never swallowed by it.
+bool wisp_hit_parts(vec3 ro, vec3 rd, vec3 c, float life, float swell, float tmin, float tmax, out float t, out vec3 n, out float part) {
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
     part = 2.0;
-    float scale = 0.82 + 0.18 * life;
+    float scale = (0.82 + 0.18 * life) * swell;
     if (!bounds_hit(ro, rd, c, 0.55 * scale, tmax)) return false;
 
     bool hit = false;
@@ -479,12 +525,15 @@ bool wisp_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out float
     for (int i = 0; i < 16; i++) {
         vec4 w = wisps[i];
         if (w.w < 0.5) continue;
+        float death_t = robe_fx[i].y;
+        // The motes go with the body when it bursts
+        if (death_burst(death_t)) continue;
         float wteam = floor(w.w);
         float whp = fract(w.w);
         vec3 c = wisp_center(w, float(i) * 2.21);
         float wt, wp;
         vec3 wn;
-        if (wisp_hit_parts(ro, rd, c, whp, 0.04, t, wt, wn, wp)) {
+        if (wisp_hit_parts(ro, rd, c, whp, death_swell(death_t), 0.04, t, wt, wn, wp)) {
             t = wt; n = wn; part = wp; team = wteam; hp = whp; hit = true;
         }
     }
@@ -775,8 +824,15 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         if (w.w < 0.5) continue;
         float scale = 0.82 + 0.18 * fract(w.w);
         vec3 c = w.xyz;
+
+        // A dying wisp fills out until it bursts, and then there is no robe left
+        // to draw until it respawns.
+        float death_t = robe_fx[i].y;
+        if (death_burst(death_t)) continue;
+        float swell = death_swell(death_t);
+
         // Hood peak to a hem trailing its full reach, x scale
-        if (!bounds_hit(ro, rd, c, 1.3 * scale, t)) continue;
+        if (!bounds_hit(ro, rd, c, 1.3 * scale * swell, t)) continue;
 
         float yaw = robes[i].w;
         vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
@@ -784,7 +840,7 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         vec3 bn = vec3(0.0, 0.0, 1.0);
         float bpart = ROBE_PART_CLOTH;
         float baux = 0.0;
-        if (hood_trace(to_body(ro - c, fwd), to_body(rd, fwd), scale, t, bn, bpart, baux)) {
+        if (hood_trace(to_body(ro - c, fwd), to_body(rd, fwd), scale * swell, t, bn, bpart, baux)) {
             n = from_body(bn, fwd);
             idx = i;
             part = bpart;
@@ -801,9 +857,9 @@ bool robe_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int i
         vec3 shoulder = c + vec3(0.0, 0.0, ROBE_SHOULDER_Z * scale);
         vec3 waist = robe_space(robe_waists[i].xyz, c, fwd);
         vec3 hem = robe_space(robes[i].xyz, c, fwd);
-        float r_sh = ROBE_R_SHOULDER * scale;
-        float r_wa = ROBE_R_WAIST * scale;
-        float r_he = ROBE_R_HEM * scale;
+        float r_sh = ROBE_R_SHOULDER * scale * swell;
+        float r_wa = ROBE_R_WAIST * scale * swell;
+        float r_he = ROBE_R_HEM * scale * swell;
         float hem_yaw = robe_waists[i].w;
         float flutter = robe_fx[i].x;
         // The two walls meet at the waist with the mean of their slopes
@@ -1080,10 +1136,25 @@ void main() {
         if (w.w < 0.5) continue;
         float team = floor(w.w);
         float hpv = fract(w.w);
-        // The face lights the air around the hood
+
+        // The burst: the light that was inside thrown wide and out in a tenth of
+        // a second, blooming from the point the face was lighting a moment ago so
+        // the one reads as becoming the other.
+        float death_t = robe_fx[i].y;
+        float pop = death_pop_frac(death_t);
+        if (pop > 0.0 && pop < 1.0) {
+            float fade = 1.0 - pop;
+            float flash = corona(ro, rd, glow_tmax, wisp_glow_center(w), 0.8 + 1.2 * pop) * fade * fade;
+            aura += team_tint(team) * flash * 3.5;
+            aura += vec3(1.0) * flash * fade * 1.2;
+        }
+        if (death_burst(death_t)) continue;
+
+        // The face lights the air around the hood, wider and harder as a dying
+        // wisp fills out
         vec3 c = wisp_glow_center(w);
-        float g = corona(ro, rd, glow_tmax, c, 0.55 + 0.15 * hpv) * (0.5 + 0.5 * hpv);
-        aura += team_tint(team) * g * (0.55 + 0.2 * sin(WORLD_T * 3.4 + float(i)));
+        float g = corona(ro, rd, glow_tmax, c, (0.55 + 0.15 * hpv) * death_swell(death_t)) * (0.5 + 0.5 * hpv);
+        aura += team_tint(team) * g * (0.55 + 0.2 * sin(WORLD_T * 3.4 + float(i))) * (1.0 + death_glow(death_t));
         aura += team_core(team) * g * 0.18;
     }
     // Cast orbs: the spell's light gathering in the hand, and the tell that
@@ -1407,6 +1478,7 @@ void main() {
         float pulse = 0.62 + 0.38 * sin(WORLD_T * (3.1 + 6.0 * (1.0 - whp)));
         // Heavy matte cloth in the team's hue
         vec3 cloth = mix(tint, vec3(0.40, 0.38, 0.50), 0.45) * 0.28;
+
         if (robe_part > 1.5) {
             // The face: light in the dark, a little brighter as it pulses
             emissive = (core * (2.0 + 0.5 * pulse) + tint * 0.6) * robe_aux * (0.6 + 0.4 * whp);
@@ -1450,6 +1522,9 @@ void main() {
             spec_pow = 3.0;
             spec_amt = 0.012;
         }
+        // Cloth, hood and face all glow harder as a dying wisp fills, so what
+        // bursts reads as the light that was inside it all along.
+        emissive += tint * death_glow(robe_fx[robe_idx].y);
     }
 
     vec3 color = emissive;
@@ -1469,7 +1544,10 @@ void main() {
             if (w.w < 0.5) continue;
             float team = floor(w.w);
             float hpv = fract(w.w);
-            color += albedo * point_light(hp, hit_n, wisp_glow_center(w), team_tint(team), 2.4 + 1.2 * hpv, 10.0);
+            // A dying wisp lights the stone harder as it fills and flares as it
+            // bursts, so the burst is on the ground as well as in the air.
+            float lit = death_light(robe_fx[i].y);
+            color += albedo * point_light(hp, hit_n, wisp_glow_center(w), team_tint(team), (2.4 + 1.2 * hpv) * lit, 10.0);
         }
         // A charging orb lights its own robe and the stone under it, so the
         // caster is lit by the spell they are about to throw.

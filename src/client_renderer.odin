@@ -52,6 +52,9 @@ Robe_State :: struct {
 	hem_yaw:   f32,    // the yaw the pleats have caught up to
 	flutter:   f32,    // 0..1 smoothed travel speed; drives the hem ripple
 	settled:   bool,   // false until the entity has been drawn once
+	death_t:   f32,    // seconds since the wisp died, 0 while it lives, held at DEATH_ANIM_SEC once it is gone
+	was_dead:  bool,   // what death_t was last advanced against, to catch the death and the way back
+	death_hp:  f32,    // the size it was the last frame it lived; it swells from the body everyone just saw
 }
 
 ROBE_SHOULDER_Z_M   :: f32(0.45)   // shoulder ring above the wisp centre, at full size; matches the shader
@@ -70,6 +73,14 @@ ROBE_HEM_DAMPING    :: f32(5.0)
 ROBE_JOLT_MAX_MPS   :: f32(8.0)    // most the wearer's velocity may change in one frame, for the cloth's purposes
 ROBE_SIM_DT_MIN     :: f32(1.0 / 1000.0)
 ROBE_SIM_DT_MAX     :: f32(1.0 / 30.0)
+
+// A killed wisp swells where it fell and bursts into a flash the colour of its
+// team. The phases are timed here and read by the shader off robe_fx[i].y, so
+// every client that can see it sees the same swell and the same burst; these
+// match DEATH_SWELL_SEC and DEATH_POP_SEC in the shader.
+DEATH_SWELL_SEC     :: f32(0.40)   // how long the robe fills before it goes
+DEATH_POP_SEC       :: f32(0.12)   // how long the flash it bursts into lasts
+DEATH_ANIM_SEC      :: DEATH_SWELL_SEC + DEATH_POP_SEC
 
 // Drag from moving through the air, pushing the cloth back against travel, up
 // to what the rope allows.
@@ -112,8 +123,19 @@ robe_link :: proc(off, vel: ^vec3, target, inertial: vec3, rope, swing, spring, 
 
 // One frame of cloth motion. `vel` is the wearer's velocity (server-
 // authoritative, interpolated), `yaw` its facing, `scale` the wisp's size (it
-// shrinks as it is hurt).
-robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt: f32) {
+// shrinks as it is hurt), `dead` whether the server says the wisp is down.
+robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt: f32, dead: bool) {
+	// A wisp that dies swells and bursts where it fell, and respawns somewhere
+	// else, so the cloth it comes back in starts at rest rather than carrying on
+	// from the balloon it went out as.
+	if dead != st.was_dead {
+		st.was_dead = dead
+		st.death_t = 0
+		if !dead {
+			st.settled = false
+		}
+	}
+
 	waist_rope := ROBE_WAIST_ROPE_M * scale
 	hem_rope := ROBE_HEM_ROPE_M * scale
 	if !st.settled {
@@ -125,6 +147,15 @@ robe_simulate :: proc(st: ^Robe_State, vel: vec3, yaw, scale, world_t, phase, dt
 		st.hem_yaw = yaw
 		st.flutter = 0
 		st.settled = true
+		// A wisp already down the first time it is simulated burst while this
+		// client was not watching it; it stays gone rather than replaying a
+		// death nobody saw.
+		st.was_dead = dead
+		st.death_t = dead ? DEATH_ANIM_SEC : 0
+	}
+
+	if dead {
+		st.death_t = min(st.death_t + dt, DEATH_ANIM_SEC)
 	}
 
 	// The wearer speeding up throws the cloth back; stopping throws it forward.
@@ -475,9 +506,16 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		n := 0
 		for i in 0..<MAX_ENTITIES {
 			remote := &world.remote_entities[i]
-			if !remote.active || remote.display_state.dead || remote.count == 0 {
-				// The robe of a wisp that left or died starts fresh when it is back
+			if !remote.active || remote.count == 0 {
+				// The robe of a wisp that left starts fresh when it is back
 				r.robes[i].settled = false
+				continue
+			}
+			// A wisp that is down is still drawn while it swells and bursts, and
+			// is gone from the arena once it has. One whose robe is not being
+			// simulated died out of this client's sight, so it never starts: a
+			// burst nobody watched is not replayed when it comes back into view.
+			if remote.display_state.dead && (!r.robes[i].settled || r.robes[i].death_t >= DEATH_ANIM_SEC) {
 				continue
 			}
 			ids[n] = i
@@ -497,7 +535,17 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				dist[k], dist[best] = dist[best], dist[k]
 			}
 			remote := &world.remote_entities[ids[k]]
+			robe := &r.robes[ids[k]]
+			dead := remote.display_state.dead
 			hp := clampf(remote.display_state.health / HEALTH_MAX, 0.05, 0.95)
+			// The server zeroes health on death, so a wisp killed outright would
+			// shrink on the frame it died. It swells from the body everyone just
+			// saw instead.
+			if dead {
+				hp = robe.death_hp
+			} else {
+				robe.death_hp = hp
+			}
 			pos := remote.display_state.pos
 			// Idle bob, animated here once per wisp rather than per pixel
 			phase := f32(ids[k]) * 2.21
@@ -509,14 +557,13 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			// The robe hangs from the bobbing body and shrinks with the wisp
 			// as it is hurt.
 			scale := 0.82 + 0.18 * hp
-			robe := &r.robes[ids[k]]
 			yaw := remote.display_state.yaw
-			robe_simulate(robe, remote.display_state.vel, yaw, scale, r.world_t, phase, robe_dt)
+			robe_simulate(robe, remote.display_state.vel, yaw, scale, r.world_t, phase, robe_dt, dead)
 			waist := pos + vec3{0, 0, ROBE_SHOULDER_Z_M * scale} + robe.waist_off
 			hem := waist + robe.hem_off
 			fs_params.robes[k] = {hem.x, hem.y, hem.z, yaw}
 			fs_params.robe_waists[k] = {waist.x, waist.y, waist.z, robe.hem_yaw}
-			fs_params.robe_fx[k] = {robe.flutter, 0, 0, 0}
+			fs_params.robe_fx[k] = {robe.flutter, robe.death_t, 0, 0}
 
 			// The cast orb, held out along the aim so a glance says both what
 			// is coming and who it is coming for. Where a wisp is pointing is
