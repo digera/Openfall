@@ -152,7 +152,7 @@ Snapshot_Beam :: struct {
 	owner_id:    Entity_ID,
 	spell_id:    Spell_ID,  // which beam it is, so the client can colour it
 	end:         vec3,
-	hit:         bool,      // the far end is a body, not the world
+	hit:         bool,      // the far end is a body (player or minion), not the world
 	chain_count: u8,
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
 	// Minion IDs for chains. 0 means chains[i] is a player, > 0 means minion.

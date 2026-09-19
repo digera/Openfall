@@ -770,23 +770,26 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			for c in 0..<min(int(b.chain_count), BEAM_MAX_CHAINS) {
 				minion_id := b.chain_minion_ids[c]
 				if minion_id > 0 {
-					// Minion target: find by ID in client minion snapshot
 					for mi in 0..<world.minion_count {
-						if world.minions[mi].id == minion_id && world.minions[mi].present {
-							m := &world.minions[mi]
+						m := &world.minions[mi]
+						if m.id == minion_id && m.present {
 							p := m.pos + vec3{0, 0, MINION_HEIGHT_M * 0.5}
 							fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
 							break
 						}
 					}
-				} else {
-					// Player target
-					target := &world.remote_entities[int(b.chains[c])]
-					if target.active {
-						p := target.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
-						fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
-					}
+					continue
 				}
+				eid := int(b.chains[c])
+				if eid <= 0 || eid >= MAX_ENTITIES {
+					continue
+				}
+				target := &world.remote_entities[eid]
+				if !target.active {
+					continue
+				}
+				p := target.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+				fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
 			}
 		}
 	}

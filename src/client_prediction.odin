@@ -766,6 +766,18 @@ client_world_beam_end :: proc(world: ^Client_World, def: ^Spell_Def, eye, look: 
 			on_body = true
 		}
 	}
+	// Same rule as the server: a hostile minion in front of the crosshair
+	// is cover, and the beam tip sits on that body.
+	for i in 0..<world.minion_count {
+		m := &world.minions[i]
+		if !m.present || !teams_are_enemies(world.local_team, m.team) {
+			continue
+		}
+		if dist, hit := ray_cylinder_hit(eye, look, m.pos, MINION_RADIUS_M, MINION_HEIGHT_M, reach); hit {
+			reach = dist
+			on_body = true
+		}
+	}
 	return eye + look * reach, on_body
 }
 

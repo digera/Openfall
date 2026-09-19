@@ -880,7 +880,7 @@ server_send_snapshots :: proc(server: ^Server) {
 				owner_id    = Entity_ID(bidx[k]),
 				spell_id    = spell_state.channel_spell,
 				end         = beam.end,
-				hit         = beam.hit != INVALID_ENTITY,
+				hit         = beam.hit != INVALID_ENTITY || beam.hit_minion,
 				chain_count = u8(beam.chain_count),
 				chains      = beam.chains,
 				chain_minion_ids = beam.chain_minion_ids,
