@@ -444,13 +444,13 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // Same geometry as tower_raycast: a solid Z-up core cylinder with a golden-angle
 // spiral of overlapping node spheres around it. Analytic hits, no occupancy
 // atlas. Chip damage is a scar (pylon_wounds); dead nodes are omitted and the
-// core shortens with live_count. Must stay in lockstep with src/tower_nodes.odin.
+// core shortens with the live column so both stay floor-to-cap. Must stay in
+// lockstep with src/tower_nodes.odin.
 
 const float PYLON_GRAIN_FREQ = 2.10;
 const float PYLON_CORE_R = 0.55;                 // CORE_RADIUS
-const float TOWER_SPIRAL_RADIUS_FRAC = 0.55;
+const float TOWER_NODE_WRAP = 0.20;              // TOWER_NODE_WRAP
 const float SPIRAL_GOLDEN_ANGLE = 2.399963229728653;
-const float SPIRAL_RADIUS_GROWTH = 0.015;
 const int PYLON_NODE_MAX = 32;
 const float PYLON_TMIN = 0.02;
 
@@ -526,11 +526,10 @@ float pylon_vein(vec3 p, float seed) {
     return pow(clamp(v, 0.0, 1.0), 6.0);
 }
 
-vec3 pylon_node_local(int rank, float spiral_r, float step) {
-    float z = float(rank) * step;
+vec3 pylon_node_local(int rank, float spiral_r, float step, float node_r) {
+    float z = node_r + float(rank) * step;
     float angle = float(rank) * SPIRAL_GOLDEN_ANGLE;
-    float radius = spiral_r + z * SPIRAL_RADIUS_GROWTH;
-    return vec3(cos(angle) * radius, sin(angle) * radius, z);
+    return vec3(cos(angle) * spiral_r, sin(angle) * spiral_r, z);
 }
 
 // Finite Z-up cylinder on the origin. Twin of ray_cylinder_hit in src/math.odin,
@@ -633,8 +632,9 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
 }
 
 // Core cylinder plus live node spheres in the tower's local frame.
-// part: 0 = core, 1 = node.
-bool pylon_trace_local(vec3 ro, vec3 rd, float core_h, float design_r,
+// part: 0 = core, 1 = node. Node centres run from node_r to core_h - node_r
+// so the shell and the shaft share the same floor and cap.
+bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
                        float live, float node_r, float outer_r, float max_t,
                        out float t, out vec3 n, out float part) {
     t = max_t;
@@ -642,7 +642,7 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h, float design_r,
     part = 0.0;
 
     float clip0, clip1;
-    if (!pylon_bound_clip(ro, rd, -node_r, core_h + node_r, outer_r, max_t, clip0, clip1)) {
+    if (!pylon_bound_clip(ro, rd, -0.02, core_h + 0.02, outer_r, max_t, clip0, clip1)) {
         return false;
     }
 
@@ -653,12 +653,13 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h, float design_r,
 
     int nlive = int(live + 0.5);
     if (nlive > PYLON_NODE_MAX) nlive = PYLON_NODE_MAX;
-    float step = core_h / max(live, 1.0);
-    float spiral_r = design_r * TOWER_SPIRAL_RADIUS_FRAC;
+    float span = max(core_h - 2.0 * node_r, 0.0);
+    float step = span / max(live - 1.0, 1.0);
+    float spiral_r = PYLON_CORE_R + node_r * TOWER_NODE_WRAP;
 
     for (int k = 0; k < PYLON_NODE_MAX; k++) {
         if (k < nlive) {
-            vec3 c = pylon_node_local(k, spiral_r, step);
+            vec3 c = pylon_node_local(k, spiral_r, step, node_r);
             float et;
             vec3 en;
             if (intersect_sphere(ro, rd, c, node_r, PYLON_TMIN, best, et, en)) {
@@ -709,7 +710,7 @@ bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int 
         float lt;
         vec3 ln;
         float lp_part;
-        if (!pylon_trace_local(lo, ld, sh.x, sh.y, b.x, b.y, b.z, t, lt, ln, lp_part)) continue;
+        if (!pylon_trace_local(lo, ld, sh.x, b.x, b.y, b.z, t, lt, ln, lp_part)) continue;
         vec3 lp = lo + ld * lt;
         t = lt;
         n = unrot_z(ln, s, c);

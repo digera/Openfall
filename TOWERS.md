@@ -7,38 +7,36 @@ spheres the server raycasts.
 
 ## What a tower is
 
-Each tower is a thin core plus a spiral of distinct ore nodes.
+Each tower is a thin core plus a spiral of overlapping ore nodes.
 
-- **Core.** Vertical cylinder, radius 0.55 m, height = `live_count * stack_step`.
+- **Core.** Vertical cylinder, radius 0.55 m. Height is the live node column:
+  floor to the current cap (`2 * node_radius + (live_count-1) * stack_step`).
   Derived, not synced. Last stand in the gaps once the shell is thin, not a
   fat pillar that swallows beams.
-- **Nodes.** 32 / 28 / 24 for gold / near-lane / far-lane. Each has a stable
+- **Nodes.** 24 / 12 / 12 for gold / near-lane / far-lane. Each has a stable
   `Node_ID`, HP, and an alive flag. Identity is the ID, never the spiral slot.
-- **Spiral.** Node position is a stable function of array index (NOT HP rank),
-  so damage and death do not move geometry. The spiral is a golden-angle helix
-  with nodes sized to read as distinct beads; overlap is reduced so kill holes
-  are visible in the silhouette (clear FPS feedback). Outer extent stays close
-  to the old hex circumradius so a 9 m lane still has a shoulder.
+  Radius is a fraction of the full-tower pitch, not the old hex circumradius,
+  so a node is one course of the pylon rather than a boulder through the floor.
+- **Spiral.** Rank 0 is the highest-HP live node and sits on the floor (centre
+  at `node_radius`). The last live rank kisses the cap. Position is a golden-
+  angle helix wrapped on the core. Destroying a node shortens core and shell
+  together by one course; rebuild grows them the same way, floor to ceiling.
 
 The client draws that geometry analytically: one cylinder and one sphere per
 live node, the same primitives the server raycasts. There is no occupancy
 atlas. Hits address the Node_ID found at the impact point. After the bite, live
-nodes re-sort by `hp DESC, Node_ID ASC` for internal bookkeeping only; the
-re-sort does NOT move geometry. A later bite at the same world point finds
-the same node (or a hole if it died), never a healthier neighbour sliding in.
+nodes re-sort by `hp DESC, Node_ID ASC`. A later bite at the same aim may
+find a different node in that slot; the bite that just happened cannot hop.
 
 ## Damage
 
 Beams and blasts raycast analytically (sphere per live node, cylinder for the
 core). Splash collects overlapping nodes first, then applies damage by array
-index, then re-sorts. Fractional HP counts: a 0.60 bite must dirty the wire
-and show a scar, not truncate to zero.
+index, then re-sorts. Fractional HP counts: a 0.60 bite must yield ore and
+dirty the wire, not truncate to zero.
 
-**Ore payout is 1:1 with node death.** One node killed yields one ore chunk
-(8 or 18 ore depending on the tower). Chips damage HP and stamp scars for
-immediate feedback, but do NOT pay ore. This contract makes kills readable:
-no ore spam from chips, and each chunk on the ground maps to one dead node.
-Gold toughness still divides incoming amount.
+Ore pays out as a fraction of the node's HP removed, so chipping sheds rock
+before the node dies. Gold toughness still divides incoming amount.
 
 A projectile that stops a hair short of the surface snaps to the nearest live
 node inside a short fallback, so side hits and core grazes still carve.
@@ -47,10 +45,9 @@ node inside a short fallback, so side hits and core grazes still carve.
 
 One hop restores `TOWER_DONATE_BASE` (2) nodes, plus up to
 `TOWER_DONATE_OWN_EXTRA` (2) from the wave's own-ore bolster. Three unbuffed
-fodder over three waves put back 18 nodes, which is 75% of a 24-node far
-tower -- the rebuild cutoff. A team that has been banking its own ore can do
-it in one or two waves; a jackpot still cannot rebuild the whole tower in a
-single hop.
+fodder over three waves put back 6, which is half of a 12-node lane tower.
+A team that has been banking its own ore can do it in one or two waves; a
+jackpot still cannot rebuild the whole tower in a single hop.
 
 Centre scoring still counts donated nodes. First team to have laid most of
 the gold silhouette when it closes (`CENTRE_CLAIM_FRAC`) wins.
@@ -68,11 +65,11 @@ and drawing on the client use the same node spheres as the server.
 ## Damage visualization
 
 Drawing matches collision: every live node is the full sphere, dead nodes are
-omitted (visible holes in the spiral), core height is `live_count * stack_step`.
-Chip damage is a **scar** stamped at the bite (the outward face of the node
-that just lost HP). The scar sits at the stable node position, so repeated
-bites on the same aim merge into one growing scar. Geometry never moves due
-to HP changes, so a kill punches a hole that stays where you aimed.
+omitted, core height matches the live column (floor to cap). Chip damage is a
+**scar** stamped at the bite (the outward face of the node that just lost HP).
+The scar survives the re-sort, so the beam's impact powders and lights up even
+as that node climbs the spiral. Repeated bites on the same face merge into one
+growing scar.
 
 Lane light, apron dust, and the HUD use **mass** (`sum(hp) / sum(max_hp)`),
 not `intact`. `intact` is still `live_count / max_count` for scoring and
