@@ -207,7 +207,25 @@ Client_Renderer :: struct {
 	// after the wisps, so the positions have to outlive the loop that made them.
 	// w is 1 where there is an orb at all.
 	orbs:         [MAX_ENTITIES]vec4,
+
+	// The pylon damage fields, one 3D texture with the seven grids stacked along
+	// Z. Re-uploaded whole whenever any of them changes, which is what the
+	// backends want anyway, and the grids only change when someone is mining.
+	pylon_tex:    sg.Image,
+	pylon_view:   sg.View,
+	pylon_smp:    sg.Sampler,
+	pylon_seen:   [MAX_PYLONS]u32,  // grid version last uploaded
 }
+
+// The atlas stacks slabs along Z. Trilinear filtering therefore has to be kept
+// off the seams between them, which the shader does by clamping its sample
+// coordinate half a texel inside each slab.
+PYLON_ATLAS_NZ    :: PYLON_NZ * MAX_PYLONS
+PYLON_ATLAS_BYTES :: PYLON_NX * PYLON_NY * PYLON_ATLAS_NZ
+
+// Static: over half a megabyte, written every time a tower loses a bite, and
+// there is only ever one renderer.
+@(private = "file") pylon_atlas: [PYLON_ATLAS_BYTES]u8
 
 // ---------------------------------------------------------------------------
 // Camera feel
@@ -333,6 +351,41 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 		label = "scene",
 	})
 
+	r.pylon_tex = sg.make_image({
+		type = ._3D,
+		usage = {stream_update = true},
+		width = PYLON_NX,
+		height = PYLON_NY,
+		num_slices = PYLON_ATLAS_NZ,
+		pixel_format = .R8,
+		label = "pylon_density",
+	})
+	r.pylon_view = sg.make_view({
+		texture = {image = r.pylon_tex},
+		label = "pylon_density_view",
+	})
+	// Linear in all three axes: the surface the marcher finds is the 0.5 iso of
+	// the filtered field, so the filter is not a smoothing pass over the voxels,
+	// it is what defines the shape of a mined face. Clamped, because a sample
+	// that wrapped would carve one end of a tower from the other.
+	r.pylon_smp = sg.make_sampler({
+		min_filter = .LINEAR,
+		mag_filter = .LINEAR,
+		wrap_u = .CLAMP_TO_EDGE,
+		wrap_v = .CLAMP_TO_EDGE,
+		wrap_w = .CLAMP_TO_EDGE,
+		label = "pylon_density_smp",
+	})
+	r.bind.views[VIEW_pylon_tex] = r.pylon_view
+	r.bind.samplers[SMP_pylon_smp] = r.pylon_smp
+	// Upload something before the first draw: the image is stream_update, so
+	// until it is written its contents are undefined and the towers would come
+	// up as noise.
+	for &b in pylon_atlas {
+		b = 255
+	}
+	sg.update_image(r.pylon_tex, {mip_levels = {0 = {ptr = &pylon_atlas, size = PYLON_ATLAS_BYTES}}})
+
 	r.pass_action = {
 		colors = {0 = {load_action = .CLEAR, clear_value = {0.02, 0.02, 0.04, 1}}},
 	}
@@ -343,6 +396,31 @@ client_renderer_init :: proc(r: ^Client_Renderer) {
 client_renderer_shutdown :: proc(r: ^Client_Renderer) {
 	sdtx.shutdown()
 	sg.shutdown()
+}
+
+// Push whatever has been mined since the last frame to the GPU.
+//
+// One upload for the whole atlas rather than seven: `sg.update_image` replaces
+// an image wholesale on every backend, so a partial write would mean seven
+// images and seven texture bindings, and the shader would have to unroll a
+// switch over them to sample one. Half a megabyte is a cheap way out of that,
+// and it is only paid on the frames where a tower actually lost rock.
+@(private = "file")
+client_renderer_upload_pylons :: proc(r: ^Client_Renderer, world: ^Pylon_World) {
+	dirty := false
+	for i in 0..<MAX_PYLONS {
+		g := pylon_grid(world, Pylon_ID(i))
+		if g == nil || g.version == r.pylon_seen[i] {
+			continue
+		}
+		off := i * PYLON_VOX
+		copy(pylon_atlas[off:off + PYLON_VOX], g.density[:])
+		r.pylon_seen[i] = g.version
+		dirty = true
+	}
+	if dirty {
+		sg.update_image(r.pylon_tex, {mip_levels = {0 = {ptr = &pylon_atlas, size = PYLON_ATLAS_BYTES}}})
+	}
 }
 
 // Render type codes for the shader's spell_tint; an appearance, not the
@@ -480,22 +558,22 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		fs_params.solid_boxes[2 * i + 1] = c
 	}
 
-	for i in 0..<MAX_OBELISKS {
-		p := obelisk_position(i)
-		owner: f32 = 0
-		capturing: f32 = 0
-		progress: f32 = 0
-		state: f32 = 0
-		if world.have_game_state {
-			o := &world.game_state.obelisks[i]
-			owner = f32(o.owner)
-			capturing = f32(o.capturing)
-			progress = o.progress
-			state = f32(o.state)
+	client_renderer_upload_pylons(r, &world.pylons)
+	for i in 0..<MAX_PYLONS {
+		p := &world.pylons.pylons[i]
+		fs_params.pylons[i] = {p.base.x, p.base.y, p.base.z, p.yaw}
+		fs_params.pylon_shape[i] = {p.shape.height, p.shape.radius, p.shape.seed, f32(u8(p.ore))}
+		fs_params.pylon_bound[i] = {p.bound_z0, p.bound_z1, p.bound_r, p.intact}
+	}
+	for i in 0..<MAX_SNAPSHOT_CHUNKS {
+		c := &world.chunks[i]
+		if !c.present {
+			fs_params.chunks[i] = {}
+			fs_params.chunk_fx[i] = {}
+			continue
 		}
-		hover := 2.7 + 0.12 * math.sin(r.world_t * 1.3 + f32(i) * 1.7)
-		fs_params.obelisks[i] = {p.x, p.y, p.z, owner}
-		fs_params.obelisk_fx[i] = {capturing, progress, state, hover}
+		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, c.radius}
+		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, 0}
 	}
 
 	// Nearest living remote players → wisps
@@ -767,7 +845,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	sdtx.color3f(0.95, 0.93, 0.86)
 	hud_center_text(cols, rows * 0.28, "N E X U S   A R E N A")
 	sdtx.color3f(0.62, 0.60, 0.68)
-	hud_center_text(cols, rows * 0.28 + 1, "three teams. seven obelisks. one nexus.")
+	hud_center_text(cols, rows * 0.28 + 1, "three teams. seven pylons of ore. one golden tower.")
 
 	sdtx.color3f(0.90, 0.88, 0.80)
 	hud_center_text(cols, rows * 0.42, title)
@@ -985,23 +1063,29 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			}
 		}
 
-		// Obelisks: C = center, then near-lane 1-3 and far-lane 4-6
-		sdtx.pos(cols * 0.5 - f32(MAX_OBELISKS) * 4.5, 3)
-		for i in 0..<MAX_OBELISKS {
-			o := &gs.obelisks[i]
-			owner := Team_ID(o.owner)
-			st := Obelisk_State(o.state)
-			sdtx_color(owner == .None ? vec3{0.5, 0.5, 0.5} : team_color(owner))
-			label := i == 0 ? "C" : fmt.tprintf("%d", i)
-			switch st {
-			case .Neutral:   sdtx.printf("[%s -  ]", label)
-			case .Contested: sdtx.printf("[%s !! ]", label)
-			case .Capturing:
-				sdtx_color(team_color(Team_ID(o.capturing)))
-				sdtx.printf("[%s %2d%%]", label, int(o.progress * 100))
-			case .Held:      sdtx.printf("[%s ## ]", label)
-			}
+		// Pylons: how much of each tower is still standing. G is the golden one
+		// in the centre, then the near-lane towers and the far-lane towers.
+		sdtx.pos(cols * 0.5 - f32(MAX_PYLONS) * 4.0, 3)
+		for i in 0..<MAX_PYLONS {
+			p := &world.pylons.pylons[i]
+			sdtx_color(ore_color(p.ore))
+			label := i == 0 ? "G" : fmt.tprintf("%d", i)
+			sdtx.printf("[%s %3d]", label, int(gs.pylons[i].intact * 100))
 			sdtx.puts(" ")
+		}
+
+		// The wallet: what the local team has carried home, one column per ore.
+		// Enemy ore is what buys a push against its owner, so a stack of someone
+		// else's colour is a threat you can read off your own HUD.
+		if world.local_team != .None && world.local_team != .Spectator {
+			w := &gs.wallets[team_index(world.local_team)]
+			line := f32(ORE_COUNT) * 9
+			sdtx.pos(cols * 0.5 - line * 0.5, 4)
+			for k in 0..<ORE_COUNT {
+				kind := ore_from_index(k)
+				sdtx_color(ore_color(kind))
+				sdtx.printf("%-7s %3d ", ore_name(kind), int(w[k]))
+			}
 		}
 	}
 
@@ -1134,7 +1218,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	if world.have_game_state && Match_State(gs.match_state) == .Waiting {
 		sdtx.color3f(0.7, 0.68, 0.62)
-		hud_center_text(cols, 5, "hold obelisks to gather essence - the center is worth double")
+		hud_center_text(cols, 6, "break enemy pylons, carry the ore home - gold is worth the most")
 	}
 
 	hud_combat_log(world, cols, rows)

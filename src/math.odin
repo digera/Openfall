@@ -125,3 +125,68 @@ hash_u32 :: proc(n: u32) -> u32 {
 	x = (x ~ (x >> 15)) * 0x846C_A68B
 	return x ~ (x >> 16)
 }
+
+PI_F32    :: f32(math.PI)
+SQRT3_F32 :: f32(1.7320508)
+
+sqrt_f32 :: proc(v: f32) -> f32 {
+	return math.sqrt(v)
+}
+
+pow_f32 :: proc(v, e: f32) -> f32 {
+	return math.pow(v, e)
+}
+
+// Round half away from zero. Named rather than inlined because it sits on the
+// quantization path the server and every client must agree on.
+round_f32 :: proc(v: f32) -> f32 {
+	if v >= 0 {
+		return math.floor(v + 0.5)
+	}
+	return -math.floor(-v + 0.5)
+}
+
+clamp_i32 :: proc(v, lo, hi: i32) -> i32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+clamp_int :: proc(v, lo, hi: int) -> int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// Floor division. Odin's `/` truncates toward zero, which would fold the two
+// cells either side of the origin onto the same index.
+div_floor_i32 :: proc(a, b: i32) -> i32 {
+	q := a / b
+	if (a % b != 0) && ((a < 0) != (b < 0)) {
+		q -= 1
+	}
+	return q
+}
+
+fract_f32 :: proc(v: f32) -> f32 {
+	return v - math.floor(v)
+}
+
+// 2D box/hex helpers for the pylon silhouette. Kept here beside the other
+// shared geometry so the GLSL twins in shaders/scene.glsl have one place to
+// be checked against.
+max_vec2 :: proc(v: vec2, s: f32) -> vec2 {
+	return {max(v.x, s), max(v.y, s)}
+}
+
+len_vec2 :: proc(v: vec2) -> f32 {
+	return math.sqrt(v.x * v.x + v.y * v.y)
+}

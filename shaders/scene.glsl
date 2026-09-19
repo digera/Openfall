@@ -38,8 +38,11 @@ layout(binding=1) uniform fs_params {
     vec4 hand_cast;         // x spell render code being charged (0 = none), y charge 0..1
     vec4 floor_boxes[22];   // pairs: (center.xyz, sin yaw), (half.xyz, cos yaw)
     vec4 solid_boxes[30];   // pairs, same layout
-    vec4 obelisks[7];       // xyz pos, w owner team
-    vec4 obelisk_fx[7];     // x capturing team, y progress, z state, w hover height
+    vec4 pylons[7];         // xyz base centre on the floor, w yaw
+    vec4 pylon_shape[7];    // x height, y circumradius, z noise seed, w ore kind
+    vec4 pylon_bound[7];    // x local z0, y local z1, z radius, w fraction standing
+    vec4 chunks[8];         // xyz pos, w radius (0 = none)
+    vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
     vec4 projectiles[12];   // xyz pos, w = type + radius
     vec4 proj_vel[12];      // xyz vel
     vec4 wisps[16];         // xyz pos, w = team + hp (0 = none)
@@ -56,25 +59,32 @@ layout(binding=1) uniform fs_params {
     vec4 target_mark;       // xyz sticky target centre, w = 0 none, 1 hostile, 2 friendly
 };
 
+// Every pylon's damage field, stacked along Z into one volume: slab i covers
+// [i*PYLON_NZ, (i+1)*PYLON_NZ). One byte per voxel, 255 = untouched ore.
+layout(binding=0) uniform texture3D pylon_tex;
+layout(binding=0) uniform sampler pylon_smp;
+
 in vec3 ray_origin;
 in vec3 ray_dir;
 out vec4 frag_color;
 
 const int NFLOOR = 11;
 const int NSOLID = 15;
-const int NOBELISK = 7;
+const int NPYLON = 7;
+const int NCHUNK = 8;
 
 const int MAT_NONE = 0;
 const int MAT_WALL = 1;
 const int MAT_FLOOR = 2;
 const int MAT_SKY = 3;
 const int MAT_SOLID = 4;
-const int MAT_OBELISK = 5;
+const int MAT_PYLON = 5;
 const int MAT_WISP = 6;
 const int MAT_PROJ = 7;
 const int MAT_HAND = 8;
 const int MAT_ROBE = 9;
 const int MAT_CAST_ORB = 10;
+const int MAT_CHUNK = 11;
 
 const vec3 MOON_DIR = normalize(vec3(0.35, -0.55, 0.75));
 
@@ -430,38 +440,319 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 }
 
 // ---------------------------------------------------------------------------
-// Obelisks: hovering crystal + orbiting motes
+// Ore pylons
+//
+// A pylon is a procedural hexagonal obelisk (the body) with everything mined
+// out of it subtracted (the damage field, sampled from pylon_tex). Both halves
+// have twins on the CPU: the body in src/pylon_sdf.odin, the field in
+// src/ore_grid.odin. They must agree to the last bit, because the server
+// decides what a spell carved out with those procs while the player aims with
+// this shader -- so the integer hash below is integer on purpose, and any
+// change here is a change there.
 
-// Crystal hover height is animated on the CPU (obelisk_fx.w).
-vec3 obelisk_crystal_center(int i) {
-    return obelisks[i].xyz + vec3(0.0, 0.0, obelisk_fx[i].w);
+const float PYLON_GRAIN_AMP  = 0.16;
+const float PYLON_GRAIN_FREQ = 2.10;
+const float PYLON_CAP_START  = 0.82;
+const float PYLON_CAP_WAIST  = 0.62;
+const float PYLON_CUT_BODY   = -0.02;
+
+const float PYLON_CELL   = 0.25;
+const float PYLON_NX_F   = 32.0;
+const float PYLON_NY_F   = 32.0;
+const float PYLON_NZ_F   = 80.0;
+const float PYLON_HALF_X = PYLON_NX_F * PYLON_CELL * 0.5;
+const float PYLON_HALF_Y = PYLON_NY_F * PYLON_CELL * 0.5;
+const float PYLON_ATLAS_NZ = PYLON_NZ_F * float(NPYLON);
+
+// Fewer than the CPU's 192. The CPU marcher answers one query per bite and can
+// afford to be thorough; this one runs per pixel per pylon, and what it loses is
+// a rare sliver of ore seen edge-on at grazing incidence.
+const int PYLON_TRACE_STEPS = 128;
+const float PYLON_EPS = 0.012;
+
+vec3 ore_tint(float ore) {
+    if (ore < 1.5) return vec3(1.00, 0.44, 0.24);   // ember
+    if (ore < 2.5) return vec3(0.34, 0.68, 1.00);   // tide
+    if (ore < 3.5) return vec3(0.42, 0.95, 0.52);   // verdant
+    return vec3(1.00, 0.82, 0.32);                  // gold
 }
 
-bool obelisk_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out float part) {
+// The rock itself, before any vein light. Gold ore is warmer stone than the
+// team ores so the centre reads as the prize from anywhere on the map.
+vec3 ore_stone(float ore) {
+    if (ore > 3.5) return vec3(0.30, 0.26, 0.17);
+    return vec3(0.22, 0.21, 0.23);
+}
+
+uint pylon_uhash(int x, int y, int z) {
+    uint n = uint(x) * 1597334677u ^ uint(y) * 3812015801u ^ uint(z) * 3299493293u;
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731u + 789221u) + 1376312589u;
+    return n;
+}
+
+float pylon_hash31(int x, int y, int z) {
+    return float(pylon_uhash(x, y, z) & 0x7fffffffu) / 2147483647.0;
+}
+
+float pylon_vnoise(vec3 p) {
+    vec3 ip = floor(p);
+    int ix = int(ip.x);
+    int iy = int(ip.y);
+    int iz = int(ip.z);
+    vec3 f = p - ip;
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = pylon_hash31(ix,     iy,     iz);
+    float n100 = pylon_hash31(ix + 1, iy,     iz);
+    float n010 = pylon_hash31(ix,     iy + 1, iz);
+    float n110 = pylon_hash31(ix + 1, iy + 1, iz);
+    float n001 = pylon_hash31(ix,     iy,     iz + 1);
+    float n101 = pylon_hash31(ix + 1, iy,     iz + 1);
+    float n011 = pylon_hash31(ix,     iy + 1, iz + 1);
+    float n111 = pylon_hash31(ix + 1, iy + 1, iz + 1);
+    float nx00 = mix(n000, n100, u.x);
+    float nx10 = mix(n010, n110, u.x);
+    float nx01 = mix(n001, n101, u.x);
+    float nx11 = mix(n011, n111, u.x);
+    return mix(mix(nx00, nx10, u.y), mix(nx01, nx11, u.y), u.z);
+}
+
+float pylon_fbm2(vec3 p) {
+    return pylon_vnoise(p) * 0.65 + pylon_vnoise(p * 2.13) * 0.35;
+}
+
+float pylon_grain(vec3 p, float radius, float seed) {
+    vec3 q = p * (PYLON_GRAIN_FREQ / max(radius, 0.5)) + vec3(seed, seed * 0.3, -seed);
+    return pylon_fbm2(q);
+}
+
+// Where the rock is rich. Drives the vein light on an intact face and the
+// brighter seams on a cut one, so a seam a player learns to look for is the same
+// seam the server pays out more ore for.
+float pylon_ridged(vec3 p) {
+    float n = pylon_vnoise(p);
+    float r = 1.0 - abs(n * 2.0 - 1.0);
+    return r * r;
+}
+
+float pylon_vein(vec3 p, float seed) {
+    vec3 q = p * 0.9 + vec3(seed * 1.7, seed * 0.4, seed * 2.1);
+    float v = pylon_ridged(q);
+    v = max(v, pylon_ridged(p * 1.7 + vec3(seed, seed * 2.0, -seed)) * 0.55);
+    return pow(clamp(v, 0.0, 1.0), 6.0);
+}
+
+// Hexagon of circumradius r, centred on the origin.
+float pylon_sd_hex(vec2 p, float r) {
+    const float kx = -0.8660254;
+    const float ky = 0.5;
+    const float kz = 0.57735;
+    vec2 q = abs(p);
+    float d = 2.0 * min(kx * q.x + ky * q.y, 0.0);
+    q -= vec2(kx, ky) * d;
+    q -= vec2(clamp(q.x, -kz * r, kz * r), r);
+    return length(q) * ((q.y >= 0.0) ? 1.0 : -1.0);
+}
+
+float pylon_radius_at(float z, float height, float radius) {
+    float t = clamp(z / max(height, 0.01), 0.0, 1.0);
+    float waist = radius * PYLON_CAP_WAIST;
+    if (t <= PYLON_CAP_START) return mix(radius, waist, t / PYLON_CAP_START);
+    return waist * (1.0 - (t - PYLON_CAP_START) / (1.0 - PYLON_CAP_START));
+}
+
+float pylon_sdf_hull(vec3 p, float height, float radius) {
+    float r = pylon_radius_at(p.z, height, radius);
+    float d_xy = pylon_sd_hex(p.xy, max(r, 0.001));
+    float half_h = height * 0.5;
+    float d_z = abs(p.z - half_h) - half_h;
+    vec2 outside = vec2(max(d_xy, 0.0), max(d_z, 0.0));
+    return min(max(d_xy, d_z), 0.0) + length(outside);
+}
+
+float pylon_sdf_body(vec3 p, float height, float radius, float seed) {
+    float d = pylon_sdf_hull(p, height, radius);
+    return d + radius * PYLON_GRAIN_AMP * (pylon_grain(p, radius, seed) * 2.0 - 1.0);
+}
+
+// How far the true surface can lag behind the hull distance: the taper tilts the
+// sides and the grain adds slope, so a full step on the hull overshoots.
+float pylon_step_scale(float height, float radius) {
+    float cap_slope = (radius * PYLON_CAP_WAIST) / max((1.0 - PYLON_CAP_START) * height, 0.01);
+    float taper = sqrt(1.0 + cap_slope * cap_slope);
+    float fbm_w = 0.65 + 0.35 * 2.13;
+    float grain_slope = 2.6 * (PYLON_GRAIN_AMP * 2.0) * PYLON_GRAIN_FREQ * fbm_w;
+    return 1.0 / (taper + grain_slope);
+}
+
+// Trilinear density in pylon i's slab of the atlas. The clamp keeps the filter
+// footprint inside the slab, so no pylon bleeds into its neighbour's base.
+float pylon_density(int i, vec3 lp) {
+    vec3 g = vec3((lp.x + PYLON_HALF_X) / PYLON_CELL,
+                  (lp.y + PYLON_HALF_Y) / PYLON_CELL,
+                  lp.z / PYLON_CELL);
+    g = clamp(g, vec3(0.5), vec3(PYLON_NX_F - 0.5, PYLON_NY_F - 0.5, PYLON_NZ_F - 0.5));
+    vec3 uvw = vec3(g.x / PYLON_NX_F,
+                    g.y / PYLON_NY_F,
+                    (g.z + float(i) * PYLON_NZ_F) / PYLON_ATLAS_NZ);
+    return texture(sampler3D(pylon_tex, pylon_smp), uvw).r;
+}
+
+// Positive in mined-out space, ~0 on the cut face, negative in remaining ore.
+// Only a true distance within about half a cell, which is why the marcher caps
+// its step once it is inside the body.
+float pylon_carve_sdf(int i, vec3 lp) {
+    return (0.5 - pylon_density(i, lp)) * PYLON_CELL;
+}
+
+float pylon_sdf_local(int i, vec3 p, float height, float radius, float seed) {
+    return max(pylon_sdf_body(p, height, radius, seed), pylon_carve_sdf(i, p));
+}
+
+// Clip a ray to a Z-aligned cylinder in local space. Twin of pylon_bound_clip
+// in src/pylon_sdf.odin.
+bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float max_t,
+                      out float t0, out float t1) {
+    float enter = 0.0;
+    float exit = max_t;
+    t0 = 0.0;
+    t1 = 0.0;
+
+    if (abs(rd.z) < 1e-6) {
+        if (ro.z < z0 || ro.z > z1) return false;
+    } else {
+        float inv = 1.0 / rd.z;
+        float a = (z0 - ro.z) * inv;
+        float b = (z1 - ro.z) * inv;
+        enter = max(enter, min(a, b));
+        exit = min(exit, max(a, b));
+    }
+
+    float qa = rd.x * rd.x + rd.y * rd.y;
+    float qc = ro.x * ro.x + ro.y * ro.y - radius * radius;
+    if (qa < 1e-12) {
+        if (qc > 0.0) return false;
+    } else {
+        float qb = ro.x * rd.x + ro.y * rd.y;
+        float disc = qb * qb - qa * qc;
+        if (disc < 0.0) return false;
+        float root = sqrt(disc);
+        enter = max(enter, (-qb - root) / qa);
+        exit = min(exit, (-qb + root) / qa);
+    }
+
+    if (enter > exit) return false;
+    t0 = max(enter, 0.0);
+    t1 = exit;
+    return true;
+}
+
+// Sphere-trace one pylon in its own frame. Negative on a miss. Twin of
+// pylon_trace_local in src/pylon_sdf.odin.
+float pylon_trace_local(int i, vec3 ro, vec3 rd, float height, float radius, float seed,
+                        float z0, float z1, float bound_r, float max_t) {
+    float t, end;
+    if (!pylon_bound_clip(ro, rd, z0, z1, bound_r, max_t, t, end)) return -1.0;
+
+    float amp = radius * PYLON_GRAIN_AMP;
+    float step_scale = pylon_step_scale(height, radius);
+    // The carve field is only a half-cell band, so inside the body the step has
+    // to be capped or the ray tunnels straight through a mined wall.
+    float max_step = PYLON_CELL * 0.5;
+
+    for (int s = 0; s < PYLON_TRACE_STEPS; s++) {
+        if (t > end) return -1.0;
+        vec3 p = ro + rd * t;
+        float hull = pylon_sdf_hull(p, height, radius);
+        float prev = t;
+
+        // Further out than the grain can reach: step on the hull and skip the
+        // noise entirely, which is what makes approaching a tower cheap.
+        if (hull > amp) {
+            t += hull - amp;
+            if (t <= prev) t = prev + PYLON_EPS;
+            continue;
+        }
+
+        float body;
+        float d;
+        if (hull < -amp) {
+            // Deep inside: the body is certainly negative, so only a carve can
+            // stop the ray.
+            body = hull + amp;
+            d = pylon_carve_sdf(i, p);
+        } else {
+            body = pylon_sdf_body(p, height, radius, seed);
+            d = body;
+            if (body <= max_step) d = max(d, pylon_carve_sdf(i, p));
+        }
+        if (d < PYLON_EPS) return t;
+        float adv = d * step_scale;
+        if (body < max_step) adv = min(adv, max_step);
+        t += adv;
+        if (t <= prev) t = prev + PYLON_EPS;
+    }
+    return -1.0;
+}
+
+vec3 pylon_normal_local(int i, vec3 p, float height, float radius, float seed) {
+    // Floored at a quarter cell: any tighter and the central difference reads
+    // the trilinear ramp as noise and the cut faces come out sparkling.
+    float e = max(clamp(radius * 0.006, 0.004, 0.03), PYLON_CELL * 0.25);
+    return normalize(vec3(
+        pylon_sdf_local(i, p + vec3(e, 0.0, 0.0), height, radius, seed) - pylon_sdf_local(i, p - vec3(e, 0.0, 0.0), height, radius, seed),
+        pylon_sdf_local(i, p + vec3(0.0, e, 0.0), height, radius, seed) - pylon_sdf_local(i, p - vec3(0.0, e, 0.0), height, radius, seed),
+        pylon_sdf_local(i, p + vec3(0.0, 0.0, e), height, radius, seed) - pylon_sdf_local(i, p - vec3(0.0, 0.0, e), height, radius, seed)));
+}
+
+// Nearest pylon along the ray. `local` comes back so the material stage can
+// re-evaluate the body without redoing the transform.
+bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx, out vec3 local) {
     bool hit = false;
     t = tmax;
     n = vec3(0.0, 0.0, 1.0);
     idx = 0;
-    part = 0.0;
-    for (int i = 0; i < NOBELISK; i++) {
-        vec3 c = obelisk_crystal_center(i);
+    local = vec3(0.0);
+    for (int i = 0; i < NPYLON; i++) {
+        vec4 b = pylon_bound[i];
+        if (b.w <= 0.002 || b.y <= b.x) continue;   // mined flat: nothing to draw
+        vec4 sh = pylon_shape[i];
+        float yaw = pylons[i].w;
+        float s = sin(yaw);
+        float c = cos(yaw);
+        vec3 lo = rot_z(ro - pylons[i].xyz, s, c);
+        vec3 ld = rot_z(rd, s, c);
+        float lt = pylon_trace_local(i, lo, ld, sh.x, sh.y, sh.z, b.x, b.y, b.z, t);
+        if (lt < 0.0) continue;
+        vec3 lp = lo + ld * lt;
+        t = lt;
+        n = unrot_z(pylon_normal_local(i, lp, sh.x, sh.y, sh.z), s, c);
+        idx = i;
+        local = lp;
+        hit = true;
+    }
+    return hit;
+}
+
+// ---------------------------------------------------------------------------
+// Ore chunks
+//
+// Lumps knocked off a pylon, lying about waiting to be carried home. Drawn as
+// analytic spheres with the grain field folded into the normal: at a third of a
+// metre across the silhouette is a couple of pixels wide and what sells the
+// rock is the shading, not the outline.
+bool chunk_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int idx) {
+    bool hit = false;
+    t = tmax;
+    n = vec3(0.0, 0.0, 1.0);
+    idx = 0;
+    for (int i = 0; i < NCHUNK; i++) {
+        vec4 ch = chunks[i];
+        if (ch.w < 0.01) continue;
         float et;
         vec3 en;
-        // Bounding sphere around crystal, motes and plinth
-        if (!bounds_hit(ro, rd, obelisks[i].xyz + vec3(0.0, 0.0, 2.2), 3.4, t)) continue;
-        if (intersect_ellipsoid(ro, rd, c, vec3(0.55, 0.55, 1.9), 0.04, t, et, en)) {
-            t = et; n = en; idx = i; part = 0.0; hit = true;
-        }
-        // Plinth
-        if (intersect_ellipsoid(ro, rd, obelisks[i].xyz + vec3(0.0, 0.0, 0.18), vec3(1.15, 1.15, 0.22), 0.04, t, et, en)) {
-            t = et; n = en; idx = i; part = 2.0; hit = true;
-        }
-        for (int k = 0; k < 3; k++) {
-            float a = WORLD_T * (0.9 + 0.25 * float(k)) + float(k) * 2.094 + float(i);
-            vec3 m = c + vec3(cos(a) * 1.25, sin(a) * 1.25, 0.9 * sin(a * 0.7 + float(k)));
-            if (intersect_sphere(ro, rd, m, 0.11, 0.04, t, et, en)) {
-                t = et; n = en; idx = i; part = 1.0; hit = true;
-            }
+        if (intersect_sphere(ro, rd, ch.xyz, ch.w, 0.02, t, et, en)) {
+            t = et; n = en; idx = i; hit = true;
         }
     }
     return hit;
@@ -1113,12 +1404,19 @@ void main() {
         best = st; hit_n = sn; mat = MAT_SOLID;
     }
 
-    int ob_idx = 0;
-    float ob_part = 0.0;
-    float ot;
-    vec3 on;
-    if (obelisk_trace(ro, rd, best, ot, on, ob_idx, ob_part)) {
-        best = ot; hit_n = on; mat = MAT_OBELISK;
+    int py_idx = 0;
+    vec3 py_local = vec3(0.0);
+    float pyt;
+    vec3 pyn;
+    if (pylon_trace(ro, rd, best, pyt, pyn, py_idx, py_local)) {
+        best = pyt; hit_n = pyn; mat = MAT_PYLON;
+    }
+
+    int ch_idx = 0;
+    float cht;
+    vec3 chn;
+    if (chunk_trace(ro, rd, best, cht, chn, ch_idx)) {
+        best = cht; hit_n = chn; mat = MAT_CHUNK;
     }
 
     float wisp_team = 0.0, wisp_hp = 1.0, wisp_part = 0.0;
@@ -1167,7 +1465,7 @@ void main() {
 
     float glow_tmax = (mat == MAT_SKY) ? 400.0 : hit_t;
 
-    // --- Volumetric-ish glows (wisps, projectiles, impacts, obelisks) --------
+    // --- Volumetric-ish glows (wisps, projectiles, impacts, ore) -------------
     vec3 aura = vec3(0.0);
     for (int i = 0; i < 16; i++) {
         vec4 w = wisps[i];
@@ -1297,16 +1595,25 @@ void main() {
         vec3 ht = mix(hand_core(), hand_tint(), 0.5);
         aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w + 0.35 * hand_cast.y);
     }
-    for (int i = 0; i < NOBELISK; i++) {
-        vec3 c = obelisk_crystal_center(i);
-        float owner = obelisks[i].w;
-        vec3 tint = team_tint(owner);
-        float pulse = 0.75 + 0.25 * sin(WORLD_T * 2.2 + float(i));
-        aura += tint * corona(ro, rd, glow_tmax, c, 1.1) * 0.45 * pulse;
-        if (obelisk_fx[i].z > 1.5 && obelisk_fx[i].z < 2.5) {
-            // Capturing: pulse in the capturing team's color
-            aura += team_tint(obelisk_fx[i].x) * corona(ro, rd, glow_tmax, c, 1.6) * 0.35 * (0.5 + 0.5 * sin(WORLD_T * 6.0));
-        }
+    // Pylons: the ore inside lights the air around a standing tower, dimming as
+    // the tower is eaten away, so how far a fight has got is visible from the
+    // far end of a lane through smoke and glare.
+    for (int i = 0; i < NPYLON; i++) {
+        float standing = pylon_bound[i].w;
+        if (standing <= 0.002) continue;
+        vec3 tint = ore_tint(pylon_shape[i].w);
+        float h = pylon_shape[i].x * standing;
+        vec3 c = pylons[i].xyz + vec3(0.0, 0.0, h * 0.55);
+        float pulse = 0.80 + 0.20 * sin(WORLD_T * 1.7 + float(i));
+        aura += tint * corona(ro, rd, glow_tmax, c, pylon_shape[i].y * 1.2) * 0.22 * standing * pulse;
+    }
+    // Loose ore glints where it fell, which is the whole reason to look at the
+    // floor in this mode.
+    for (int i = 0; i < NCHUNK; i++) {
+        if (chunks[i].w < 0.01) continue;
+        vec3 tint = ore_tint(chunk_fx[i].x);
+        float twinkle = 0.7 + 0.3 * sin(WORLD_T * 3.0 + chunk_fx[i].y * 6.283);
+        aura += tint * corona(ro, rd, glow_tmax, chunks[i].xyz, chunks[i].w * 2.4) * 0.5 * twinkle;
     }
 
     aura += target_mark_glow(ro, rd, glow_tmax, target_mark.xyz, target_mark.w);
@@ -1403,32 +1710,22 @@ void main() {
         float ring = 1.0 - smoothstep(0.0, 0.18, abs(r - 12.0));
         ring += 1.0 - smoothstep(0.0, 0.12, abs(r - 5.0));
         emissive += vec3(0.55, 0.50, 0.80) * ring * 0.10 * fade;
-        // Obelisk decals: owner disc, capture progress ring
-        for (int i = 0; i < NOBELISK; i++) {
-            vec2 d = hp.xy - obelisks[i].xy;
+        // Pylon aprons: a ring of ore dust the colour of what the tower is made
+        // of, scuffed and darkened where the rock has been worked, and a bright
+        // rim that says how much of the tower is still up.
+        for (int i = 0; i < NPYLON; i++) {
+            vec2 d = hp.xy - pylons[i].xy;
             float od = length(d);
-            float owner = obelisks[i].w;
-            float radius = 3.6;
+            float radius = pylon_shape[i].y * 1.7;
             if (od < radius + 0.4) {
-                vec3 otint = team_tint(owner);
-                float disc = 1.0 - smoothstep(radius - 0.3, radius, od);
-                albedo = mix(albedo, albedo * 0.55 + otint * 0.22, disc * (owner > 0.5 ? 0.85 : 0.35));
+                vec3 otint = ore_tint(pylon_shape[i].w);
+                float standing = pylon_bound[i].w;
+                float disc = 1.0 - smoothstep(radius - 0.5, radius, od);
+                // Dust from what has come off: heavier the more has been mined.
+                float dust = disc * (0.25 + 0.55 * (1.0 - standing));
+                albedo = mix(albedo, albedo * 0.5 + otint * 0.20, dust);
                 float edge = 1.0 - smoothstep(0.0, 0.16, abs(od - radius));
-                emissive += otint * edge * 0.45;
-                // progress arc
-                float prog = obelisk_fx[i].y;
-                float state = obelisk_fx[i].z;
-                if (state > 1.5 && state < 2.5 && prog > 0.0) {
-                    float ang = (atan(d.y, d.x) + 3.14159265) / 6.2831853;
-                    float arc_r = radius - 0.55;
-                    float arc = 1.0 - smoothstep(0.0, 0.18, abs(od - arc_r));
-                    arc *= step(ang, prog);
-                    emissive += team_tint(obelisk_fx[i].x) * arc * 0.9;
-                }
-                if (state > 0.5 && state < 1.5) {
-                    // contested: flicker
-                    emissive += vec3(1.0, 0.85, 0.5) * edge * 0.5 * (0.5 + 0.5 * sin(WORLD_T * 10.0));
-                }
+                emissive += otint * edge * 0.30 * standing;
             }
         }
         spec_pow = 24.0;
@@ -1454,27 +1751,49 @@ void main() {
         emissive += vec3(0.45, 0.42, 0.70) * (1.0 - smoothstep(0.0, 0.08, abs(fract(hp.z * 1.0 + 0.5) - 0.5) - 0.44)) * 0.12;
         spec_pow = 16.0;
         spec_amt = 0.08;
-    } else if (mat == MAT_OBELISK) {
-        float owner = obelisks[ob_idx].w;
-        vec3 tint = team_tint(owner);
-        vec3 core = team_core(owner);
+    } else if (mat == MAT_PYLON) {
+        vec4 sh = pylon_shape[py_idx];
+        float ore = sh.w;
+        vec3 tint = ore_tint(ore);
+        vec3 stone = ore_stone(ore);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
-        float fres = pow(1.0 - ndv, 2.5);
-        float pulse = 0.7 + 0.3 * sin(WORLD_T * 2.2 + float(ob_idx));
-        if (ob_part < 0.5) {
-            albedo = mix(tint, core, 0.35) * 0.35;
-            emissive = mix(tint, core, 0.25) * (0.9 + 0.6 * pulse) * (0.45 + 0.55 * fres) + core * pow(ndv, 6.0) * 0.5;
-            float facets = 0.85 + 0.15 * sin(hp.z * 9.0 + atan(hp.y - obelisks[ob_idx].y, hp.x - obelisks[ob_idx].x) * 6.0);
-            emissive *= facets;
-        } else if (ob_part < 1.5) {
-            albedo = core * 0.3;
-            emissive = core * 1.4 + tint * 0.6;
-        } else {
-            albedo = vec3(0.30, 0.30, 0.34);
-            emissive = tint * 0.25 * pulse;
-            spec_pow = 32.0;
-            spec_amt = 0.2;
-        }
+
+        // A face that has been mined is behind the original silhouette, and that
+        // is the whole read of the mode: worked rock glows because the seams
+        // inside it are open to the air, untouched rock is dull.
+        float body = pylon_sdf_body(py_local, sh.x, sh.y, sh.z);
+        float cut = 1.0 - smoothstep(PYLON_CUT_BODY, PYLON_CUT_BODY - 0.12, body);
+        float vein = pylon_vein(py_local, sh.z);
+
+        albedo = stone * (0.72 + 0.45 * pylon_grain(py_local, sh.y, sh.z));
+        // Fresh breaks are pale where the rock has been powdered.
+        albedo = mix(albedo, albedo * 0.7 + vec3(0.30, 0.29, 0.30), (1.0 - cut) * 0.45);
+        // Seams run through the whole body, so a cut across one exposes it in
+        // cross-section and it burns; on the skin only a hint shows through.
+        emissive += tint * vein * (0.22 + 2.4 * (1.0 - cut));
+        emissive += tint * pow(1.0 - ndv, 3.0) * 0.12;
+        spec_pow = 18.0;
+        spec_amt = 0.05 + 0.12 * (1.0 - cut);
+    } else if (mat == MAT_CHUNK) {
+        vec4 ch = chunks[ch_idx];
+        float ore = chunk_fx[ch_idx].x;
+        float seed = chunk_fx[ch_idx].y * 8.0;
+        vec3 tint = ore_tint(ore);
+        // Roughen the sphere: the grain field perturbed along the gradient reads
+        // as a broken lump without costing a march.
+        vec3 lp = (hp - ch.xyz) * (1.0 / max(ch.w, 0.01));
+        float e = 0.35;
+        vec3 gn = vec3(
+            pylon_grain(lp + vec3(e, 0.0, 0.0), 1.0, seed) - pylon_grain(lp - vec3(e, 0.0, 0.0), 1.0, seed),
+            pylon_grain(lp + vec3(0.0, e, 0.0), 1.0, seed) - pylon_grain(lp - vec3(0.0, e, 0.0), 1.0, seed),
+            pylon_grain(lp + vec3(0.0, 0.0, e), 1.0, seed) - pylon_grain(lp - vec3(0.0, 0.0, e), 1.0, seed));
+        hit_n = normalize(hit_n + gn * 1.4);
+        float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
+        albedo = ore_stone(ore) * (0.85 + 0.5 * pylon_grain(lp, 1.0, seed));
+        // All of a chunk is broken surface, so the seams are open all over it.
+        emissive += tint * (0.55 + 0.9 * pylon_vein(lp * 2.0, seed)) * (0.5 + 0.5 * ndv);
+        spec_pow = 20.0;
+        spec_amt = 0.10;
     } else if (mat == MAT_WISP) {
         // Motes: sparks of the team's light orbiting the robe
         vec3 tint = team_tint(wisp_team);
@@ -1596,9 +1915,18 @@ void main() {
             if (cs.w < 0.5) continue;
             color += albedo * point_light(hp, hit_n, cs.xyz, spell_tint(cs.w), 0.8 + 3.2 * wisp_aim[i].w, 8.0);
         }
-        for (int i = 0; i < NOBELISK; i++) {
-            vec3 c = obelisk_crystal_center(i);
-            color += albedo * point_light(hp, hit_n, c, team_tint(obelisks[i].w), 14.0, 24.0);
+        // A standing pylon is the main light in its lane, from about mid-shaft,
+        // and it dims as it comes down -- so a lane whose tower has been broken
+        // genuinely goes dark.
+        for (int i = 0; i < NPYLON; i++) {
+            float standing = pylon_bound[i].w;
+            if (standing <= 0.002) continue;
+            vec3 c = pylons[i].xyz + vec3(0.0, 0.0, pylon_shape[i].x * standing * 0.5);
+            color += albedo * point_light(hp, hit_n, c, ore_tint(pylon_shape[i].w), 9.0 * standing, 22.0);
+        }
+        for (int i = 0; i < NCHUNK; i++) {
+            if (chunks[i].w < 0.01) continue;
+            color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), 0.9, 4.0);
         }
         for (int i = 0; i < 12; i++) {
             vec4 p = projectiles[i];

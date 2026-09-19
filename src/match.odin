@@ -21,6 +21,13 @@ Match :: struct {
 	result:         Match_Result,
 	winner:         Team_ID,
 
+	// Four currencies per team: one ore per rival team plus the gold from the
+	// centre. Which ore you are holding is what decides what your next minion
+	// wave can do, so they are tracked separately rather than summed.
+	wallets:        [TEAM_COUNT][ORE_COUNT]f32,
+	// Score. For now the sum of everything a team has brought home, which is
+	// what ends a round; the wave economy that actually spends the wallets is
+	// the next phase.
 	essence:        [TEAM_COUNT]f32,
 
 	match_time:     f32,
@@ -56,7 +63,7 @@ match_init :: proc() -> Match {
 }
 
 // Returns true when the match just transitioned back to Waiting (caller resets the world).
-match_tick :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt: f32) -> (restarted: bool) {
+match_tick :: proc(match: ^Match, dt: f32) -> (restarted: bool) {
 	switch match.state {
 	case .Waiting:
 		match.match_time += dt
@@ -66,7 +73,6 @@ match_tick :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt: f32) -> (re
 
 	case .Active:
 		match.match_time += dt
-		match_generate_essence(match, obelisk_world, dt)
 
 		for i in 0..<TEAM_COUNT {
 			if match.essence[i] >= test_essence_threshold {
@@ -102,24 +108,44 @@ match_tick :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt: f32) -> (re
 	return false
 }
 
-match_generate_essence :: proc(match: ^Match, obelisk_world: ^Obelisk_World, dt: f32) {
-	for i in 0..<obelisk_world.count {
-		obelisk := &obelisk_world.obelisks[i]
-		if obelisk.state != .Held {
-			continue
-		}
-		idx := team_index(obelisk.owner)
-		if idx < 0 {
-			continue
-		}
-		match.essence[idx] += ESSENCE_PER_SEC * obelisk.essence_mult * dt * test_essence_multiplier
+// Bank ore a player carried home. The only way essence moves.
+//
+// Gold is worth more than ore because there is one source of it and everyone has
+// to fight in the open for it.
+match_credit_ore :: proc(match: ^Match, team: Team_ID, kind: Ore_Kind, amount: f32) {
+	idx := team_index(team)
+	slot := ore_index_of(kind)
+	if idx < 0 || slot < 0 || amount <= 0 {
+		return
 	}
+	match.wallets[idx][slot] += amount
+	match.essence[idx] += amount * ore_score_value(kind) * test_essence_multiplier
+}
+
+ore_score_value :: proc(kind: Ore_Kind) -> f32 {
+	return kind == .Gold ? 3.0 : 1.0
+}
+
+// Spend from a wallet, if it can be paid in full. Returns false and takes
+// nothing when it cannot -- a partial spend would be a half-summoned minion.
+match_spend_ore :: proc(match: ^Match, team: Team_ID, kind: Ore_Kind, amount: f32) -> bool {
+	idx := team_index(team)
+	slot := ore_index_of(kind)
+	if idx < 0 || slot < 0 {
+		return false
+	}
+	if match.wallets[idx][slot] < amount {
+		return false
+	}
+	match.wallets[idx][slot] -= amount
+	return true
 }
 
 match_start :: proc(match: ^Match) {
 	match.state = .Active
 	match.match_time = 0
 	match.essence = {}
+	match.wallets = {}
 	match.result = .None
 	match.winner = .None
 	fmt.printf("[Match] Round %d started (win at %.0f essence)\n", match.round_number, test_essence_threshold)
@@ -146,6 +172,7 @@ match_reset :: proc(match: ^Match) {
 	match.result = .None
 	match.winner = .None
 	match.essence = {}
+	match.wallets = {}
 	match.match_time = 0
 	match.ended_time = 0
 	match.round_number += 1

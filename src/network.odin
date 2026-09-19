@@ -17,8 +17,9 @@ import "core:strconv"
 //   Lobby            team populations + join verdict
 //   Welcome          entity id + team
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
-//   GameState        match / obelisk state, 10Hz
+//   GameState        match / pylon state / team wallets, 10Hz
 //   Roster           who is playing and how they are doing, 2Hz, everyone
+//   PylonSync        one pylon's density field, run-length coded, on demand
 //
 // The snapshot is interest-managed: it carries the nearest handful of bodies
 // because that is all you can see. Names and the scoreline are the opposite
@@ -28,20 +29,29 @@ import "core:strconv"
 //
 // Combat events do belong in the snapshot: they are per-client, they are
 // wanted the instant they happen, and they are gone a second later.
+//
+// Pylon bites are a third shape again. A pylon's density field is 80 KB and can
+// never be snapshotted, so the snapshot carries the recent *bites* and every
+// client re-runs them against its own copy. Each bite therefore appears in
+// several consecutive snapshots: loss is free, and a client that falls far
+// enough behind asks for the pylon wholesale on its own packet instead. See
+// pylon_net.odin.
 
-PROTOCOL_VERSION :: u8(9)  // bumped for the roster packet and combat events
+PROTOCOL_VERSION :: u8(10)  // bumped for ore pylons: carve events, chunks, wallets
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
-	Invalid          = 0,
-	Client_Hello     = 1,
-	Server_Snapshot  = 2,
-	Server_Welcome   = 3,
-	Server_GameState = 4,
-	Client_Join      = 5,
-	Client_Input     = 6,
-	Server_Lobby     = 7,
-	Server_Roster    = 8,
+	Invalid             = 0,
+	Client_Hello        = 1,
+	Server_Snapshot     = 2,
+	Server_Welcome      = 3,
+	Server_GameState    = 4,
+	Client_Join         = 5,
+	Client_Input        = 6,
+	Server_Lobby        = 7,
+	Server_Roster       = 8,
+	Server_Pylon_Sync   = 9,
+	Client_Pylon_Request = 10,
 }
 
 INPUT_REDUNDANCY :: 3
@@ -51,6 +61,11 @@ MAX_SNAPSHOT_PROJECTILES   :: 12
 MAX_SNAPSHOT_STRIKES       :: 4
 MAX_SNAPSHOT_BEAMS         :: 4
 MAX_SNAPSHOT_COMBAT_EVENTS :: 8
+// Bites in flight. At the fixed 10 Hz mining cadence and 30 Hz snapshots, six
+// slots cover the last fifth of a second, so three consecutive lost snapshots
+// still cost nothing.
+MAX_SNAPSHOT_CARVES        :: 6
+MAX_SNAPSHOT_CHUNKS        :: 8
 
 // Everyone who can be in a match at once. Checked against MAX_CLIENTS +
 // MAX_BOTS where those are in scope; the client build has neither, so the
@@ -159,6 +174,19 @@ Snapshot_Combat_Event :: struct {
 	damage:     u16,        // running total for this line, whole HP
 }
 
+// A lump of ore on the floor. Unlike everything else in a snapshot these are
+// world state rather than effects, but they are numerous, short-lived and only
+// interesting nearby, so they are interest-managed like projectiles rather than
+// riding the slow GameState packet.
+Snapshot_Chunk :: struct {
+	id:     Ore_Chunk_ID,
+	ore:    Ore_Kind,
+	pos:    vec3,
+	vel:    vec3,
+	radius: f32,
+	rest:   bool,   // settled and ready to pick up
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -172,6 +200,10 @@ Server_Snapshot_Packet :: struct {
 	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
 	combat_event_count: u8,
 	combat_events:      [MAX_SNAPSHOT_COMBAT_EVENTS]Snapshot_Combat_Event,
+	carve_count:      u8,
+	carves:           [MAX_SNAPSHOT_CARVES]Pylon_Carve_Event,
+	chunk_count:      u8,
+	chunks:           [MAX_SNAPSHOT_CHUNKS]Snapshot_Chunk,
 }
 
 // Everyone in the match, whether or not they are in view. The same packet
@@ -189,21 +221,50 @@ Server_Roster_Packet :: struct {
 	entries: [MAX_ROSTER_ENTRIES]Roster_Entry,
 }
 
-Snapshot_Obelisk :: struct {
-	state:     u8,
-	owner:     u8,
-	capturing: u8,
-	progress:  f32,
+// How a pylon is doing, for the HUD and for drift detection.
+//
+// The checksum is the interesting field. A client's density grid is reproduced
+// from the bite stream, not copied, so it can in principle disagree with the
+// server's. Ten times a second the client compares digests and asks for a
+// resync if they differ, which turns "silently wrong forever" into "wrong for a
+// tenth of a second".
+Snapshot_Pylon :: struct {
+	intact:   f32,   // 0..1 of the original still standing
+	checksum: u32,
 }
 
 Server_GameState_Packet :: struct {
 	match_state:  u8,
 	match_result: u8,
 	winner:       u8,
+	// Four currencies per team: one ore per team plus gold. Whole units, so u16
+	// on the wire.
+	wallets:      [TEAM_COUNT][ORE_COUNT]u16,
 	essence:      [TEAM_COUNT]f32,
 	match_time:   f32,
 	humans:       [TEAM_COUNT]u8,
-	obelisks:     [MAX_OBELISKS]Snapshot_Obelisk,
+	pylons:       [MAX_PYLONS]Snapshot_Pylon,
+	// Bite sequence the checksums were taken at. A client only compares its own
+	// checksums when it has applied exactly this much, otherwise every mismatch
+	// during active mining is just the client being a snapshot behind.
+	carve_seq:    u16,
+}
+
+// One slice of a pylon's run-length coded density field. Sent on join, after a
+// collapse, and whenever a client notices it has drifted.
+Server_Pylon_Sync_Packet :: struct {
+	pylon:    u8,
+	kind:     u8,   // Pylon_Sync_Kind
+	base_seq: u16,  // bites up to here are already baked into this payload
+	total:    u16,  // bytes in the whole payload
+	parts:    u8,
+	part:     u8,
+	len:      u16,  // bytes in this slice
+	data:     [PYLON_SYNC_PART_BYTES]u8,
+}
+
+Client_Pylon_Request_Packet :: struct {
+	mask: u8,  // bit per pylon the client wants resent
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +437,21 @@ bw_pos_cm :: proc(w: ^Byte_Writer, v: vec3) {
 }
 
 br_pos_cm :: proc(r: ^Byte_Reader) -> vec3 {
+	x := f32(br_i16(r)) / 100.0
+	y := f32(br_i16(r)) / 100.0
+	z := f32(br_i16(r)) / 100.0
+	return {x, y, z}
+}
+
+// Velocities in cm/s. The fastest thing in the game is a projectile at a few
+// tens of m/s, so +-327 m/s is far past anything that can happen.
+bw_vel_cm :: proc(w: ^Byte_Writer, v: vec3) {
+	for k in 0..<3 {
+		bw_i16(w, i16(clampf(math.round(v[k] * 100), -32767, 32767)))
+	}
+}
+
+br_vel_cm :: proc(r: ^Byte_Reader) -> vec3 {
 	x := f32(br_i16(r)) / 100.0
 	y := f32(br_i16(r)) / 100.0
 	z := f32(br_i16(r)) / 100.0
@@ -633,13 +709,23 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // crowded fight where it matters most. Spelling the budget out as constants
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
-SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 5   // version+type, tick, ack, five counts
+SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 7   // version+type, tick, ack, seven counts
 SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2
                                           // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast
-SNAPSHOT_PROJECTILE_BYTES :: 4 + 1 + 1 + 12 + 12 + 1 + 1
+// Projectiles used to carry full f32 position and velocity, which they never
+// needed: the server owns them outright and nobody reconciles a prediction
+// against one. Centimetres and cm/s inside the arena are visually identical and
+// the fourteen bytes each one gives back are what pay for the pylon records
+// below. Entity position stays f32 -- that one *is* reconciled, and a
+// centimetre of quantization there shows up as jitter under the player's feet.
+SNAPSHOT_PROJECTILE_BYTES :: 2 + 1 + 1 + 6 + 6 + 1 + 1
 SNAPSHOT_STRIKE_BYTES :: 1 + 1 + 6
 SNAPSHOT_BEAM_BYTES   :: 1 + 1 + 6 + 1 + BEAM_MAX_CHAINS
 SNAPSHOT_EVENT_BYTES  :: 1 + 1 + 1 + 1 + 2
+// seq, pylon+build flag, local xyz, radius, amount
+SNAPSHOT_CARVE_BYTES  :: 2 + 1 + 6 + 1 + 1
+// id, ore+rest flag, pos, coarse velocity, radius
+SNAPSHOT_CHUNK_BYTES  :: 2 + 1 + 6 + 3 + 1
 
 SNAPSHOT_WORST_BYTES ::
 	SNAPSHOT_HEADER_BYTES +
@@ -647,9 +733,16 @@ SNAPSHOT_WORST_BYTES ::
 	MAX_SNAPSHOT_PROJECTILES * SNAPSHOT_PROJECTILE_BYTES +
 	MAX_SNAPSHOT_STRIKES * SNAPSHOT_STRIKE_BYTES +
 	MAX_SNAPSHOT_BEAMS * SNAPSHOT_BEAM_BYTES +
-	MAX_SNAPSHOT_COMBAT_EVENTS * SNAPSHOT_EVENT_BYTES
+	MAX_SNAPSHOT_COMBAT_EVENTS * SNAPSHOT_EVENT_BYTES +
+	MAX_SNAPSHOT_CARVES * SNAPSHOT_CARVE_BYTES +
+	MAX_SNAPSHOT_CHUNKS * SNAPSHOT_CHUNK_BYTES
 
 #assert(SNAPSHOT_WORST_BYTES <= MAX_PACKET_SIZE)
+
+// A resync slice has to fit too, with its framing.
+PYLON_SYNC_WORST_BYTES :: 2 + 1 + 1 + 2 + 2 + 1 + 1 + 2 + PYLON_SYNC_PART_BYTES
+
+#assert(PYLON_SYNC_WORST_BYTES <= MAX_PACKET_SIZE)
 
 // id, team, bot flag, kills, deaths, damage dealt, damage taken, length-prefixed name
 ROSTER_ENTRY_BYTES :: 1 + 1 + 1 + 1 + 1 + 2 + 2 + 1 + MAX_PLAYER_NAME_LEN
@@ -699,11 +792,11 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	bw_u8(&w, u8(pcount))
 	for i in 0..<pcount {
 		p := &packet.projectiles[i]
-		bw_u32(&w, p.id)
+		bw_u16(&w, u16(p.id))
 		bw_u8(&w, u8(p.spell_id))
 		bw_u8(&w, u8(p.owner_id))
-		bw_vec3(&w, p.pos)
-		bw_vec3(&w, p.vel)
+		bw_pos_cm(&w, p.pos)
+		bw_vel_cm(&w, p.vel)
 		bw_u8(&w, quant_u8(p.lifetime, 20))   // 0.05 s resolution, max 12.75 s
 		bw_u8(&w, quant_u8(p.radius, 100))    // cm
 	}
@@ -742,6 +835,40 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(c.other_id))
 		bw_u8(&w, u8(c.spell_id))
 		bw_u16(&w, c.damage)
+	}
+
+	// Bites go out in the same fixed-point units both ends erode with. Nothing
+	// here is allowed to re-round: the integers *are* the operation.
+	vcount := min(int(packet.carve_count), MAX_SNAPSHOT_CARVES)
+	bw_u8(&w, u8(vcount))
+	for i in 0..<vcount {
+		v := &packet.carves[i]
+		bw_u16(&w, v.seq)
+		tag := u8(v.pylon) & 0x7F
+		if v.build { tag |= 0x80 }
+		bw_u8(&w, tag)
+		for k in 0..<3 {
+			bw_i16(&w, i16(clamp_i32(v.carve.pos_fx[k], -32767, 32767)))
+		}
+		bw_u8(&w, ore_carve_radius_wire(v.carve))
+		bw_u8(&w, v.carve.amount)
+	}
+
+	kcount := min(int(packet.chunk_count), MAX_SNAPSHOT_CHUNKS)
+	bw_u8(&w, u8(kcount))
+	for i in 0..<kcount {
+		k := &packet.chunks[i]
+		bw_u16(&w, k.id)
+		tag := u8(k.ore) & 0x7F
+		if k.rest { tag |= 0x80 }
+		bw_u8(&w, tag)
+		bw_pos_cm(&w, k.pos)
+		// Half-metre-per-second steps: enough for a client to carry a falling
+		// lump between snapshots, and a resting one sends zeroes anyway.
+		for c in 0..<3 {
+			bw_i8(&w, i8(clampf(math.round(k.vel[c] * 2), -127, 127)))
+		}
+		bw_u8(&w, quant_u8(k.radius, 100))
 	}
 	return w.ok ? w.pos : 0
 }
@@ -782,15 +909,15 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	pcount := min(int(br_u8(&r)), MAX_SNAPSHOT_PROJECTILES)
 	for i in 0..<pcount {
 		p := &packet.projectiles[i]
-		p.id = br_u32(&r)
+		p.id = Projectile_ID(br_u16(&r))
 		p.spell_id = Spell_ID(br_u8(&r))
 		if !spell_valid(p.spell_id) {
 			// Never let a wire byte index the spell table out of range.
 			p.spell_id = .None
 		}
 		p.owner_id = Entity_ID(br_u8(&r))
-		p.pos = br_vec3(&r)
-		p.vel = br_vec3(&r)
+		p.pos = br_pos_cm(&r)
+		p.vel = br_vel_cm(&r)
 		p.lifetime = f32(br_u8(&r)) / 20.0
 		p.radius = f32(br_u8(&r)) / 100.0
 		if !r.ok {
@@ -842,6 +969,50 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.combat_event_count = u8(ccount)
+
+	vcount := min(int(br_u8(&r)), MAX_SNAPSHOT_CARVES)
+	for i in 0..<vcount {
+		v := &packet.carves[i]
+		v.seq = br_u16(&r)
+		tag := br_u8(&r)
+		v.build = tag & 0x80 != 0
+		p := tag & 0x7F
+		// A bite naming a pylon that does not exist is discarded rather than
+		// clamped: applying it to the wrong tower is worse than dropping it.
+		if p >= MAX_PYLONS {
+			v.seq = 0
+			p = 0
+		}
+		v.pylon = Pylon_ID(p)
+		x := br_i16(&r)
+		y := br_i16(&r)
+		z := br_i16(&r)
+		radius := br_u8(&r)
+		amount := br_u8(&r)
+		v.carve = ore_carve_from_wire(x, y, z, radius, amount)
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.carve_count = u8(vcount)
+
+	kcount := min(int(br_u8(&r)), MAX_SNAPSHOT_CHUNKS)
+	for i in 0..<kcount {
+		k := &packet.chunks[i]
+		k.id = br_u16(&r)
+		tag := br_u8(&r)
+		k.rest = tag & 0x80 != 0
+		k.ore = ore_from_wire(tag & 0x7F)
+		k.pos = br_pos_cm(&r)
+		for c in 0..<3 {
+			k.vel[c] = f32(br_i8(&r)) / 2
+		}
+		k.radius = f32(br_u8(&r)) / 100.0
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.chunk_count = u8(kcount)
 	return packet, r.ok
 }
 
@@ -897,13 +1068,15 @@ serialize_server_gamestate :: proc(packet: ^Server_GameState_Packet, buffer: []u
 	for i in 0..<TEAM_COUNT { bw_f32(&w, packet.essence[i]) }
 	bw_f32(&w, packet.match_time)
 	for i in 0..<TEAM_COUNT { bw_u8(&w, packet.humans[i]) }
-	for i in 0..<MAX_OBELISKS {
-		o := &packet.obelisks[i]
-		bw_u8(&w, o.state)
-		bw_u8(&w, o.owner)
-		bw_u8(&w, o.capturing)
-		bw_u8(&w, quant_u8(o.progress, 255))
+	for i in 0..<TEAM_COUNT {
+		for k in 0..<ORE_COUNT { bw_u16(&w, packet.wallets[i][k]) }
 	}
+	for i in 0..<MAX_PYLONS {
+		p := &packet.pylons[i]
+		bw_u8(&w, quant_u8(p.intact, 255))
+		bw_u32(&w, p.checksum)
+	}
+	bw_u16(&w, packet.carve_seq)
 	return w.ok ? w.pos : 0
 }
 
@@ -918,12 +1091,79 @@ deserialize_server_gamestate :: proc(buffer: []u8) -> (packet: Server_GameState_
 	for i in 0..<TEAM_COUNT { packet.essence[i] = br_f32(&r) }
 	packet.match_time = br_f32(&r)
 	for i in 0..<TEAM_COUNT { packet.humans[i] = br_u8(&r) }
-	for i in 0..<MAX_OBELISKS {
-		o := &packet.obelisks[i]
-		o.state = br_u8(&r)
-		o.owner = br_u8(&r)
-		o.capturing = br_u8(&r)
-		o.progress = f32(br_u8(&r)) / 255.0
+	for i in 0..<TEAM_COUNT {
+		for k in 0..<ORE_COUNT { packet.wallets[i][k] = br_u16(&r) }
 	}
+	for i in 0..<MAX_PYLONS {
+		p := &packet.pylons[i]
+		p.intact = f32(br_u8(&r)) / 255.0
+		p.checksum = br_u32(&r)
+	}
+	packet.carve_seq = br_u16(&r)
+	return packet, r.ok
+}
+
+// ---------------------------------------------------------------------------
+// Pylon resync
+
+serialize_server_pylon_sync :: proc(packet: ^Server_Pylon_Sync_Packet, buffer: []u8) -> int {
+	w := bw_init(buffer)
+	write_header(&w, .Server_Pylon_Sync)
+	bw_u8(&w, packet.pylon)
+	bw_u8(&w, packet.kind)
+	bw_u16(&w, packet.base_seq)
+	bw_u16(&w, packet.total)
+	bw_u8(&w, packet.parts)
+	bw_u8(&w, packet.part)
+	n := min(int(packet.len), PYLON_SYNC_PART_BYTES)
+	bw_u16(&w, u16(n))
+	for i in 0..<n {
+		bw_u8(&w, packet.data[i])
+	}
+	return w.ok ? w.pos : 0
+}
+
+deserialize_server_pylon_sync :: proc(buffer: []u8) -> (packet: Server_Pylon_Sync_Packet, ok: bool) {
+	r := br_init(buffer)
+	if !read_header(&r, .Server_Pylon_Sync) {
+		return {}, false
+	}
+	packet.pylon = br_u8(&r)
+	packet.kind = br_u8(&r)
+	packet.base_seq = br_u16(&r)
+	packet.total = br_u16(&r)
+	packet.parts = br_u8(&r)
+	packet.part = br_u8(&r)
+	packet.len = br_u16(&r)
+	// Everything downstream indexes fixed arrays with these, so a hostile or
+	// corrupt header is rejected here rather than clamped into something that
+	// looks plausible.
+	if packet.pylon >= MAX_PYLONS ||
+	   packet.kind > u8(Pylon_Sync_Kind.Whole) ||
+	   int(packet.len) > PYLON_SYNC_PART_BYTES ||
+	   int(packet.total) > PYLON_SYNC_MAX_BYTES ||
+	   int(packet.parts) > PYLON_SYNC_MAX_PARTS ||
+	   packet.part >= packet.parts {
+		return {}, false
+	}
+	for i in 0..<int(packet.len) {
+		packet.data[i] = br_u8(&r)
+	}
+	return packet, r.ok
+}
+
+serialize_client_pylon_request :: proc(packet: ^Client_Pylon_Request_Packet, buffer: []u8) -> int {
+	w := bw_init(buffer)
+	write_header(&w, .Client_Pylon_Request)
+	bw_u8(&w, packet.mask)
+	return w.ok ? w.pos : 0
+}
+
+deserialize_client_pylon_request :: proc(buffer: []u8) -> (packet: Client_Pylon_Request_Packet, ok: bool) {
+	r := br_init(buffer)
+	if !read_header(&r, .Client_Pylon_Request) {
+		return {}, false
+	}
+	packet.mask = br_u8(&r) & ((1 << MAX_PYLONS) - 1)
 	return packet, r.ok
 }

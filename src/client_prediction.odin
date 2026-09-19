@@ -132,6 +132,20 @@ Client_World :: struct {
 	game_state:       Server_GameState_Packet,
 	have_game_state:  bool,
 
+	// The client's own copy of the ore pylons, rebuilt from the bite stream
+	// rather than replicated. Cosmetic: the server decides what broke and what
+	// it collides with, so a brief disagreement is a wrong-looking crater and
+	// nothing more. `pylon_sync` is what notices and repairs one.
+	pylons:           Pylon_World,
+	pylon_sync:       Pylon_Client_Sync,
+	pylon_rx:         Pylon_Sync_Rx,
+
+	// Ore on the floor, straight from the newest snapshot. State rather than
+	// events, so a lump that stops being sent has been picked up or timed out.
+	chunks:           [MAX_SNAPSHOT_CHUNKS]Client_Chunk,
+	chunk_count:      int,
+	chunk_time:       f64,
+
 	// Sticky soft target. Drawn under the crosshair, and sent up with every
 	// input so a targeted spell lands on it once the server has validated it.
 	target_id:        Entity_ID,
@@ -152,6 +166,19 @@ Client_Roster_Slot :: struct {
 	is_bot:  bool,
 	name:    Player_Name,
 	stats:   Combat_Stats,
+}
+
+// A lump of ore as the client draws it. Carries the snapshot velocity so a
+// falling chunk keeps moving between snapshots instead of stepping at 30 Hz.
+Client_Chunk :: struct {
+	present: bool,
+	id:      Ore_Chunk_ID,
+	ore:     Ore_Kind,
+	pos:     vec3,
+	vel:     vec3,
+	radius:  f32,
+	rest:    bool,
+	seed:    f32,
 }
 
 MAX_COMBAT_LOG_LINES :: 5
@@ -361,12 +388,17 @@ remote_entity_interpolate :: proc(remote: ^Remote_Entity, render_tick: f64) {
 // ---------------------------------------------------------------------------
 // World
 
-client_world_init :: proc() -> Client_World {
-	world := Client_World{}
+// Takes a pointer rather than returning a value: the pylon grids put this
+// struct well past half a megabyte, which is no size to be copying through a
+// return slot.
+client_world_init :: proc(world: ^Client_World) {
+	world^ = {}
 	world.local_entity_id = INVALID_ENTITY
 	world.target_id = INVALID_ENTITY
 	client_prediction_init(&world.prediction)
-	return world
+	pylon_world_init(&world.pylons)
+	// Nothing trustworthy until the server's copy lands.
+	pylon_client_mark_all_stale(&world.pylon_sync)
 }
 
 client_world_reset_session :: proc(world: ^Client_World) {
@@ -386,6 +418,51 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.target_id = INVALID_ENTITY
 	world.roster = {}
 	world.combat_log = {}
+	world.chunk_count = 0
+	world.chunks = {}
+	// A new session is a new round's worth of rock: start from pristine pylons
+	// and ask the server for whatever has already been mined.
+	pylon_world_reset(&world.pylons)
+	world.pylon_sync = {}
+	world.pylon_rx = {}
+	pylon_client_mark_all_stale(&world.pylon_sync)
+}
+
+// Install one slice of an incoming pylon resync. Parts may arrive in any order;
+// the last one to land commits the field.
+client_world_apply_pylon_sync :: proc(world: ^Client_World, p: ^Server_Pylon_Sync_Packet) {
+	kind := Pylon_Sync_Kind(p.kind)
+	if !pylon_sync_rx_begin(&world.pylon_rx, Pylon_ID(p.pylon), kind, p.base_seq, int(p.total), int(p.parts)) {
+		return
+	}
+	// The pristine case carries no payload, so there is nothing to reassemble.
+	if kind == .Whole {
+		pylon_sync_rx_commit(&world.pylons, &world.pylon_sync, &world.pylon_rx)
+		return
+	}
+	if pylon_sync_rx_part(&world.pylon_rx, int(p.part), p.data[:int(p.len)]) {
+		pylon_sync_rx_commit(&world.pylons, &world.pylon_sync, &world.pylon_rx)
+	}
+}
+
+// The gamestate carries a checksum per pylon. Anything that got past the bite
+// stream -- a collapse, a lost window, a bug -- shows up here as a mismatch, and
+// the fix is the same in every case: ask for the field again.
+client_world_check_pylon_drift :: proc(world: ^Client_World, gs: ^Server_GameState_Packet) {
+	// Only meaningful when both sides have taken the same number of bites.
+	// Mid-mining the client is routinely a snapshot behind, and that is not drift.
+	if !world.pylon_sync.primed || world.pylon_sync.applied_seq != gs.carve_seq {
+		return
+	}
+	for i in 0..<world.pylons.count {
+		g := pylon_grid(&world.pylons, Pylon_ID(i))
+		if g == nil {
+			continue
+		}
+		if ore_grid_checksum(g) != gs.pylons[i].checksum {
+			pylon_client_mark_stale(&world.pylon_sync, Pylon_ID(i))
+		}
+	}
 }
 
 // Estimated server tick at which remote entities should be displayed.
@@ -459,6 +536,58 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	client_world_apply_strikes(world, snapshot)
 	client_world_apply_beams(world, snapshot)
 	client_world_apply_combat_events(world, snapshot)
+	// Re-run the server's bites against our own grids. Bites overlap between
+	// snapshots on purpose, so most of these are already applied and skipped.
+	pylon_client_apply(&world.pylons, &world.pylon_sync, snapshot.carves[:int(snapshot.carve_count)])
+	client_world_apply_chunks(world, snapshot)
+}
+
+@(private = "file")
+client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
+	// Ore is interest-managed state: the newest snapshot is the whole truth
+	// about what is nearby, so anything not in it is gone from view.
+	prev := world.chunks
+	prev_n := world.chunk_count
+	world.chunks = {}
+	world.chunk_count = int(snapshot.chunk_count)
+	world.chunk_time = world.local_time
+	for i in 0..<world.chunk_count {
+		s := &snapshot.chunks[i]
+		c := &world.chunks[i]
+		c.present = true
+		c.id = s.id
+		c.ore = s.ore
+		c.pos = s.pos
+		c.vel = s.vel
+		c.radius = s.radius
+		c.rest = s.rest
+		// Keep the lump looking like the same rock across snapshots.
+		c.seed = f32(hash_u32(u32(s.id) * 2246822519) & 0xFFFF) / f32(0x10000) * 8
+		for k in 0..<prev_n {
+			if prev[k].present && prev[k].id == s.id {
+				c.seed = prev[k].seed
+				break
+			}
+		}
+	}
+}
+
+// Advance the ore we were last told about. Chunks are not predicted -- the
+// server owns them -- but extrapolating the airborne ones keeps a shower of
+// rock smooth between snapshots.
+client_world_step_chunks :: proc(world: ^Client_World, dt: f32) {
+	for i in 0..<world.chunk_count {
+		c := &world.chunks[i]
+		if !c.present || c.rest {
+			continue
+		}
+		c.vel.z -= CHUNK_GRAVITY * dt
+		c.pos += c.vel * dt
+		if c.pos.z < WORLD_FLOOR_Z + c.radius {
+			c.pos.z = WORLD_FLOOR_Z + c.radius
+			c.vel = {}
+		}
+	}
 }
 
 // The roster replaces wholesale: it is the server's complete answer to "who is
@@ -732,6 +861,8 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 		}
 		remote_entity_interpolate(remote, render_tick)
 	}
+
+	client_world_step_chunks(world, dt)
 
 	for i in 0..<MAX_CLIENT_IMPACTS {
 		im := &world.impacts[i]

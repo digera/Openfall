@@ -28,12 +28,23 @@ Test_Client :: struct {
 	stuck_timer:   f32,
 	detour:        f32,
 	detour_timer:  f32,
+
+	// Ore reproduction tally: how many times our density field was compared
+	// against the server's at a matching bite count, and how many of those
+	// disagreed.
+	pylon_compares: int,
+	pylon_drifts:   int,
+	pylon_syncs:    int,
 }
+
+// Static rather than a local: the pylon grids inside Client_World are far too
+// large for a stack frame.
+test_client: Test_Client
 
 main :: proc() {
 	fmt.println("=== Nexus Arena - Headless Client Test ===")
 
-	client := Test_Client{}
+	client := &test_client
 	// NEXUS_TEST_NAME lets two of these be told apart in the roster.
 	{
 		buf: [64]u8
@@ -55,7 +66,7 @@ main :: proc() {
 	}
 	network_client_sim_loss(&client.network, 0.02)
 
-	client.client_world = client_world_init()
+	client_world_init(&client.client_world)
 	client.phase = .Connecting
 
 	test_start := time.tick_now()
@@ -104,10 +115,29 @@ main :: proc() {
 			case .Server_GameState:
 				client.client_world.game_state = packet.gamestate
 				client.client_world.have_game_state = true
+				// The point of this client, for the ore: prove that replaying the
+				// bite stream lands on the server's exact density field. Every
+				// comparison that happens at a matching sequence is a bit-level
+				// check of the whole reproduction path.
+				before := client.client_world.pylon_sync.want
+				client_world_check_pylon_drift(&client.client_world, &packet.gamestate)
+				if client.client_world.pylon_sync.applied_seq == packet.gamestate.carve_seq {
+					client.pylon_compares += 1
+					if client.client_world.pylon_sync.want != before {
+						client.pylon_drifts += 1
+					}
+				}
 			case .Server_Roster:
 				roster := packet.roster
 				client_world_apply_roster(&client.client_world, &roster)
+			case .Server_Pylon_Sync:
+				client_world_apply_pylon_sync(&client.client_world, &packet.pylon_sync)
+				client.pylon_syncs += 1
 			}
+		}
+
+		if pylon_client_should_request(&client.client_world.pylon_sync, SIMULATION_DT) {
+			network_client_send_pylon_request(&client.network, client.client_world.pylon_sync.want)
 		}
 
 		switch client.phase {
@@ -149,7 +179,7 @@ main :: proc() {
 					pitch    = 0,
 				}
 				if client.fight {
-					input = test_client_fight_input(&client)
+					input = test_client_fight_input(client)
 				}
 				q := input_quantize(input)
 				client.client_world.client_tick += 1
@@ -173,14 +203,14 @@ main :: proc() {
 		client_world_update(&client.client_world, 0.001)
 
 		if time.tick_since(last_stats) >= time.Second * 5 {
-			test_client_print_stats(&client)
+			test_client_print_stats(client)
 			last_stats = time.tick_now()
 		}
 		time.sleep(time.Millisecond)
 	}
 
 	fmt.println("\n=== Test Complete ===")
-	test_client_print_stats(&client)
+	test_client_print_stats(client)
 	network_client_shutdown(&client.network)
 }
 
@@ -282,8 +312,37 @@ test_client_print_stats :: proc(client: ^Test_Client) {
 		local_char.pos.x, local_char.pos.y, local_char.pos.z,
 		total, rate * 100, sent, recv, since, remote_count, roster_count)
 
+	test_client_print_pylons(client)
 	test_client_print_roster(client)
 	test_client_print_combat_log(client)
+}
+
+// What the towers look like from here, and whether that matches the server.
+test_client_print_pylons :: proc(client: ^Test_Client) {
+	world := &client.client_world
+	if !world.have_game_state {
+		return
+	}
+	fmt.printf("    pylons")
+	for i in 0..<MAX_PYLONS {
+		p := &world.pylons.pylons[i]
+		g := pylon_grid(&world.pylons, Pylon_ID(i))
+		mine := g != nil ? ore_grid_intact(g) : 0
+		fmt.printf(" %s%.0f/%.0f", i == 0 ? "G:" : "", mine * 100, world.game_state.pylons[i].intact * 100)
+	}
+	fmt.printf("  (mine/server %%)  compares %d drift %d syncs %d\n",
+		client.pylon_compares, client.pylon_drifts, client.pylon_syncs)
+	w := &client.client_world.game_state.wallets
+	fmt.printf("    wallets")
+	for t in 0..<TEAM_COUNT {
+		fmt.printf("  %s", team_name(team_from_index(t)))
+		for k in 0..<ORE_COUNT {
+			if w[t][k] > 0 {
+				fmt.printf(" %s:%d", ore_name(ore_from_index(k)), w[t][k])
+			}
+		}
+	}
+	fmt.printf("\n")
 }
 
 // The scoreboard the graphical client draws behind Tab, as text.

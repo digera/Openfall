@@ -8,8 +8,8 @@ import "core:math/rand"
 // independent of how many humans have joined. Override at runtime with the
 // BOTS_PER_TEAM environment variable.
 //
-// Behaviour: pick an objective Obelisk, walk there through the lane graph
-// with local obstacle steering, capture it, and fight anything hostile with
+// Behaviour: pick an enemy ore pylon, walk there through the lane graph with
+// local obstacle steering, mine it, and fight anything hostile with
 // line-of-sight on the way.
 
 BOTS_PER_TEAM :: 1
@@ -17,7 +17,7 @@ MAX_BOTS      :: TEAM_COUNT * TEAM_SIZE
 
 Bot_Mode :: enum u8 {
 	Travel,
-	Capture,
+	Mine,
 }
 
 Bot :: struct {
@@ -26,8 +26,14 @@ Bot :: struct {
 	team:   Team_ID,
 
 	mode:            Bot_Mode,
-	objective:       int,      // obelisk index
+	objective:       int,      // pylon index
 	objective_timer: f32,
+
+	// Working a tower. Set when the bot is in range of its objective with no
+	// player to fight, and it drives the aim and the beam the same way a
+	// player target does.
+	mining:          bool,
+	mine_point:      vec3,
 
 	target:          Entity_ID,
 	target_timer:    f32,
@@ -62,6 +68,14 @@ BOT_SIGHT_RANGE   :: f32(34.0)
 BOT_TURN_RATE     :: f32(5.5)   // rad/s toward aim
 BOT_AIM_NOISE     :: f32(0.055) // rad
 BOT_PROBE_DIST    :: f32(1.7)
+
+// How close a bot gets before it starts working a tower. Comfortably inside
+// beam range so it does not lose the rock every time it strafes.
+BOT_MINE_STANDOFF :: f32(9.0)
+// Bots aim low on purpose. Chewing the base undercuts the tower and drops the
+// whole top of it, which is both the efficient way to mine and the reason they
+// look like they know what they are doing.
+BOT_MINE_HEIGHT_FRAC :: f32(0.28)
 
 // ---------------------------------------------------------------------------
 // Roster management
@@ -206,16 +220,21 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		b.objective = bot_pick_objective(server, b, char.pos)
 		b.objective_timer = rand.float32_range(2.5, 4.5)
 	}
-	obj := &server.obelisks.obelisks[max(b.objective, 0)]
-	to_obj := obj.pos - char.pos
+	obj := &server.pylons.pylons[clamp_int(b.objective, 0, MAX_PYLONS - 1)]
+	obj_pos := obj.base
+	to_obj := obj_pos - char.pos
 	to_obj.z = 0
 	obj_dist := len_vec3(to_obj)
 
-	if obj_dist < obj.radius * 0.75 {
-		b.mode = .Capture
-	} else if obj_dist > obj.radius * 1.1 {
+	// Stand off far enough not to be inside the rock, close enough to hold a
+	// beam on it. Hysteresis so a bot at the boundary does not flicker.
+	stand := obj.shape.radius + BOT_MINE_STANDOFF
+	if obj_dist < stand {
+		b.mode = .Mine
+	} else if obj_dist > stand * 1.25 {
 		b.mode = .Travel
 	}
+	b.mine_point = obj_pos + vec3{0, 0, obj.shape.height * BOT_MINE_HEIGHT_FRAC}
 
 	// --- Target ----------------------------------------------------------
 	b.target_timer -= dt
@@ -235,18 +254,24 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 	}
 
+	// A bot is mining when it is stood at its tower with nothing else to do.
+	// Decided before movement because it changes where the bot wants to be.
+	b.mining = b.mode == .Mine && pylon_standing(&server.pylons, obj.id) &&
+		pylon_mineable_by(obj, b.team)
+
 	// --- Movement direction ----------------------------------------------
 	move_dir := vec3{}
 	if b.mode == .Travel {
-		wp := nav_next_waypoint(char.pos, obj.pos)
+		wp := nav_next_waypoint(char.pos, obj_pos)
 		move_dir = norm_vec3(vec3{wp.x - char.pos.x, wp.y - char.pos.y, 0})
 	} else {
-		// Orbit slowly inside the capture radius so bots spread out
-		b.orbit_phase += dt * 0.6
-		ring := vec3{math.cos(b.orbit_phase), math.sin(b.orbit_phase), 0} * (obj.radius * 0.55)
-		goal := obj.pos + ring
+		// Circle the tower at mining distance so bots working the same rock
+		// spread around it instead of stacking on one face.
+		b.orbit_phase += dt * 0.5
+		ring := vec3{math.cos(b.orbit_phase), math.sin(b.orbit_phase), 0} * (obj.shape.radius + BOT_MINE_STANDOFF * 0.6)
+		goal := obj_pos + ring
 		d := vec3{goal.x - char.pos.x, goal.y - char.pos.y, 0}
-		if len2_vec3(d) > 0.4 * 0.4 {
+		if len2_vec3(d) > 0.6 * 0.6 {
 			move_dir = norm_vec3(d) * 0.6
 		}
 	}
@@ -264,7 +289,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 			tdir := to_t / tdist
 			side := vec3{-tdir.y, tdir.x, 0} * b.strafe_dir
 			move_dir += side * 0.8
-			if tdist < 7 && b.mode != .Capture {
+			if tdist < 7 && b.mode != .Mine {
 				move_dir -= tdir * 0.6
 			}
 			if b.mode == .Travel && tdist < 16 {
@@ -349,6 +374,14 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		hd := math.sqrt(d.x * d.x + d.y * d.y)
 		desired_yaw = math.atan2(d.y, d.x) + b.aim_err_yaw
 		desired_pitch = math.atan2(d.z, hd) + b.aim_err_pitch
+	} else if b.mining {
+		// Rock does not dodge, so there is no lead and no aim error worth
+		// modelling -- just look at the spot being cut.
+		b.next_spell = .None
+		d := b.mine_point - eye
+		hd := math.sqrt(d.x * d.x + d.y * d.y)
+		desired_yaw = math.atan2(d.y, d.x)
+		desired_pitch = math.atan2(d.z, hd)
 	} else {
 		b.next_spell = .None
 		if len2_vec3(move_dir) > 0.01 {
@@ -418,7 +451,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		} else {
 			b.charge_time += dt
 			lit := spell_state_beaming(&server.world.spell_states[b.id])
-			if !have_target || !lit || b.charge_time >= b.beam_hold {
+			// Mining holds far longer than a duel: the burst length exists so a
+			// bot does not stand in the open lasering one player forever, and a
+			// tower is not going to shoot back.
+			if (!have_target && !b.mining) || !lit || b.charge_time >= b.beam_hold {
 				beam_quench(&server.world, b.id)
 				b.charge_spell = .None
 				b.charge_time = 0
@@ -470,6 +506,17 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		} else {
 			b.cast_timer = 0.3
 		}
+	} else if b.mining && b.cast_timer <= 0 && abs(yaw_diff) < 0.25 {
+		// The beam is the mining tool. Nothing else in the hotbar works rock at
+		// a useful rate, so there is no choice to make here.
+		char_now := server.world.characters[b.id]
+		if spell_castable(.Thunderbolt, char_now, server.world.spell_states[b.id].cooldowns[.Thunderbolt]) {
+			b.charge_spell = .Thunderbolt
+			b.charge_time = 0
+			b.beam_hold = rand.float32_range(3.5, 6.0)
+		} else {
+			b.cast_timer = 0.6
+		}
 	}
 
 	// A bot times its own wind-up rather than going through the input path a
@@ -493,72 +540,60 @@ rotate_xy :: proc(v: vec3, a: f32) -> vec3 {
 
 @(private = "file")
 bot_objective_done :: proc(server: ^Server, b: ^Bot) -> bool {
-	if b.objective < 0 || b.objective >= server.obelisks.count {
+	if b.objective < 0 || b.objective >= server.pylons.count {
 		return true
 	}
-	o := &server.obelisks.obelisks[b.objective]
-	if o.state == .Held && o.owner == b.team {
-		// Ours: stick around only if enemies are on it
-		for i in 0..<TEAM_COUNT {
-			if i != team_index(b.team) && o.counts[i] > 0 {
-				return false
-			}
-		}
+	p := &server.pylons.pylons[b.objective]
+	// Nothing left to chew, or it was never ours to chew.
+	if !pylon_standing(&server.pylons, p.id) {
 		return true
 	}
-	return false
+	return !pylon_mineable_by(p, b.team)
 }
 
-// Score every obelisk and pick the best. Lower is better.
+// Score every pylon and pick the best. Lower is better.
 @(private = "file")
 bot_pick_objective :: proc(server: ^Server, b: ^Bot, pos: vec3) -> int {
-	best := 0
+	best := -1
 	best_score := f32(1e9)
-	my_ti := team_index(b.team)
 
-	for i in 0..<server.obelisks.count {
-		o := &server.obelisks.obelisks[i]
-		d := len_vec3(vec3{o.pos.x - pos.x, o.pos.y - pos.y, 0})
-		score := d
+	for i in 0..<server.pylons.count {
+		p := &server.pylons.pylons[i]
+		// Your own ore is off limits, and a stump has nothing to give.
+		if !pylon_mineable_by(p, b.team) || !pylon_standing(&server.pylons, p.id) {
+			continue
+		}
+		score := len_vec3(vec3{p.base.x - pos.x, p.base.y - pos.y, 0})
 
-		enemies_on_it := 0
-		friends_on_it := 0
-		for t in 0..<TEAM_COUNT {
-			if t == my_ti {
-				friends_on_it = o.counts[t]
-			} else {
-				enemies_on_it += o.counts[t]
+		// The golden pylon pays triple, so it is worth walking past a lane
+		// tower for -- but it is also tough, so not worth crossing the map for.
+		if p.ore == .Gold {
+			score -= 25
+		}
+		// Finish what someone else started: a tower already half down is closer
+		// to shedding its top, which is where the ore comes in quantity.
+		score -= (1 - p.intact) * 30
+
+		// Spread bots out, and give each one a standing preference so a team
+		// does not move as a single clump.
+		friends := 0
+		for k in 0..<MAX_BOTS {
+			o := &server.bots[k]
+			if o.active && o.team == b.team && o.id != b.id && o.objective == i {
+				friends += 1
 			}
 		}
-
-		if o.state == .Held && o.owner == b.team {
-			if enemies_on_it > 0 {
-				score -= 30 // defend
-			} else {
-				score += 400 // already ours, don't camp
-			}
-		} else {
-			if i == 0 {
-				score -= 12 // center is worth double
-			}
-			if o.state == .Capturing && o.capturing_team != b.team {
-				score -= 10 // interrupt them
-			}
-			if o.owner != .None && o.owner != b.team {
-				score -= 6
-			}
-		}
-		// Spread bots out: crowding penalty
-		score += f32(friends_on_it) * 9
-		// Personal flavour so the team splits between lanes
-		score += f32((b.think_offset + i) % 3) * 2.5
+		score += f32(friends) * 20
+		score += f32((b.think_offset + i) % 3) * 4
 
 		if score < best_score {
 			best_score = score
 			best = i
 		}
 	}
-	return best
+	// Everything mineable is gone: hold the centre, which is where it will come
+	// back first.
+	return best < 0 ? 0 : best
 }
 
 @(private = "file")

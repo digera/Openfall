@@ -25,8 +25,8 @@ WORLD_LANE_HALF_W     :: f32(4.5)
 WORLD_BASE_R          :: f32(110)
 WORLD_BASE_HALF       :: f32(11)
 WORLD_SPAWN_R         :: f32(114)
-WORLD_LANE_OBELISK_R  :: f32(40)      // near-lane Obelisk (pushed from 24 to 40)
-WORLD_LANE_OBELISK_FAR_R :: f32(70)   // far-lane Obelisk
+WORLD_LANE_PYLON_R  :: f32(40)      // near-lane pylon (pushed from 24 to 40)
+WORLD_LANE_PYLON_FAR_R :: f32(70)   // far-lane pylon
 WORLD_EXTENT          :: f32(125)     // rough outer radius (fog / culling)
 
 NUM_FLOOR_BOXES :: 11
@@ -125,8 +125,15 @@ box_contains :: proc(b: ^World_Box, p: vec3, grow: f32) -> bool {
 	return l.z >= -b.half.z - 0.05 && l.z <= b.half.z + grow
 }
 
-// A point is free if it lies inside the walkable union (shrunk by pad)
-// and outside every solid box (grown by pad).
+// A point is free if it lies inside the walkable union (shrunk by pad), outside
+// every solid box (grown by pad), and not inside standing ore.
+//
+// Routing pylons through here is deliberate. Everything that asks the world
+// whether a point is solid comes through this one proc -- movement, projectile
+// sweeps, `world_segment_clear` for line of sight, `world_ray_hit` for beam
+// reach -- so a tower becomes cover, stops spells and blocks sight in one move
+// instead of four. `pylon_blocks_point` rejects on a bound cylinder first, so a
+// point nowhere near a tower costs seven distance compares and no noise.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
 	in_floor := false
 	for i in 0..<NUM_FLOOR_BOXES {
@@ -142,6 +149,9 @@ world_point_free :: proc(p: vec3, pad: f32) -> bool {
 		if box_contains(&world_solid_boxes[i], p, pad) {
 			return false
 		}
+	}
+	if g_pylons != nil && pylon_blocks_point(g_pylons, p, pad) {
+		return false
 	}
 	return true
 }
@@ -162,6 +172,14 @@ box_exit_depth :: proc(b: ^World_Box, p: vec3, pad: f32) -> vec3 {
 // Outward normal of the surface something just ran into: `from` is the last
 // point that passed world_point_free, `blocked` the first one that didn't.
 world_surface_normal :: proc(from, blocked: vec3, pad: f32) -> vec3 {
+	// Ore first, and from the SDF gradient rather than a box face, so a spell
+	// that glances off a mined crater leaves along the shape it was cut into.
+	if g_pylons != nil {
+		if n, ok := pylon_surface_normal(g_pylons, blocked, pad); ok {
+			return n
+		}
+	}
+
 	// Solid cover: leave through the face we are least deep into.
 	for i in 0..<NUM_SOLID_BOXES {
 		b := &world_solid_boxes[i]
@@ -292,21 +310,21 @@ team_spawn_position :: proc(team: Team_ID, slot: int) -> vec3 {
 	return p
 }
 
-// Obelisk placement: one in center, then near/far pairs for each lane.
+// Pylon placement: one in center, then near/far pairs for each lane.
 // Layout: [0] center, [1-3] near-lane (Alpha/Beta/Gamma), [4-6] far-lane (Alpha/Beta/Gamma)
-obelisk_position :: proc(index: int) -> vec3 {
+pylon_base_position :: proc(index: int) -> vec3 {
 	if index == 0 {
 		return {0, 0, WORLD_FLOOR_Z}
 	}
 	if index >= 1 && index <= 3 {
 		team := team_from_index(index - 1)
-		p := team_dir(team) * WORLD_LANE_OBELISK_R
+		p := team_dir(team) * WORLD_LANE_PYLON_R
 		p.z = WORLD_FLOOR_Z
 		return p
 	}
 	if index >= 4 && index <= 6 {
 		team := team_from_index(index - 4)
-		p := team_dir(team) * WORLD_LANE_OBELISK_FAR_R
+		p := team_dir(team) * WORLD_LANE_PYLON_FAR_R
 		p.z = WORLD_FLOOR_Z
 		return p
 	}

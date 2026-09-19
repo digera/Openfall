@@ -93,7 +93,7 @@ client_init :: proc "c" () {
 		network_client_sim_loss(&game_client.network, 0.05)
 	}
 
-	game_client.client_world = client_world_init()
+	client_world_init(&game_client.client_world)
 	game_client.phase = .Connecting
 	game_client.name_editing = true
 	game_client.selected_slot = 0
@@ -187,6 +187,11 @@ client_frame :: proc "c" () {
 	client_audio_update(gc, dt)
 	client_world_update(&gc.client_world, dt)
 	client_update_target(gc)
+	if gc.phase == .Playing || gc.phase == .In_Menu {
+		if pylon_client_should_request(&gc.client_world.pylon_sync, dt) {
+			network_client_send_pylon_request(&gc.network, gc.client_world.pylon_sync.want)
+		}
+	}
 	camera_fx_update(&gc.fx, gc, dt)
 
 	for spell in Spell_ID {
@@ -349,10 +354,14 @@ client_poll_network :: proc(gc: ^Game_Client) {
 		case .Server_GameState:
 			gc.client_world.game_state = packet.gamestate
 			gc.client_world.have_game_state = true
+			client_world_check_pylon_drift(&gc.client_world, &packet.gamestate)
 
 		case .Server_Roster:
 			roster := packet.roster
 			client_world_apply_roster(&gc.client_world, &roster)
+
+		case .Server_Pylon_Sync:
+			client_world_apply_pylon_sync(&gc.client_world, &packet.pylon_sync)
 		}
 	}
 }

@@ -380,6 +380,12 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 		projectile_apply_direct(world, entity_world, slot, direct)
 	}
 	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.spell_id, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
+	// Ore takes the blast too, if there is any here. A detonation against a
+	// tower carves the rock; one in open air finds nothing and costs a cylinder
+	// test per pylon.
+	if direct == INVALID_ENTITY {
+		mining_blast(at, max(proj.aoe_radius, proj.radius * 3), proj.owner_id, proj.owner_team)
+	}
 	projectile_destroy(world, slot)
 }
 

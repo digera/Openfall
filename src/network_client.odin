@@ -24,12 +24,13 @@ Network_Client :: struct {
 
 // One decoded server packet.
 Client_Packet :: struct {
-	kind:      Packet_Type,
-	snapshot:  Server_Snapshot_Packet,
-	welcome:   Server_Welcome_Packet,
-	gamestate: Server_GameState_Packet,
-	lobby:     Server_Lobby_Packet,
-	roster:    Server_Roster_Packet,
+	kind:       Packet_Type,
+	snapshot:   Server_Snapshot_Packet,
+	welcome:    Server_Welcome_Packet,
+	gamestate:  Server_GameState_Packet,
+	lobby:      Server_Lobby_Packet,
+	roster:     Server_Roster_Packet,
+	pylon_sync: Server_Pylon_Sync_Packet,
 }
 
 network_client_resolve_host :: proc(server_host: string, server_port: u16) -> (ep: net.Endpoint, ok: bool) {
@@ -99,6 +100,15 @@ network_client_send_join :: proc(client: ^Network_Client, team: Team_ID, name :=
 	return client_send_raw(client, buffer[:], serialize_client_join(&packet, buffer[:]))
 }
 
+// Ask for the density of the pylons named in `mask`. Rate limited by the caller
+// (pylon_client_should_request): the reply is several packets and a client that
+// has fallen behind should not also flood.
+network_client_send_pylon_request :: proc(client: ^Network_Client, mask: u8) -> bool {
+	buffer: [16]u8
+	packet := Client_Pylon_Request_Packet{mask = mask}
+	return client_send_raw(client, buffer[:], serialize_client_pylon_request(&packet, buffer[:]))
+}
+
 // Send the newest input plus up to two previous ones for loss tolerance.
 network_client_send_input :: proc(client: ^Network_Client, packet: ^Client_Input_Packet) -> bool {
 	if client.sim_loss_rate > 0 {
@@ -153,6 +163,11 @@ network_client_poll :: proc(client: ^Network_Client) -> (packet: Client_Packet, 
 		rs, rs_ok := deserialize_server_roster(buffer[:n])
 		if !rs_ok { return {}, false }
 		packet.roster = rs
+		return packet, true
+	case .Server_Pylon_Sync:
+		ps, ps_ok := deserialize_server_pylon_sync(buffer[:n])
+		if !ps_ok { return {}, false }
+		packet.pylon_sync = ps
 		return packet, true
 	}
 	return {}, false

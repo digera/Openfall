@@ -30,6 +30,11 @@ Client_Slot :: struct {
 	input_count:  int,
 	last_applied_tick: u32,
 	has_applied:  bool,
+
+	// Pylon density this client is owed, and how far through sending it we are.
+	// Per client because a late joiner needs all seven while everyone else needs
+	// none, and the payload is far too big to broadcast.
+	pylon_tx:     Pylon_Sync_Tx,
 }
 
 Server :: struct {
@@ -52,7 +57,9 @@ Server :: struct {
 	projectiles:   Projectile_World,
 	lag_comp:      Lag_Comp_State,
 
-	obelisks:      Obelisk_World,
+	pylons:        Pylon_World,
+	chunks:        Ore_Chunk_World,
+	mining:        Mining_State,
 	match:         Match,
 
 	// Strikes that landed in the last STRIKE_LINGER_SEC, replayed into every
@@ -72,14 +79,22 @@ Strike :: struct {
 	age:      f32,
 }
 
-server_init :: proc(port: u16) -> (server: Server, ok: bool) {
+// Initializes in place rather than returning a Server. It has to: the pylon
+// world registers itself in a global so collision queries can reach it, and a
+// Server that moved after that -- as a by-value return does -- would leave that
+// pointer aimed at a dead frame.
+server_init :: proc(server: ^Server, port: u16) -> bool {
 	fmt.println("=== Nexus Arena Headless Server ===")
 
+	server^ = {}
 	server.world = entity_world_init()
 	server.start_time = time.tick_now()
 	server.projectiles = projectile_world_init()
 	server.lag_comp = lag_comp_init()
-	server.obelisks = obelisk_world_init()
+	// Pylons must exist before anything asks the world whether a point is free:
+	// they are part of the collision set now.
+	pylon_world_init(&server.pylons)
+	ore_chunk_world_init(&server.chunks)
 	server.match = match_init()
 
 	server.bots_per_team = BOTS_PER_TEAM
@@ -120,11 +135,11 @@ server_init :: proc(port: u16) -> (server: Server, ok: bool) {
 		}
 	}
 
-	bots_rebalance(&server)
+	bots_rebalance(server)
 
 	fmt.printf("Server ready: %d entities active\n", server.world.count)
 	server.running = true
-	return server, true
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -148,10 +163,24 @@ server_tick :: proc(server: ^Server) {
 	server_age_strikes(server, SIMULATION_DT)
 	combat_log_tick(&server.world.combat_log, SIMULATION_DT)
 
-	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
-	if match_tick(&server.match, &server.obelisks, SIMULATION_DT) {
+	// Mining comes after the beams so a beam that went out this tick gets no
+	// free bite, and before the structure check so a bite that severs a slab is
+	// resolved in the same tick the player made it.
+	live := server.match.state != .Ended
+	mining_beams_tick(&server.mining, &server.pylons, &server.chunks, &server.world, SIMULATION_DT, live)
+	pylon_world_tick(&server.pylons, &server.chunks, SIMULATION_DT)
+	ore_chunk_tick(&server.chunks, SIMULATION_DT)
+	if live {
+		mining_harvest_tick(&server.chunks, &server.world, &server.match)
+	}
+
+	if match_tick(&server.match, SIMULATION_DT) {
 		server_round_reset(server)
 	}
+
+	// A collapse cannot be described by the bite stream, so the affected pylon
+	// gets queued for every client that is watching.
+	server_flush_pylon_resyncs(server)
 
 	for i in 1..<MAX_ENTITIES {
 		if server.world.characters[i].active {
@@ -168,6 +197,9 @@ server_tick :: proc(server: ^Server) {
 	if server.tick_id % 30 == 0 {
 		server_send_roster(server)
 	}
+	// Resync slices ride between snapshots, a couple per tick, so one late
+	// joiner pulling seven pylons cannot crowd out everybody's bodies.
+	server_send_pylon_syncs(server)
 
 	server.tick_id += 1
 	server.total_ticks += 1
@@ -178,7 +210,9 @@ server_tick :: proc(server: ^Server) {
 }
 
 server_round_reset :: proc(server: ^Server) {
-	obelisk_world_reset(&server.obelisks)
+	pylon_world_reset(&server.pylons)
+	ore_chunk_world_reset(&server.chunks)
+	mining_reset(&server.mining)
 	projectile_clear_all(&server.projectiles)
 	server.strikes = {}
 	combat_reset_stats(&server.world)
@@ -188,7 +222,61 @@ server_round_reset :: proc(server: ^Server) {
 			bot_reset_ai(&server.bots[i])
 		}
 	}
-	fmt.println("[Server] Round reset: obelisks neutral, everyone respawned")
+	// Every pylon is whole again, which no client can infer. Send them all.
+	for i in 0..<server.client_count {
+		pylon_sync_tx_request(&server.clients[i].pylon_tx, (1 << MAX_PYLONS) - 1)
+	}
+	fmt.println("[Server] Round reset: pylons raised, ore cleared, everyone respawned")
+}
+
+// ---------------------------------------------------------------------------
+// Pylon resync
+
+// Anything the bite stream cannot express -- a collapse, a round reset -- is
+// flagged on the pylon world and turned into a per-client debt here.
+server_flush_pylon_resyncs :: proc(server: ^Server) {
+	mask: u8 = 0
+	for i in 0..<MAX_PYLONS {
+		if server.pylons.resync[i] {
+			mask |= 1 << u8(i)
+			server.pylons.resync[i] = false
+		}
+	}
+	if mask == 0 {
+		return
+	}
+	for i in 0..<server.client_count {
+		pylon_sync_tx_request(&server.clients[i].pylon_tx, mask)
+	}
+}
+
+server_send_pylon_syncs :: proc(server: ^Server) {
+	buffer: [MAX_PACKET_SIZE]u8
+	for ci in 0..<server.client_count {
+		client := &server.clients[ci]
+		tx := &client.pylon_tx
+		for _ in 0..<PYLON_SYNC_PARTS_PER_TICK {
+			if !pylon_sync_tx_advance(tx, &server.pylons) {
+				break
+			}
+			packet := Server_Pylon_Sync_Packet{
+				pylon    = u8(tx.pylon),
+				kind     = u8(tx.kind),
+				base_seq = tx.base_seq,
+				total    = u16(tx.total),
+				parts    = u8(tx.parts),
+				part     = u8(tx.next),
+			}
+			slice := pylon_sync_tx_part(tx, &server.pylons, tx.next)
+			packet.len = u16(len(slice))
+			copy(packet.data[:len(slice)], slice)
+			size := serialize_server_pylon_sync(&packet, buffer[:])
+			if size > 0 {
+				network_send(&server.network, buffer[:], size, client.addr)
+			}
+			pylon_sync_tx_done_part(tx)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +346,10 @@ server_process_packets :: proc(server: ^Server) {
 				server_send_gamestate_to(server, new_slot)
 				// Don't make them wait half a second to learn who is here.
 				server_send_roster_to(server, new_slot)
+				// A joiner has pristine pylons and the towers may be half gone.
+				// Nothing in the bite stream can tell them that, so send every
+				// pylon's density up front.
+				pylon_sync_tx_request(&server.clients[new_slot].pylon_tx, (1 << MAX_PYLONS) - 1)
 			} else {
 				server_send_lobby(server, from, .Server_Full)
 			}
@@ -276,6 +368,20 @@ server_process_packets :: proc(server: ^Server) {
 				tick := pkt.newest_tick - u32(k)
 				client_queue_input(client, tick, pkt.inputs[k])
 			}
+
+		case .Client_Pylon_Request:
+			// A client noticed its ore does not match ours and wants it resent.
+			// Costs nothing to honour: the request is rate limited on their end
+			// and the payload is queued, not sent immediately.
+			if slot < 0 {
+				continue
+			}
+			req, rok := deserialize_client_pylon_request(buffer[:n])
+			if !rok {
+				continue
+			}
+			server.clients[slot].last_packet = time.tick_now()
+			pylon_sync_tx_request(&server.clients[slot].pylon_tx, req.mask)
 		}
 	}
 }
@@ -817,6 +923,47 @@ server_send_snapshots :: proc(server: ^Server) {
 		// This client's own combat log and nobody else's.
 		snapshot.combat_event_count = u8(combat_log_gather(&server.world.combat_log, self_id, &snapshot.combat_events))
 
+		// Recent bites. Not interest-managed: a client has to apply every bite
+		// to every pylon whether or not it can see the tower, or its copy of the
+		// density field diverges the moment it turns around.
+		snapshot.carve_count = u8(pylon_recent_events(&server.pylons, snapshot.carves[:]))
+
+		// Nearest ore on the floor.
+		kidx:  [MAX_ORE_CHUNKS]int
+		kdist: [MAX_ORE_CHUNKS]f32
+		kn := 0
+		for i in 0..<MAX_ORE_CHUNKS {
+			if !server.chunks.chunks[i].active {
+				continue
+			}
+			kidx[kn] = i
+			kdist[kn] = len2_vec3(server.chunks.chunks[i].pos - self_pos)
+			kn += 1
+		}
+		ktake := min(kn, MAX_SNAPSHOT_CHUNKS)
+		for k in 0..<ktake {
+			best := k
+			for j in k + 1..<kn {
+				if kdist[j] < kdist[best] {
+					best = j
+				}
+			}
+			if best != k {
+				kidx[k], kidx[best] = kidx[best], kidx[k]
+				kdist[k], kdist[best] = kdist[best], kdist[k]
+			}
+			c := &server.chunks.chunks[kidx[k]]
+			snapshot.chunks[k] = Snapshot_Chunk{
+				id     = c.id,
+				ore    = c.ore,
+				pos    = c.pos,
+				vel    = c.vel,
+				radius = c.radius,
+				rest   = c.rest,
+			}
+		}
+		snapshot.chunk_count = u8(ktake)
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
@@ -898,16 +1045,23 @@ server_build_gamestate :: proc(server: ^Server) -> Server_GameState_Packet {
 	humans := server_human_counts(server)
 	for i in 0..<TEAM_COUNT {
 		gs.humans[i] = u8(humans[i])
-	}
-	for i in 0..<MAX_OBELISKS {
-		o := &server.obelisks.obelisks[i]
-		gs.obelisks[i] = Snapshot_Obelisk{
-			state     = u8(o.state),
-			owner     = u8(o.owner),
-			capturing = u8(o.capturing_team),
-			progress  = o.capture_progress,
+		for k in 0..<ORE_COUNT {
+			gs.wallets[i][k] = u16(clampf(server.match.wallets[i][k], 0, 65535))
 		}
 	}
+	for i in 0..<MAX_PYLONS {
+		p := &server.pylons.pylons[i]
+		g := server.pylons.grids[i]
+		gs.pylons[i] = Snapshot_Pylon{
+			intact   = p.intact,
+			// The digest is what lets a client find out it has drifted. Cheap
+			// here at 10 Hz; the alternative is a wrong tower nobody notices.
+			checksum = g != nil ? ore_grid_checksum(g) : 0,
+		}
+	}
+	// Stamp the bite count these digests were taken at, so a client can tell
+	// "I am behind" from "I am wrong".
+	gs.carve_seq = server.pylons.next_seq == 1 ? 0 : server.pylons.next_seq - 1
 	return gs
 }
 
@@ -916,7 +1070,7 @@ server_send_gamestate :: proc(server: ^Server) {
 		return
 	}
 	gs := server_build_gamestate(server)
-	buffer: [128]u8
+	buffer: [256]u8
 	size := serialize_server_gamestate(&gs, buffer[:])
 	if size <= 0 {
 		return
@@ -928,7 +1082,7 @@ server_send_gamestate :: proc(server: ^Server) {
 
 server_send_gamestate_to :: proc(server: ^Server, slot: int) {
 	gs := server_build_gamestate(server)
-	buffer: [128]u8
+	buffer: [256]u8
 	size := serialize_server_gamestate(&gs, buffer[:])
 	if size > 0 {
 		network_send(&server.network, buffer[:], size, server.clients[slot].addr)
@@ -1261,10 +1415,10 @@ server_shutdown :: proc(server: ^Server) {
 }
 
 main_server :: proc() {
-	server, ok := server_init(server_port_from_env())
-	if !ok {
+	server := new(Server)
+	if !server_init(server, server_port_from_env()) {
 		fmt.eprintln("Failed to initialize server")
 		return
 	}
-	server_run(&server)
+	server_run(server)
 }
