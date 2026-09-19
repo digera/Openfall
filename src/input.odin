@@ -96,9 +96,25 @@ input_event :: proc "c" (e: ^sapp.Event) {
 			if slot < HOTBAR_SLOTS {
 				input.slot_press[slot] = true
 			}
+			// In menu phase, number keys select menu items
+			if game_client.phase == .In_Menu {
+				game_client.menu_selected = slot
+			}
 		case .ESCAPE:
-			sapp.lock_mouse(false)
-			input_clear_held()
+			// If in the Playing phase and mouse is locked, open menu instead of just unlocking
+			if game_client.phase == .Playing && sapp.mouse_locked() {
+				game_client.phase = .In_Menu
+				sapp.lock_mouse(false)
+				input_clear_held()
+			} else if game_client.phase == .In_Menu {
+				// Close menu and resume playing
+				game_client.phase = .Playing
+				input_clear_held()
+			} else {
+				// In other phases (Connecting, Team_Select, Joining), just unlock
+				sapp.lock_mouse(false)
+				input_clear_held()
+			}
 		}
 	case .KEY_UP:
 		#partial switch e.key_code {

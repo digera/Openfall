@@ -135,6 +135,8 @@ main :: proc() {
 				network_client_send_join(&client.network, client.chosen_team, client.player_name)
 				last_hello = time.tick_now()
 			}
+		case .In_Menu:
+			// Graphical-client only; the headless driver never opens the menu.
 		case .Playing:
 			if time.tick_since(next_tick) >= 0 {
 				angle += 0.03

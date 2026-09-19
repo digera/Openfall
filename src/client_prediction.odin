@@ -23,6 +23,7 @@ Client_Phase :: enum u8 {
 	Team_Select,  // lobby known, waiting for the player to pick
 	Joining,      // join sent, waiting for welcome
 	Playing,
+	In_Menu,      // paused, menu open
 }
 
 Client_Prediction :: struct {

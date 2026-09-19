@@ -399,7 +399,7 @@ spell_id_from_wire :: proc(raw: u8) -> Spell_ID {
 
 @(private = "file")
 team_from_wire :: proc(raw: u8) -> Team_ID {
-	return raw <= u8(Team_ID.Gamma) ? Team_ID(raw) : .None
+	return raw <= u8(Team_ID.Spectator) ? Team_ID(raw) : .None
 }
 
 @(private = "file")
@@ -525,7 +525,7 @@ deserialize_client_join :: proc(buffer: []u8) -> (packet: Client_Join_Packet, ok
 	if !read_header(&r, .Client_Join) {
 		return {}, false
 	}
-	packet.team = Team_ID(br_u8(&r))
+	packet.team = team_from_wire(br_u8(&r))
 	packet.name = br_name(&r)
 	return packet, r.ok
 }
@@ -622,7 +622,7 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 		return {}, false
 	}
 	packet.your_entity_id = Entity_ID(br_u8(&r))
-	packet.team = Team_ID(br_u8(&r))
+	packet.team = team_from_wire(br_u8(&r))
 	return packet, r.ok
 }
 

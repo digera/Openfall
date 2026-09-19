@@ -280,7 +280,7 @@ world_ray_hit :: proc(origin, dir: vec3, max_dist: f32, step: f32 = 0.25) -> f32
 
 // Spawn point inside a team base. Slots fan out laterally then backwards.
 team_spawn_position :: proc(team: Team_ID, slot: int) -> vec3 {
-	if team == .None {
+	if team == .None || team == .Spectator {
 		return {0, 0, WORLD_FLOOR_Z}
 	}
 	d := team_dir(team)

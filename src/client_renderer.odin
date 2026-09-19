@@ -363,7 +363,8 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	world := &gc.client_world
 	pred := &world.prediction
 	fx := &gc.fx
-	playing := gc.phase == .Playing && pred.initialized
+	in_match := gc.phase == .Playing || gc.phase == .In_Menu
+	playing := in_match && pred.initialized && !gc.is_spectating
 
 	// --- Camera --------------------------------------------------------------
 	base_pos: vec3
@@ -371,6 +372,9 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	pitch := gc.view_pitch
 	if playing {
 		base_pos = client_prediction_render_pos(pred, gc.render_alpha)
+	} else if in_match {
+		// Spectator / no body yet: free-look from above the plaza.
+		base_pos = {0, 0, 6}
 	} else {
 		// Lobby camera: slow orbit above the plaza looking at the center
 		a := r.world_t * 0.10
@@ -680,7 +684,7 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	// Stats line (always)
 	sdtx.color3f(0.78, 0.76, 0.70)
 	sdtx.printf("NEXUS ARENA  %.0f fps  %.1f ms", r.last_fps, r.frame_ms)
-	if gc.phase == .Playing {
+	if gc.phase == .Playing || gc.phase == .In_Menu {
 		rate, total := client_prediction_stats(&world.prediction)
 		_, _, since := network_client_stats(&gc.network)
 		sdtx.color3f(0.55, 0.53, 0.50)
@@ -697,6 +701,8 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		hud_lobby_frame(gc, cols, rows, fmt.tprintf("JOINING %s...", team_name(gc.chosen_team)))
 	case .Playing:
 		hud_playing(gc, cols, rows)
+	case .In_Menu:
+		hud_in_game_menu(gc, cols, rows)
 	}
 }
 
@@ -762,11 +768,120 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 }
 
 @(private = "file")
+hud_in_game_menu :: proc(gc: ^Game_Client, cols, rows: f32) {
+	// Draw a simple pause menu
+	sdtx.color3f(0.95, 0.93, 0.86)
+	hud_center_text(cols, rows * 0.25, "GAME MENU")
+	
+	sdtx.color3f(0.70, 0.68, 0.65)
+	hud_center_text(cols, rows * 0.25 + 2, "Press ESC to resume")
+
+	base_row := rows * 0.40
+	
+	// Team join options
+	if gc.have_lobby {
+		for i in 0..<TEAM_COUNT {
+			team := team_from_index(i)
+			allowed := client_team_allowed(gc, team)
+			humans := int(gc.lobby.humans[i])
+			bots := int(gc.lobby.bots[i])
+			col := team_color(team)
+			if !allowed {
+				col = col * 0.35 + vec3{0.2, 0.2, 0.2}
+			}
+			sdtx_color(col)
+			
+			current_marker := ""
+			if team == gc.client_world.local_team {
+				current_marker = "  (current)"
+			}
+			
+			line := fmt.tprintf("[%d]  Join %s  -  %d players  %d bots%s%s", 
+				i + 1, team_name(team), humans, bots,
+				allowed ? "" : "  (locked)",
+				current_marker)
+			hud_center_text(cols, base_row + f32(i) * 2, line)
+		}
+	} else {
+		// Fallback if no lobby data
+		for i in 0..<TEAM_COUNT {
+			team := team_from_index(i)
+			col := team_color(team)
+			sdtx_color(col)
+			line := fmt.tprintf("[%d]  Join %s", i + 1, team_name(team))
+			hud_center_text(cols, base_row + f32(i) * 2, line)
+		}
+	}
+
+	// Spectate option
+	sdtx.color3f(0.70, 0.70, 0.70)
+	spectate_marker := ""
+	if gc.is_spectating {
+		spectate_marker = "  (current)"
+	}
+	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2, fmt.tprintf("[4]  Spectate%s", spectate_marker))
+
+	sdtx.color3f(0.50, 0.48, 0.45)
+	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2 + 3, "Choose an option or press ESC to return to the game")
+}
+
+@(private = "file")
 hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	world := &gc.client_world
 	pred := &world.prediction
 	local := pred.predicted_char
 	gs := &world.game_state
+
+	// Spectator mode: show simplified HUD
+	if gc.is_spectating {
+		sdtx.color3f(0.70, 0.70, 0.70)
+		hud_center_text(cols, rows * 0.1, "SPECTATING")
+		sdtx.color3f(0.50, 0.50, 0.50)
+		hud_center_text(cols, rows * 0.1 + 1, "Press ESC to open menu and join a team")
+		
+		// Show match status
+		if world.have_game_state {
+			state := Match_State(gs.match_state)
+			status := ""
+			switch state {
+			case .Waiting:
+				status = fmt.tprintf("WARMUP  %d", int(max(WARMUP_DURATION - gs.match_time, 0)))
+			case .Active:
+				m := int(gs.match_time) / 60
+				s := int(gs.match_time) % 60
+				status = fmt.tprintf("%02d:%02d", m, s)
+			case .Ended:
+				if Match_Result(gs.match_result) == .Team_Wins {
+					status = fmt.tprintf("%s WINS", team_name(Team_ID(gs.winner)))
+				} else {
+					status = "DRAW"
+				}
+			}
+			sdtx.color3f(0.80, 0.78, 0.75)
+			hud_center_text(cols, rows * 0.15, status)
+			
+			// Scores
+			line_w: f32 = 0
+			parts: [TEAM_COUNT]string
+			for i in 0..<TEAM_COUNT {
+				parts[i] = fmt.tprintf("%s %4.0f", team_name(team_from_index(i)), gs.essence[i])
+				line_w += f32(len(parts[i]))
+			}
+			line_w += 3 * 2
+			col := cols * 0.5 - line_w * 0.5
+			sdtx.pos(col, rows * 0.15 + 1)
+			for i in 0..<TEAM_COUNT {
+				team := team_from_index(i)
+				sdtx_color(team_color(team))
+				sdtx_str(parts[i])
+				if i < TEAM_COUNT - 1 {
+					sdtx.color3f(0.5, 0.5, 0.5)
+					sdtx.puts(" /")
+				}
+			}
+		}
+		return
+	}
 
 	// --- Match header (top center) --------------------------------------------
 	if world.have_game_state {
