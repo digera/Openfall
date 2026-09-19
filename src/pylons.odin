@@ -20,15 +20,9 @@ import "core:math"
 // them -- Call Lightning has nothing to lock onto and needs no special case.
 // Only positional damage carves ore.
 //
-// HIT-TEST CONTRACT (authority):
-//   - Collision: the occupancy grid (ore_grid.odin) plus PYLON_COLLIDE_SLACK
-//   - Beams: pylon_raycast → ore_grid_raycast (DDA voxel traversal)
-//   - Projectiles: world_point_free → pylon_blocks_point → ore_grid_blocks_point
-//   - Mining: pylon_mine damages cells in the occupancy grid
-//   - Rendering: client SDF (pylon_sdf.odin) is a visual approximation with grain
-//     noise. It can deviate ±PYLON_GRAIN_AMP from the occupancy hull, but the
-//     grid is authoritative for gameplay. Cut faces (pylon_on_cut) show where
-//     the SDF no longer matches the hull, making damage readable.
+// Occupancy plus PYLON_COLLIDE_SLACK is collision. Beams go through
+// pylon_raycast; projectiles through world_point_free → pylon_blocks_point.
+// The client SDF is the picture, not the hit.
 
 Pylon_ID :: u8
 MAX_PYLONS :: 7
