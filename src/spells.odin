@@ -339,9 +339,13 @@ BEAM_MAX_CHAINS :: 2
 
 Beam_State :: struct {
 	end:         vec3,                    // first thing the beam met: a body or the world
-	hit:         Entity_ID,               // the body, if it was one
+	hit:         Entity_ID,               // the player, if the primary landed on one
+	hit_minion:  bool,                    // primary landed on a minion; snapshot.hit is true either way
 	chain_count: int,
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
+	// Minion IDs for chain targets. 0 means chains[i] is a player,
+	// > 0 means a minion with that ID.
+	chain_minion_ids: [BEAM_MAX_CHAINS]Minion_ID,
 }
 
 // Is the entity's held spell a beam that is actually firing?

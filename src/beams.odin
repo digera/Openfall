@@ -69,9 +69,9 @@ beam_quench :: proc(world: ^Entity_World, id: Entity_ID) {
 	state.beam = {}
 }
 
-// Trace one beam: the world clips it, the first hostile body along it takes
-// `damage`, and the arcs jump from body to body behind it. Writes where it
-// ended and who it touched into `out` for the snapshot.
+// Trace one beam: the world clips it, the first hostile body (player or minion)
+// along it takes `damage`, and the arcs jump from body to body behind it.
+// Writes where it ended and who it touched into `out` for the snapshot.
 beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, origin, dir: vec3, damage: f32, out: ^Beam_State) {
 	caster_team := world.teams[caster_id]
 	reach := world_ray_hit(origin, dir, def.range)
@@ -94,31 +94,52 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 		}
 	}
 
-	// A minion in front of the player stops the beam at the minion. It cannot
-	// be chained from -- the arcs are an Entity_ID list on the wire -- so a
-	// wave between you and your target genuinely is cover for them.
+	// A minion in front of the player is a real body: it takes the primary
+	// hit and the arcs can jump from it. Friendly minions are ignored by
+	// minion_raycast, same team rule as players.
+	hit_minion_slot := -1
 	mt, mslot, mhit := minion_raycast(g_minions, caster_team, origin, dir, hit_dist)
 	if mhit {
-		out^ = {end = origin + dir * mt, hit = INVALID_ENTITY}
-		minion_damage(g_minions, mslot, damage)
+		hit = INVALID_ENTITY
+		hit_minion_slot = mslot
+		hit_dist = mt
+	}
+
+	out^ = {end = origin + dir * hit_dist, hit = hit, hit_minion = hit_minion_slot >= 0}
+
+	if hit != INVALID_ENTITY {
+		beam_damage(world, caster_id, hit, def.id, damage)
+	} else if hit_minion_slot >= 0 {
+		minion_damage(g_minions, hit_minion_slot, damage)
+	} else {
 		return
 	}
 
-	out^ = {end = origin + dir * hit_dist, hit = hit}
-	if hit == INVALID_ENTITY {
-		return
+	// Arcs: from the last body struck to the nearest hostile one (player or
+	// minion) not yet struck, within jump range and in the open. Each jump
+	// is worth a fraction of the beam so a crowd is hurt, not deleted.
+	struck: u64 = 0
+	if hit != INVALID_ENTITY {
+		struck = u64(1) << u64(hit)
 	}
-	beam_damage(world, caster_id, hit, def.id, damage)
+	struck_minion_mask: u64 = 0
+	if hit_minion_slot >= 0 {
+		struck_minion_mask = u64(1) << u64(hit_minion_slot)
+	}
 
-	// Arcs: from the last body struck to the nearest hostile one not yet
-	// struck, within jump range and in the open. Each jump is worth a
-	// fraction of the beam so a crowd is hurt, not deleted.
-	struck: u64 = u64(1) << u64(hit)
-	from := world.characters[hit].pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+	from: vec3
+	if hit != INVALID_ENTITY {
+		from = world.characters[hit].pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+	} else {
+		from = minion_center(&g_minions.minions[hit_minion_slot])
+	}
+
 	for out.chain_count < def.beam_chain_count {
 		next := INVALID_ENTITY
+		next_minion_slot := -1
 		next_d2 := def.beam_chain_range * def.beam_chain_range
 		next_center: vec3
+
 		for i in 1..<MAX_ENTITIES {
 			id := Entity_ID(i)
 			if id == caster_id || struck & (u64(1) << u64(i)) != 0 || !entity_alive(world, id) {
@@ -136,16 +157,55 @@ beam_trace :: proc(world: ^Entity_World, caster_id: Entity_ID, def: ^Spell_Def, 
 				continue
 			}
 			next = id
+			next_minion_slot = -1
 			next_d2 = d2
 			next_center = center
 		}
-		if next == INVALID_ENTITY {
+
+		if g_minions != nil {
+			for i in 0..<MAX_MINIONS {
+				m := &g_minions.minions[i]
+				if !m.active || m.health <= 0 {
+					continue
+				}
+				if struck_minion_mask & (u64(1) << u64(i)) != 0 {
+					continue
+				}
+				if !teams_are_enemies(caster_team, m.team) {
+					continue
+				}
+				center := minion_center(m)
+				d2 := len2_vec3(center - from)
+				if d2 >= next_d2 {
+					continue
+				}
+				if !world_segment_clear(from, center) {
+					continue
+				}
+				next = INVALID_ENTITY
+				next_minion_slot = i
+				next_d2 = d2
+				next_center = center
+			}
+		}
+
+		if next == INVALID_ENTITY && next_minion_slot < 0 {
 			break
 		}
-		beam_damage(world, caster_id, next, def.id, damage * def.beam_chain_frac)
-		out.chains[out.chain_count] = next
-		out.chain_count += 1
-		struck |= u64(1) << u64(next)
+
+		if next != INVALID_ENTITY {
+			beam_damage(world, caster_id, next, def.id, damage * def.beam_chain_frac)
+			out.chains[out.chain_count] = next
+			out.chain_minion_ids[out.chain_count] = 0
+			out.chain_count += 1
+			struck |= u64(1) << u64(next)
+		} else {
+			minion_damage(g_minions, next_minion_slot, damage * def.beam_chain_frac)
+			out.chains[out.chain_count] = INVALID_ENTITY
+			out.chain_minion_ids[out.chain_count] = g_minions.minions[next_minion_slot].id
+			out.chain_count += 1
+			struck_minion_mask |= u64(1) << u64(next_minion_slot)
+		}
 		from = next_center
 	}
 }

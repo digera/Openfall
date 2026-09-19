@@ -765,10 +765,26 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			}
 			fs_params.beams[i] = {from.x, from.y, from.z, spell_type_code(def.id)}
 			fs_params.beam_ends[i] = {to.x, to.y, to.z, on_body ? 1 : 0}
-			// Chains arc to bodies, so they follow the interpolated remotes
-			// rather than a position that was true a snapshot ago.
+			// Chains arc to bodies (players or minions), so they follow the
+			// interpolated remotes or current minion snapshot positions.
 			for c in 0..<min(int(b.chain_count), BEAM_MAX_CHAINS) {
-				target := &world.remote_entities[int(b.chains[c])]
+				minion_id := b.chain_minion_ids[c]
+				if minion_id > 0 {
+					for mi in 0..<world.minion_count {
+						m := &world.minions[mi]
+						if m.id == minion_id && m.present {
+							p := m.pos + vec3{0, 0, MINION_HEIGHT_M * 0.5}
+							fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
+							break
+						}
+					}
+					continue
+				}
+				eid := int(b.chains[c])
+				if eid <= 0 || eid >= MAX_ENTITIES {
+					continue
+				}
+				target := &world.remote_entities[eid]
 				if !target.active {
 					continue
 				}
