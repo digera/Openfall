@@ -20,6 +20,13 @@ PROJECTILE_BOUNCE_MIN_SPEED :: f32(1.2)
 // leaving it lying around for the rest of its fuse.
 PROJECTILE_REST_SPEED :: f32(1.5)
 
+// Arcane Missile: on a real ricochet (wall or floor, not a graze), lean the
+// outgoing shot toward the nearest living enemy the bounce can see. Radius is
+// lane-scale so a bank in a fight finds that fight, not the next one. Blend
+// keeps the geometric bounce; 1 would replace it with a homing shot.
+ARCANE_MISSILE_SEEK_RADIUS :: f32(10.0)
+ARCANE_MISSILE_SEEK_BLEND  :: f32(0.5)
+
 Projectile_ID :: u32
 
 // Piercing uses one bit per entity to remember who has already been speared.
@@ -128,6 +135,62 @@ projectile_hits_character :: proc(p: vec3, radius: f32, char_pos: vec3) -> bool 
 	}
 	dz := p.z - char_pos.z
 	return dz >= -radius && dz <= CHARACTER_HEIGHT_M + radius
+}
+
+// Nearest living enemy on the outgoing side of `n`, within
+// ARCANE_MISSILE_SEEK_RADIUS of `from`, with a clear segment to their center.
+//
+// Scans the 64-slot SOA the same way projectile hits already do every sub-step.
+// `spatial_grid.odin` is an unused full-scan stub that heap-allocates; a grid
+// would cost more than this loop at MAX_ENTITIES. Seek only runs on a ricochet
+// (at most three times per missile), not per tick.
+@(private)
+projectile_missile_seek :: proc(
+	entity_world: ^Entity_World,
+	from: vec3,
+	n: vec3,
+	owner_id: Entity_ID,
+	owner_team: Team_ID,
+) -> (dir: vec3, ok: bool) {
+	nearest := INVALID_ENTITY
+	nearest_dist_sq := ARCANE_MISSILE_SEEK_RADIUS * ARCANE_MISSILE_SEEK_RADIUS
+
+	for entity_idx in 1..<MAX_ENTITIES {
+		id := Entity_ID(entity_idx)
+		if !entity_alive(entity_world, id) || id == owner_id {
+			continue
+		}
+		if !teams_are_enemies(owner_team, entity_world.teams[entity_idx]) {
+			continue
+		}
+
+		target_pos := entity_world.characters[entity_idx].pos
+		center := target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+		d := center - from
+		if dot_vec3(d, n) <= 0 {
+			continue
+		}
+		dist_sq := d.x * d.x + d.y * d.y + d.z * d.z
+		if dist_sq >= nearest_dist_sq {
+			continue
+		}
+		if !world_segment_clear(from, center, 0.8) {
+			continue
+		}
+		nearest = id
+		nearest_dist_sq = dist_sq
+	}
+
+	if nearest == INVALID_ENTITY {
+		return {}, false
+	}
+	center := entity_world.characters[nearest].pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+	d := center - from
+	l := len_vec3(d)
+	if l < 0.01 {
+		return {}, false
+	}
+	return d / l, true
 }
 
 projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32) {
@@ -244,7 +307,27 @@ projectile_surface_contact :: proc(
 	} else {
 		proj.bounces_left -= 1
 		proj.pos = contact + n * (proj.radius * 0.25 + 0.01)
-		proj.vel = (proj.vel - n * (2 * vn)) * proj.restitution
+		bounce_vel := (proj.vel - n * (2 * vn)) * proj.restitution
+		if proj.spell_id == .Arcane_Missile {
+			bounce_speed := len_vec3(bounce_vel)
+			if bounce_speed > 0.01 {
+				if seek, found := projectile_missile_seek(
+					entity_world,
+					proj.pos,
+					n,
+					proj.owner_id,
+					proj.owner_team,
+				); found {
+					bounce_dir := bounce_vel / bounce_speed
+					blended := bounce_dir * (1 - ARCANE_MISSILE_SEEK_BLEND) + seek * ARCANE_MISSILE_SEEK_BLEND
+					blended_len := len_vec3(blended)
+					if blended_len > 0.01 && dot_vec3(blended, n) > 0.05 * blended_len {
+						bounce_vel = (blended / blended_len) * bounce_speed
+					}
+				}
+			}
+		}
+		proj.vel = bounce_vel
 	}
 
 	// Wedged into a corner: pop rather than sit inside geometry.
@@ -271,9 +354,11 @@ projectile_expire :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_World, slot: int, target_id: Entity_ID) {
 	proj := &world.projectiles[slot]
 
-	// Copy out of the SOA array, mutate, store back.
+	combat_apply_damage(entity_world, proj.owner_id, target_id, proj.spell_id, proj.damage)
+
+	// Copy out of the SOA array, mutate, store back. Read after the damage
+	// landed so the health printed below is the health that is there.
 	target := entity_world.characters[target_id]
-	target.health -= proj.damage
 	if proj.slow_ticks > 0 {
 		target.slow_ticks = max(target.slow_ticks, proj.slow_ticks)
 	}
@@ -294,7 +379,7 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 	if direct != INVALID_ENTITY {
 		projectile_apply_direct(world, entity_world, slot, direct)
 	}
-	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
+	splash_damage(entity_world, at, proj.owner_id, proj.owner_team, direct, proj.spell_id, proj.damage * proj.aoe_frac, proj.aoe_radius, proj.knockback)
 	projectile_destroy(world, slot)
 }
 
@@ -307,6 +392,7 @@ splash_damage :: proc(
 	owner_id: Entity_ID,
 	owner_team: Team_ID,
 	direct: Entity_ID,
+	spell_id: Spell_ID,
 	damage, radius, knockback: f32,
 ) {
 	if radius <= 0 || damage <= 0 {
@@ -332,10 +418,12 @@ splash_damage :: proc(
 			continue
 		}
 		falloff := 1.0 - 0.5 * (dist / radius)
-		target.health -= damage * falloff
+		combat_apply_damage(entity_world, owner_id, id, spell_id, damage * falloff)
 		if knockback > 0 {
+			// Re-read: the damage above went through the array, not this copy.
+			target = entity_world.characters[entity_idx]
 			character_apply_impulse(&target, d, knockback * falloff)
+			entity_world.characters[entity_idx] = target
 		}
-		entity_world.characters[entity_idx] = target
 	}
 }

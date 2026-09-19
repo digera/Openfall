@@ -381,7 +381,8 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	world := &gc.client_world
 	pred := &world.prediction
 	fx := &gc.fx
-	playing := gc.phase == .Playing && pred.initialized
+	in_match := gc.phase == .Playing || gc.phase == .In_Menu
+	playing := in_match && pred.initialized && !gc.is_spectating
 
 	// --- Camera --------------------------------------------------------------
 	base_pos: vec3
@@ -389,6 +390,9 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	pitch := gc.view_pitch
 	if playing {
 		base_pos = client_prediction_render_pos(pred, gc.render_alpha)
+	} else if in_match {
+		// Spectator / no body yet: free-look from above the plaza.
+		base_pos = {0, 0, 6}
 	} else {
 		// Lobby camera: slow orbit above the plaza looking at the center
 		a := r.world_t * 0.10
@@ -698,7 +702,7 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 	// Stats line (always)
 	sdtx.color3f(0.78, 0.76, 0.70)
 	sdtx.printf("NEXUS ARENA  %.0f fps  %.1f ms", r.last_fps, r.frame_ms)
-	if gc.phase == .Playing {
+	if gc.phase == .Playing || gc.phase == .In_Menu {
 		rate, total := client_prediction_stats(&world.prediction)
 		_, _, since := network_client_stats(&gc.network)
 		sdtx.color3f(0.55, 0.53, 0.50)
@@ -715,6 +719,8 @@ client_renderer_overlay :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		hud_lobby_frame(gc, cols, rows, fmt.tprintf("JOINING %s...", team_name(gc.chosen_team)))
 	case .Playing:
 		hud_playing(gc, cols, rows)
+	case .In_Menu:
+		hud_in_game_menu(gc, cols, rows)
 	}
 }
 
@@ -729,7 +735,21 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	hud_center_text(cols, rows * 0.42, title)
 
 	if gc.phase == .Team_Select || gc.phase == .Joining {
-		base_row := rows * 0.42 + 3
+		sdtx.color3f(0.62, 0.60, 0.56)
+		hud_center_text(cols, rows * 0.42 + 1.5, "your name")
+		name := player_name_display(&gc.player_name, 0, false)
+		if gc.player_name.len == 0 {
+			name = "(unnamed)"
+		}
+		if gc.name_editing {
+			sdtx.color3f(0.98, 0.96, 0.88)
+			hud_center_text(cols, rows * 0.42 + 2.5, fmt.tprintf("%s_", name))
+		} else {
+			sdtx.color3f(0.72, 0.70, 0.64)
+			hud_center_text(cols, rows * 0.42 + 2.5, name)
+		}
+
+		base_row := rows * 0.42 + 5
 		for i in 0..<TEAM_COUNT {
 			team := team_from_index(i)
 			allowed := client_team_allowed(gc, team)
@@ -745,7 +765,11 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 			hud_center_text(cols, base_row + f32(i) * 2, line)
 		}
 		sdtx.color3f(0.55, 0.53, 0.50)
-		hud_center_text(cols, base_row + 7, "press 1, 2 or 3 to join  -  you cannot join the most populated team")
+		hint := "press 1, 2 or 3 to join  -  Enter to rename  -  you cannot join the most populated team"
+		if gc.name_editing {
+			hint = "type a name, Enter when you are done  -  a blank name gets you one"
+		}
+		hud_center_text(cols, base_row + 7, hint)
 		if gc.reject_timer > 0 {
 			sdtx.color3f(1.0, 0.55, 0.45)
 			msg := "that team is full or the most populated - pick another"
@@ -762,11 +786,120 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 }
 
 @(private = "file")
+hud_in_game_menu :: proc(gc: ^Game_Client, cols, rows: f32) {
+	// Draw a simple pause menu
+	sdtx.color3f(0.95, 0.93, 0.86)
+	hud_center_text(cols, rows * 0.25, "GAME MENU")
+	
+	sdtx.color3f(0.70, 0.68, 0.65)
+	hud_center_text(cols, rows * 0.25 + 2, "Press ESC to resume")
+
+	base_row := rows * 0.40
+	
+	// Team join options
+	if gc.have_lobby {
+		for i in 0..<TEAM_COUNT {
+			team := team_from_index(i)
+			allowed := client_team_allowed(gc, team)
+			humans := int(gc.lobby.humans[i])
+			bots := int(gc.lobby.bots[i])
+			col := team_color(team)
+			if !allowed {
+				col = col * 0.35 + vec3{0.2, 0.2, 0.2}
+			}
+			sdtx_color(col)
+			
+			current_marker := ""
+			if team == gc.client_world.local_team {
+				current_marker = "  (current)"
+			}
+			
+			line := fmt.tprintf("[%d]  Join %s  -  %d players  %d bots%s%s", 
+				i + 1, team_name(team), humans, bots,
+				allowed ? "" : "  (locked)",
+				current_marker)
+			hud_center_text(cols, base_row + f32(i) * 2, line)
+		}
+	} else {
+		// Fallback if no lobby data
+		for i in 0..<TEAM_COUNT {
+			team := team_from_index(i)
+			col := team_color(team)
+			sdtx_color(col)
+			line := fmt.tprintf("[%d]  Join %s", i + 1, team_name(team))
+			hud_center_text(cols, base_row + f32(i) * 2, line)
+		}
+	}
+
+	// Spectate option
+	sdtx.color3f(0.70, 0.70, 0.70)
+	spectate_marker := ""
+	if gc.is_spectating {
+		spectate_marker = "  (current)"
+	}
+	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2, fmt.tprintf("[4]  Spectate%s", spectate_marker))
+
+	sdtx.color3f(0.50, 0.48, 0.45)
+	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2 + 3, "Choose an option or press ESC to return to the game")
+}
+
+@(private = "file")
 hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	world := &gc.client_world
 	pred := &world.prediction
 	local := pred.predicted_char
 	gs := &world.game_state
+
+	// Spectator mode: show simplified HUD
+	if gc.is_spectating {
+		sdtx.color3f(0.70, 0.70, 0.70)
+		hud_center_text(cols, rows * 0.1, "SPECTATING")
+		sdtx.color3f(0.50, 0.50, 0.50)
+		hud_center_text(cols, rows * 0.1 + 1, "Press ESC to open menu and join a team")
+		
+		// Show match status
+		if world.have_game_state {
+			state := Match_State(gs.match_state)
+			status := ""
+			switch state {
+			case .Waiting:
+				status = fmt.tprintf("WARMUP  %d", int(max(WARMUP_DURATION - gs.match_time, 0)))
+			case .Active:
+				m := int(gs.match_time) / 60
+				s := int(gs.match_time) % 60
+				status = fmt.tprintf("%02d:%02d", m, s)
+			case .Ended:
+				if Match_Result(gs.match_result) == .Team_Wins {
+					status = fmt.tprintf("%s WINS", team_name(Team_ID(gs.winner)))
+				} else {
+					status = "DRAW"
+				}
+			}
+			sdtx.color3f(0.80, 0.78, 0.75)
+			hud_center_text(cols, rows * 0.15, status)
+			
+			// Scores
+			line_w: f32 = 0
+			parts: [TEAM_COUNT]string
+			for i in 0..<TEAM_COUNT {
+				parts[i] = fmt.tprintf("%s %4.0f", team_name(team_from_index(i)), gs.essence[i])
+				line_w += f32(len(parts[i]))
+			}
+			line_w += 3 * 2
+			col := cols * 0.5 - line_w * 0.5
+			sdtx.pos(col, rows * 0.15 + 1)
+			for i in 0..<TEAM_COUNT {
+				team := team_from_index(i)
+				sdtx_color(team_color(team))
+				sdtx_str(parts[i])
+				if i < TEAM_COUNT - 1 {
+					sdtx.color3f(0.5, 0.5, 0.5)
+					sdtx.puts(" /")
+				}
+			}
+		}
+		return
+	}
 
 	// --- Match header (top center) --------------------------------------------
 	if world.have_game_state {
@@ -965,6 +1098,138 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.color3f(0.7, 0.68, 0.62)
 		hud_center_text(cols, 5, "hold obelisks to gather essence - the center is worth double")
 	}
+
+	hud_combat_log(world, cols, rows)
+	if input.key_tab {
+		hud_scoreboard(world, cols, rows)
+	}
+}
+
+// Recent combat, bottom right, out of the way of the crosshair, the vitals and
+// the hotbar. Newest at the bottom, each line holding at full brightness and
+// then fading rather than vanishing mid-read.
+@(private = "file")
+hud_combat_log :: proc(world: ^Client_World, cols, rows: f32) {
+	// Oldest first, so the list reads downward the way a log should.
+	order: [MAX_COMBAT_LOG_LINES]int
+	count := 0
+	for i in 0..<MAX_COMBAT_LOG_LINES {
+		if !world.combat_log[i].live {
+			continue
+		}
+		pos := count
+		for pos > 0 && world.combat_log[order[pos - 1]].age < world.combat_log[i].age {
+			order[pos] = order[pos - 1]
+			pos -= 1
+		}
+		order[pos] = i
+		count += 1
+	}
+
+	left := max(cols - 40, 0)
+	top := rows - 6 - f32(count)
+	for k in 0..<count {
+		line := &world.combat_log[order[k]]
+		other := client_world_name(world, line.other_id)
+		spell := SPELL_DEFS[line.spell_id].short_name
+
+		text: string
+		col: vec3
+		switch line.event_type {
+		case .Damage_Dealt:
+			text = fmt.tprintf("you hit %s for %d (%s)", other, line.damage, spell)
+			col = {1.0, 0.82, 0.35}
+		case .Damage_Taken:
+			text = fmt.tprintf("%s hit you for %d (%s)", other, line.damage, spell)
+			col = {1.0, 0.45, 0.35}
+		case .Kill:
+			text = fmt.tprintf("you unmade %s", other)
+			col = {0.55, 1.0, 0.45}
+		case .Death:
+			text = fmt.tprintf("%s unmade you", other)
+			col = {1.0, 0.35, 0.35}
+		}
+
+		fade := clampf((COMBAT_LOG_HOLD_SEC + COMBAT_LOG_FADE_SEC - line.age) / COMBAT_LOG_FADE_SEC, 0, 1)
+		sdtx_color(col * fade)
+		sdtx.pos(left, top + f32(k))
+		sdtx_str(text)
+	}
+}
+
+// Hold Tab for the whole match: everyone the roster knows about, grouped by
+// team. The roster is not interest-managed, so this is the real scoreline and
+// not just the players who happen to be nearby.
+@(private = "file")
+hud_scoreboard :: proc(world: ^Client_World, cols, rows: f32) {
+	ids: [MAX_ENTITIES]Entity_ID
+	count := 0
+	for i in 1..<MAX_ENTITIES {
+		if world.roster[i].present {
+			ids[count] = Entity_ID(i)
+			count += 1
+		}
+	}
+	if count == 0 {
+		return
+	}
+
+	// Team first so the groups hold together, then kills, then fewest deaths.
+	for i in 1..<count {
+		id := ids[i]
+		a := &world.roster[id]
+		j := i
+		for j > 0 {
+			b := &world.roster[ids[j - 1]]
+			better := int(a.team) < int(b.team) ||
+				(a.team == b.team && a.stats.kills > b.stats.kills) ||
+				(a.team == b.team && a.stats.kills == b.stats.kills && a.stats.deaths < b.stats.deaths)
+			if !better {
+				break
+			}
+			ids[j] = ids[j - 1]
+			j -= 1
+		}
+		ids[j] = id
+	}
+
+	width: f32 = 46
+	height := f32(count + TEAM_COUNT + 3)
+	left := max(cols * 0.5 - width * 0.5, 0)
+	top := max(rows * 0.5 - height * 0.5, 4)
+
+	sdtx.color3f(0.95, 0.93, 0.86)
+	hud_center_text(cols, top, "SCOREBOARD")
+	sdtx.color3f(0.55, 0.53, 0.50)
+	sdtx.pos(left, top + 1)
+	sdtx.printf("%-18s %4s %4s %7s %7s", "name", "k", "d", "dealt", "taken")
+
+	row := top + 2
+	last_team := Team_ID.None
+	for k in 0..<count {
+		id := ids[k]
+		slot := &world.roster[id]
+		if slot.team != last_team {
+			last_team = slot.team
+			sdtx_color(team_color(slot.team) * 0.8)
+			sdtx.pos(left, row)
+			sdtx_str(team_name(slot.team))
+			row += 1
+		}
+		if id == world.local_entity_id {
+			sdtx.color3f(1.0, 0.95, 0.6)
+		} else if slot.is_bot {
+			sdtx.color3f(0.62, 0.60, 0.56)
+		} else {
+			sdtx.color3f(0.86, 0.84, 0.79)
+		}
+		sdtx.pos(left, row)
+		sdtx.printf("%-18s %4d %4d %7.0f %7.0f",
+			client_world_name(world, id),
+			slot.stats.kills, slot.stats.deaths,
+			slot.stats.damage_dealt, slot.stats.damage_taken)
+		row += 1
+	}
 }
 
 // Who the crosshair is holding, under the crosshair: name in team colour over a
@@ -978,7 +1243,7 @@ hud_target_panel :: proc(world: ^Client_World, cols: f32, row: f32) {
 	remote := &world.remote_entities[world.target_id]
 
 	sdtx_color(team_color(remote.team))
-	hud_center_text(cols, row, entity_display_name(remote.id, remote.is_bot))
+	hud_center_text(cols, row, client_world_name(world, remote.id))
 
 	hp := remote.display_state.health
 	frac := hp / HEALTH_MAX

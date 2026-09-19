@@ -49,13 +49,19 @@ $env:SERVER_IP = "127.0.0.1"
 .\bin\nexus_client.exe
 ```
 
-On connect the client shows a team-select screen with live player counts. Press `1` / `2` / `3` to join Ember / Tide / Verdant. You cannot join the team that currently has strictly the most players.
+On connect the client shows a team-select screen with live player counts and a name field. Type a name of up to sixteen characters and press `Enter` to finish it, then `1` / `2` / `3` to join Ember / Tide / Verdant. The field has to be finished before the number keys mean teams rather than letters, and leaving it blank gets you a `Player-NN`. You cannot join the team that currently has strictly the most players.
 
-Headless prediction/network test (joins the least-populated team, walks around for 30 s, reports correction rate):
+In a match, hold `Tab` for the scoreboard.
+
+`NEXUS_PORT` moves both ends off the default 27015, so a second server can run beside a live one.
+
+Headless prediction/network test (joins the least-populated team, walks around for 30 s, reports correction rate, and prints the roster and combat log it received). `NEXUS_TEST_NAME` sets the name it joins under; `NEXUS_TEST_FIGHT=1` sends it to the middle of the arena shooting, which is what exercises the scoreline and the combat log:
 
 ```powershell
 .\bin\nexus_client_test.exe
 ```
+
+`check.ps1` type-checks the server, client and test client without linking, which `build.ps1` cannot do while a server is holding `bin\`. `run_wire_test.ps1` builds all three into `%TEMP%` and runs a server plus two named clients against each other end to end.
 
 ## Configuration
 
@@ -86,7 +92,17 @@ $env:BOTS_PER_TEAM = "3"
 | 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
 | Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
 | Release LMB | Commit the cast — it finishes charging to full power, then fires. Holding through the full wind-up still waits for the release. |
-| Esc | Unlock mouse |
+| Esc | Open menu (while playing) or unlock mouse (in lobby) |
+
+### In-Game Menu
+
+Pressing Esc while playing opens the game menu and releases the mouse. From the menu you can:
+
+- **Join a team** (1/2/3): Switch to Ember, Tide, or Verdant. The same population lock applies — you cannot join the most populated team.
+- **Spectate** (4): Leave your playing body and observe the match. You can look around freely but cannot cast spells or interact.
+- **Resume**: Press Esc again to close the menu and return to the game (or to spectating).
+
+Opening the menu does not drop your current charge or target unless the existing unlock path already did so.
 
 ## Combat
 
@@ -105,11 +121,13 @@ Thunderbolt is the exception: it is a held beam with no wind-up, and nothing hap
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
 
+Arcane Missile is the cheap dart you bank down a lane. The first flight is still a skill shot; a ricochet off a wall or the floor then leans halfway toward the nearest living enemy within 10 m who is on the outgoing side of that surface and in the open. A wild bank still misses, and a bounce into a crate does not seek through it. It pops after three ricochets. Friendly fire is off, so it will never lean toward a teammate or the caster.
+
 Friendly Heal is the only spell on the bar that does something for someone else: a 1.0s wind-up that restores 50 to you and, if you have a teammate under the crosshair within 18 m and in the open, to them as well. It costs 40 mana and rests for 14 s, so it is a planned mend rather than sustain you hold through a fight — half a bar each, less than one lance, and you are standing still while it winds. A heal at full health with nobody hurt in front of you is refused rather than eating the mana, so it cannot be pre-charged before a fight. Cover breaks the ally half: if they duck out of sight before it fires, you still mend yourself if you need it, and the whole cast fizzles only if nobody was missing health. Blink is still in the spell table but off the hotbar — sustain earns the third slot more than a second mobility option does.
 
 Call Lightning is the one spell that cannot be dodged, so everything else about it is slow. It lands on the crosshair's target (below) from the sky when the wind-up completes, with the biggest mana bill and the longest charge on the bar. The wind-up needs a hostile target within 24 m to start, and it does not care about cover — you can call a bolt on someone who has just ducked behind a pillar and wait them out. When it fires does care: if the target is out of range, well off your crosshair, or out of your line of sight at that moment, the bolt fizzles and nothing is spent. Stepping behind cover before the bolt comes down is the counterplay; the caster has then spent 1.8 s for nothing.
 
-Thunderbolt is the exception to charge-cast: there is no wind-up and nothing happens on release. Holding it lights a beam from your hand to whatever the crosshair is on, out to 26 m, clipped by the world, and every server tick the first hostile body on it takes damage and arcs jump from body to body behind it. It needs 10 mana to light and then drains 24 a second, so a full bar buys about four seconds of continuous fire, and a player standing in it from full health dies in 1.8 s. Running it dry rests it for two seconds, and the server, not the client, decides when it is lit: the client draws its own beam from its own crosshair for responsiveness but the damage is only ever traced on the server. It has no burst, no splash and no reach past a wall; it punishes people who stand in the open at mid range and pays nothing against someone who keeps moving between cover.
+Thunderbolt is the exception to charge-cast: there is no wind-up and nothing happens on release. Holding it lights a beam from your hand to whatever the crosshair is on, out to 20.8 m, clipped by the world, and every server tick the first hostile body on it takes damage and arcs jump from body to body behind it. It needs 10 mana to light and then drains 24 a second, so a full bar buys about four seconds of continuous fire, and a player standing in it from full health dies in 1.8 s. Running it dry rests it for two seconds, and the server, not the client, decides when it is lit: the client draws its own beam from its own crosshair for responsiveness but the damage is only ever traced on the server. It has no burst, no splash and no reach past a wall; it punishes people who stand in the open at mid range and pays nothing against someone who keeps moving between cover.
 
 ### Cast orbs
 
@@ -135,9 +153,21 @@ The crosshair carries a sticky soft target: the nearest living wisp or player it
 
 **Context-aware targeting:** The sticky target respects the selected spell. Offensive spells (Missile, Orb, Lance, Call Lightning, Thunderbolt) only stick to enemies. Heal only sticks to teammates (not yourself). Switching spells clears an invalid target or retargets under the crosshair to a valid one, so the bar stays predictable when you swap slots mid-fight.
 
-The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. Friendly Heal reads it the same way for the ally half: point at the teammate you mean to keep alive and they are mended with you. Without a teammate under the crosshair it still mends you. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. Target names are derived from the entity id on both ends rather than replicated, so they cost nothing per snapshot and cannot disagree between clients.
+The selected entity goes up with every input, and targeted spells land on it — after the server has re-checked, from its own state, that it is alive, on the right side, in range, roughly where the caster is looking and in the open. Friendly Heal reads it the same way for the ally half: point at the teammate you mean to keep alive and they are mended with you. Without a teammate under the crosshair it still mends you. The server trusts nothing the client picks; the client runs the same reach test only so the bar never offers a cast the server would refuse. The name under the crosshair comes from the roster (below), so it is the name its owner typed and it is the same on every screen.
 
 Strikes are instantaneous, so there is no projectile for the client to watch vanish. The server keeps each bolt in its snapshots for a third of a second and clients deduplicate by sequence number, so one dropped packet does not lose the flash.
+
+### Names, the scoreboard and the combat log
+
+Every hit in the game goes through one procedure on the server, `combat_apply_damage`, and every death through one transition in `entity_tick_death_respawn`. The scoreline and the combat log both read from those two places rather than from the spells, so a new damage source is scored and logged without touching either feature, and the two can never disagree about who hit whom.
+
+Who is playing, what they are called and how they are doing ride a **roster** packet at 2 Hz, separate from the snapshot. The snapshot is interest-managed — it carries the nearest twenty-one bodies, because that is all you can see — and names and scores are the opposite shape: you need them for players you cannot see, and they change a few times a minute rather than sixty. Putting them in the snapshot would have meant paying for every name on every body thirty times a second and cutting the number of visible bodies to afford it. In their own packet they cost about a kilobyte every half second and the snapshot keeps its bodies. It also means the scoreboard behind `Tab` is the whole match rather than your neighbours, and a name stays put when its owner steps behind a wall.
+
+Combat events do belong in the snapshot: they are addressed to one player, they are wanted the instant they happen, and they are gone a second later. Each client is sent only the lines it is party to. Damage from the same attacker with the same spell inside a second is folded into one line whose tally climbs, named by a sequence number — without that a lit Thunderbolt would push sixty lines a second and nothing else would ever be readable. The same sequence number is how a line survives packet loss: the server replays it until it ages out, and a client that already has it updates it in place instead of printing it twice.
+
+Names are fixed-size on the wire and in memory, never Odin strings, because a name arrives inside a receive buffer that is reused on the next packet. They are stripped to printable ASCII when they are read off the wire, since a name reaches every HUD in the match.
+
+The snapshot and roster byte budgets are `#assert`ed against `MAX_PACKET_SIZE` from the per-record sizes in `network.odin`: adding a field to a replicated record breaks the build rather than silently truncating packets in the first crowded fight.
 
 ## Rendering
 
@@ -155,3 +185,22 @@ When a wisp dies, it inflates like a balloon over 0.40 seconds (the robe radii s
 ./bin/nexus_server
 ./bin/nexus_client
 ```
+
+## Deploy (primord.io)
+
+Builds both binaries locally, uploads one archive, then on the VPS installs the Linux dedicated server and publishes the Windows client for download. The VPS does not compile.
+
+- **Linux server** via WSL → `/opt/nexus-arena/nexus_server` + systemd
+- **Windows client** via `build.ps1 -Target client -Release` → `/downloads/nexus_client.exe` (under the site document root when present)
+
+Needs WSL with `gcc` or `clang` for the server build.
+
+```powershell
+.\deploy.ps1 -User root -IdentityFile $env:USERPROFILE\.ssh\id_ed25519
+.\deploy.ps1 -User root -Status
+.\deploy.ps1 -User root -Logs
+```
+
+Client download: `https://primord.io/downloads/nexus_client.exe`
+
+Options: `-SkipBuild`, `-Binary` / `-ClientBinary`, `-DownloadDir` (override publish path), `-Interactive` (password auth).

@@ -80,7 +80,8 @@ Spell_Payload_Type :: enum u8 {
 SPELL_DEFS := [Spell_ID]Spell_Def{
 	.None = {},
 
-	// Ricochets down lanes and around cover; the pop is what does the work.
+	// Ricochets down lanes and around cover. A bounce leans toward a nearby
+	// visible enemy without replacing the bank; the pop is what does the work.
 	.Arcane_Missile = {
 		id               = .Arcane_Missile,
 		name             = "Arcane Missile",
@@ -111,7 +112,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cast_time       = 1.2,
 		payload         = .Projectile,
 		target_filter   = .Enemy,
-		proj_speed      = 10,
+		proj_speed      = 13,
 		proj_lifetime   = 4.0,
 		proj_radius     = 0.45,
 		proj_gravity    = 0.6,
@@ -205,7 +206,7 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		cooldown_sec      = 2.0,   // only after it runs the caster dry
 		payload           = .Beam,
 		target_filter     = .Enemy,
-		range             = 26,
+		range             = 20.8,
 		beam_dps          = 55,
 		beam_mana_per_sec = 24,
 		beam_chain_range  = 6,

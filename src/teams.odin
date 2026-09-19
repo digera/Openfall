@@ -9,6 +9,7 @@ Team_ID :: enum u8 {
 	Alpha = 1, // Ember   (red)
 	Beta  = 2, // Tide    (blue)
 	Gamma = 3, // Verdant (green)
+	Spectator = 4, // Spectator (no team)
 }
 
 TEAMS :: [TEAM_COUNT]Team_ID{.Alpha, .Beta, .Gamma}
@@ -22,6 +23,7 @@ team_name :: proc(team: Team_ID) -> string {
 	case .Alpha: return "EMBER"
 	case .Beta:  return "TIDE"
 	case .Gamma: return "VERDANT"
+	case .Spectator: return "SPECTATOR"
 	case .None:  return "NONE"
 	}
 	return "NONE"
@@ -32,18 +34,21 @@ team_color :: proc(team: Team_ID) -> vec3 {
 	case .Alpha: return TEAM_ALPHA_COLOR
 	case .Beta:  return TEAM_BETA_COLOR
 	case .Gamma: return TEAM_GAMMA_COLOR
+	case .Spectator: return {0.5, 0.5, 0.5}
 	case .None:  return {0.6, 0.6, 0.6}
 	}
 	return {0.6, 0.6, 0.6}
 }
 
-// 0..2 for real teams, -1 for None
+// 0..2 for playing teams, -1 for None / Spectator.
+// Spectator is not a [TEAM_COUNT] slot; never use this as an array index
+// without checking idx >= 0.
 team_index :: proc(team: Team_ID) -> int {
 	switch team {
 	case .Alpha: return 0
 	case .Beta:  return 1
 	case .Gamma: return 2
-	case .None:  return -1
+	case .Spectator, .None: return -1
 	}
 	return -1
 }
@@ -58,9 +63,13 @@ team_from_index :: proc(idx: int) -> Team_ID {
 }
 
 // No friendly fire; teamless entities are hostile to all.
+// Spectators are not hostile to anyone and no one is hostile to spectators.
 teams_are_enemies :: proc(a, b: Team_ID) -> bool {
 	if a == .None || b == .None {
 		return true
+	}
+	if a == .Spectator || b == .Spectator {
+		return false
 	}
 	return a != b
 }

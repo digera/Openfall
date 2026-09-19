@@ -18,14 +18,14 @@ World_Box :: struct {
 
 WORLD_FLOOR_Z         :: f32(0)
 WORLD_CEIL_Z          :: f32(14)      // top face of walkable volume = sky (wall height)
-WORLD_PLAZA_HALF      :: f32(16)      // center plaza
-WORLD_LANE_R0         :: f32(14)      // lane starts (overlaps plaza)
+WORLD_PLAZA_HALF      :: f32(32)      // center plaza (doubled from 16)
+WORLD_LANE_R0         :: f32(28)      // lane starts (overlaps plaza, doubled from 14)
 WORLD_LANE_R1         :: f32(100)     // lane ends (overlaps base)
 WORLD_LANE_HALF_W     :: f32(4.5)
 WORLD_BASE_R          :: f32(110)
 WORLD_BASE_HALF       :: f32(11)
 WORLD_SPAWN_R         :: f32(114)
-WORLD_LANE_OBELISK_R  :: f32(24)      // near-lane Obelisk
+WORLD_LANE_OBELISK_R  :: f32(40)      // near-lane Obelisk (pushed from 24 to 40)
 WORLD_LANE_OBELISK_FAR_R :: f32(70)   // far-lane Obelisk
 WORLD_EXTENT          :: f32(125)     // rough outer radius (fog / culling)
 
@@ -84,7 +84,7 @@ world_map_init :: proc "contextless" () {
 	// Plaza pillars, sitting between lanes.
 	for team in TEAMS {
 		a := team_angle(team) + f32(math.PI) / 3.0
-		p := vec3{math.cos(a), math.sin(a), 0} * 9.0
+		p := vec3{math.cos(a), math.sin(a), 0} * 18.0
 		world_solid_boxes[s] = {center = p + vec3{0, 0, 2.6}, half = {1.1, 1.1, 2.6}, yaw = a}; s += 1
 	}
 	// Lane cover: four staggered crates per lane on the extended lanes.
@@ -280,7 +280,7 @@ world_ray_hit :: proc(origin, dir: vec3, max_dist: f32, step: f32 = 0.25) -> f32
 
 // Spawn point inside a team base. Slots fan out laterally then backwards.
 team_spawn_position :: proc(team: Team_ID, slot: int) -> vec3 {
-	if team == .None {
+	if team == .None || team == .Spectator {
 		return {0, 0, WORLD_FLOOR_Z}
 	}
 	d := team_dir(team)

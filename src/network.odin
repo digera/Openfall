@@ -4,20 +4,32 @@ import "core:net"
 import "core:fmt"
 import "core:math"
 import "core:mem"
+import "core:os"
+import "core:strconv"
 
-// Nexus Arena UDP protocol (v8).
+// Nexus Arena UDP protocol (v9).
 //
 // Client → Server
 //   Hello            probe; server answers with Lobby
-//   Join{team}       request a team; server answers Welcome or Lobby(reject)
+//   Join{team,name}  request a team under a name; server answers Welcome or Lobby(reject)
 //   Input            newest tick + up to 3 redundant inputs (loss tolerant)
 // Server → Client
 //   Lobby            team populations + join verdict
 //   Welcome          entity id + team
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
 //   GameState        match / obelisk state, 10Hz
+//   Roster           who is playing and how they are doing, 2Hz, everyone
+//
+// The snapshot is interest-managed: it carries the nearest handful of bodies
+// because that is all you can see. Names and the scoreline are the opposite
+// shape -- you need them for players you cannot see, and they barely change --
+// so they ride their own slow packet instead of inflating every body in every
+// snapshot and squeezing out the bodies themselves.
+//
+// Combat events do belong in the snapshot: they are per-client, they are
+// wanted the instant they happen, and they are gone a second later.
 
-PROTOCOL_VERSION :: u8(8)  // bumped for the cast orb carried by every entity
+PROTOCOL_VERSION :: u8(9)  // bumped for the roster packet and combat events
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -29,14 +41,21 @@ Packet_Type :: enum u8 {
 	Client_Join      = 5,
 	Client_Input     = 6,
 	Server_Lobby     = 7,
+	Server_Roster    = 8,
 }
 
 INPUT_REDUNDANCY :: 3
 
-MAX_SNAPSHOT_ENTITIES    :: 22
-MAX_SNAPSHOT_PROJECTILES :: 12
-MAX_SNAPSHOT_STRIKES     :: 4
-MAX_SNAPSHOT_BEAMS       :: 4
+MAX_SNAPSHOT_ENTITIES      :: 21  // one body traded for the combat event block
+MAX_SNAPSHOT_PROJECTILES   :: 12
+MAX_SNAPSHOT_STRIKES       :: 4
+MAX_SNAPSHOT_BEAMS         :: 4
+MAX_SNAPSHOT_COMBAT_EVENTS :: 8
+
+// Everyone who can be in a match at once. Checked against MAX_CLIENTS +
+// MAX_BOTS where those are in scope; the client build has neither, so the
+// roster has to name its own bound.
+MAX_ROSTER_ENTRIES :: 40
 
 // ---------------------------------------------------------------------------
 // Packet structs (host representation)
@@ -49,6 +68,7 @@ Client_Input_Packet :: struct {
 
 Client_Join_Packet :: struct {
 	team: Team_ID,
+	name: Player_Name,  // what they would like to be called; the server decides
 }
 
 Lobby_Reject :: enum u8 {
@@ -126,6 +146,19 @@ Snapshot_Beam :: struct {
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
 }
 
+// One line of the receiving client's combat log. Sent only to the entity it
+// concerns, and replayed for as long as the server holds it, so a lost packet
+// costs nothing: `seq` names the line, and a line the client already has is
+// updated in place rather than repeated. That is also how a beam reads as a
+// single tally counting up instead of sixty lines a second.
+Snapshot_Combat_Event :: struct {
+	seq:        u8,
+	event_type: Combat_Event_Type,
+	other_id:   Entity_ID,  // the victim for dealt/kill, the attacker for taken/death
+	spell_id:   Spell_ID,
+	damage:     u16,        // running total for this line, whole HP
+}
+
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
@@ -137,6 +170,23 @@ Server_Snapshot_Packet :: struct {
 	strikes:          [MAX_SNAPSHOT_STRIKES]Snapshot_Strike,
 	beam_count:       u8,
 	beams:            [MAX_SNAPSHOT_BEAMS]Snapshot_Beam,
+	combat_event_count: u8,
+	combat_events:      [MAX_SNAPSHOT_COMBAT_EVENTS]Snapshot_Combat_Event,
+}
+
+// Everyone in the match, whether or not they are in view. The same packet
+// backs the name over a target's head and the scoreboard behind Tab.
+Roster_Entry :: struct {
+	id:     Entity_ID,
+	team:   Team_ID,
+	is_bot: bool,
+	name:   Player_Name,
+	stats:  Combat_Stats,
+}
+
+Server_Roster_Packet :: struct {
+	count:   u8,
+	entries: [MAX_ROSTER_ENTRIES]Roster_Entry,
 }
 
 Snapshot_Obelisk :: struct {
@@ -178,6 +228,13 @@ bw_u8 :: proc(w: ^Byte_Writer, v: u8) {
 bw_i8 :: proc(w: ^Byte_Writer, v: i8) { bw_u8(w, transmute(u8)v) }
 
 bw_i16 :: proc(w: ^Byte_Writer, v: i16) {
+	if w.pos + 2 > len(w.buf) { w.ok = false; return }
+	vv := v
+	mem.copy(&w.buf[w.pos], &vv, 2)
+	w.pos += 2
+}
+
+bw_u16 :: proc(w: ^Byte_Writer, v: u16) {
 	if w.pos + 2 > len(w.buf) { w.ok = false; return }
 	vv := v
 	mem.copy(&w.buf[w.pos], &vv, 2)
@@ -229,6 +286,14 @@ br_i16 :: proc(r: ^Byte_Reader) -> i16 {
 	return v
 }
 
+br_u16 :: proc(r: ^Byte_Reader) -> u16 {
+	if r.pos + 2 > len(r.buf) { r.ok = false; return 0 }
+	v: u16
+	mem.copy(&v, &r.buf[r.pos], 2)
+	r.pos += 2
+	return v
+}
+
 br_u32 :: proc(r: ^Byte_Reader) -> u32 {
 	if r.pos + 4 > len(r.buf) { r.ok = false; return 0 }
 	v: u32
@@ -248,6 +313,34 @@ br_f32 :: proc(r: ^Byte_Reader) -> f32 {
 br_vec3 :: proc(r: ^Byte_Reader) -> vec3 {
 	x := br_f32(r); y := br_f32(r); z := br_f32(r)
 	return {x, y, z}
+}
+
+// Names go length-prefixed and are re-sanitized on the way in, because the
+// bytes of a name reach a HUD on every machine in the match and the only thing
+// standing between a hostile client and that HUD is this procedure.
+bw_name :: proc(w: ^Byte_Writer, n: Player_Name) {
+	count := min(int(n.len), MAX_PLAYER_NAME_LEN)
+	bw_u8(w, u8(count))
+	for i in 0..<count {
+		bw_u8(w, n.text[i])
+	}
+}
+
+br_name :: proc(r: ^Byte_Reader) -> Player_Name {
+	out: Player_Name
+	count := int(br_u8(r))
+	if count > MAX_PLAYER_NAME_LEN {
+		r.ok = false
+		return {}
+	}
+	for i in 0..<count {
+		c := br_u8(r)
+		if c >= 32 && c < 127 {
+			out.text[out.len] = c
+			out.len += 1
+		}
+	}
+	return out
 }
 
 // Quantization helpers (shared so client prediction sees exactly what the server sees)
@@ -304,6 +397,16 @@ spell_id_from_wire :: proc(raw: u8) -> Spell_ID {
 	return spell_valid(id) ? id : .None
 }
 
+@(private = "file")
+team_from_wire :: proc(raw: u8) -> Team_ID {
+	return raw <= u8(Team_ID.Spectator) ? Team_ID(raw) : .None
+}
+
+@(private = "file")
+combat_event_type_from_wire :: proc(raw: u8) -> Combat_Event_Type {
+	return raw <= u8(Combat_Event_Type.Death) ? Combat_Event_Type(raw) : .Damage_Dealt
+}
+
 // Round-trip an input through the wire representation. The client predicts
 // with the result so its simulation matches the server bit-for-bit.
 input_quantize :: proc(input: Input_State) -> Input_State {
@@ -313,6 +416,18 @@ input_quantize :: proc(input: Input_State) -> Input_State {
 	out.yaw = dequant_angle(quant_angle(input.yaw))
 	out.pitch = dequant_angle(quant_angle(clampf(input.pitch, -CAM_PITCH_MAX, CAM_PITCH_MAX)))
 	return out
+}
+
+// NEXUS_PORT moves both ends off SERVER_PORT, so a second server can be run
+// beside a live one without either noticing.
+server_port_from_env :: proc() -> u16 {
+	buf: [16]u8
+	if v := os.get_env_buf(buf[:], "NEXUS_PORT"); v != "" {
+		if port, ok := strconv.parse_int(v); ok && port > 0 && port < 65536 {
+			return u16(port)
+		}
+	}
+	return SERVER_PORT
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +516,7 @@ serialize_client_join :: proc(packet: ^Client_Join_Packet, buffer: []u8) -> int 
 	w := bw_init(buffer)
 	write_header(&w, .Client_Join)
 	bw_u8(&w, u8(packet.team))
+	bw_name(&w, packet.name)
 	return w.ok ? w.pos : 0
 }
 
@@ -409,7 +525,8 @@ deserialize_client_join :: proc(buffer: []u8) -> (packet: Client_Join_Packet, ok
 	if !read_header(&r, .Client_Join) {
 		return {}, false
 	}
-	packet.team = Team_ID(br_u8(&r))
+	packet.team = team_from_wire(br_u8(&r))
+	packet.name = br_name(&r)
 	return packet, r.ok
 }
 
@@ -505,18 +622,42 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 		return {}, false
 	}
 	packet.your_entity_id = Entity_ID(br_u8(&r))
-	packet.team = Team_ID(br_u8(&r))
+	packet.team = team_from_wire(br_u8(&r))
 	return packet, r.ok
 }
 
-// Per-entity wire size: id 1, pos 12, vel 12, yaw 2, pitch 2, flags 1 (ground/dead/bot), hp 1, mana 1, stamina 4, team 1, slow 1, cast 2 (spell + charge) = 40
-// Per-projectile: id 4, spell 1, owner 1, pos 12, vel 12, lifetime 1, radius 1 = 32
-// Per-strike: seq 1, owner 1, pos 6 = 8
-// Per-beam: owner 1, spell 1, end 6, flags 1 (hit + chain count), chains 2 = 11
-// Header 2 + tick 4 + ack 4 + counts 4 = 14
-// 14 + 22*40 + 12*32 + 4*8 + 4*11 = 1354 bytes worst case. This must stay
-// under MAX_PACKET_SIZE: the writer refuses an oversized packet and the
-// client would simply stop hearing from us in a crowded fight.
+// The worst case has to stay under MAX_PACKET_SIZE: the writer refuses an
+// oversized packet and the client simply stops hearing from us in exactly the
+// crowded fight where it matters most. Spelling the budget out as constants
+// rather than a comment means adding a field to a snapshot record breaks the
+// build here instead of breaking the game at sixteen players.
+SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 5   // version+type, tick, ack, five counts
+SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2
+                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast
+SNAPSHOT_PROJECTILE_BYTES :: 4 + 1 + 1 + 12 + 12 + 1 + 1
+SNAPSHOT_STRIKE_BYTES :: 1 + 1 + 6
+SNAPSHOT_BEAM_BYTES   :: 1 + 1 + 6 + 1 + BEAM_MAX_CHAINS
+SNAPSHOT_EVENT_BYTES  :: 1 + 1 + 1 + 1 + 2
+
+SNAPSHOT_WORST_BYTES ::
+	SNAPSHOT_HEADER_BYTES +
+	MAX_SNAPSHOT_ENTITIES * SNAPSHOT_ENTITY_BYTES +
+	MAX_SNAPSHOT_PROJECTILES * SNAPSHOT_PROJECTILE_BYTES +
+	MAX_SNAPSHOT_STRIKES * SNAPSHOT_STRIKE_BYTES +
+	MAX_SNAPSHOT_BEAMS * SNAPSHOT_BEAM_BYTES +
+	MAX_SNAPSHOT_COMBAT_EVENTS * SNAPSHOT_EVENT_BYTES
+
+#assert(SNAPSHOT_WORST_BYTES <= MAX_PACKET_SIZE)
+
+// id, team, bot flag, kills, deaths, damage dealt, damage taken, length-prefixed name
+ROSTER_ENTRY_BYTES :: 1 + 1 + 1 + 1 + 1 + 2 + 2 + 1 + MAX_PLAYER_NAME_LEN
+ROSTER_WORST_BYTES :: 2 + 1 + MAX_ROSTER_ENTRIES * ROSTER_ENTRY_BYTES
+
+#assert(ROSTER_WORST_BYTES <= MAX_PACKET_SIZE)
+
+// The combat events cost one body out of the nearest twenty-two. That is the
+// whole price of the feature, because names and the scoreline went into the
+// roster packet instead of in here.
 //
 // Look angles ride as the same i16 an input is quantized to rather than as
 // floats. That is lossless here -- the server's yaw and pitch come from a
@@ -588,6 +729,17 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		for j in 0..<BEAM_MAX_CHAINS {
 			bw_u8(&w, j < chains ? u8(b.chains[j]) : 0)
 		}
+	}
+
+	ccount := min(int(packet.combat_event_count), MAX_SNAPSHOT_COMBAT_EVENTS)
+	bw_u8(&w, u8(ccount))
+	for i in 0..<ccount {
+		c := &packet.combat_events[i]
+		bw_u8(&w, c.seq)
+		bw_u8(&w, u8(c.event_type))
+		bw_u8(&w, u8(c.other_id))
+		bw_u8(&w, u8(c.spell_id))
+		bw_u16(&w, c.damage)
 	}
 	return w.ok ? w.pos : 0
 }
@@ -674,6 +826,63 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.beam_count = u8(bcount)
+
+	ccount := min(int(br_u8(&r)), MAX_SNAPSHOT_COMBAT_EVENTS)
+	for i in 0..<ccount {
+		c := &packet.combat_events[i]
+		c.seq = br_u8(&r)
+		c.event_type = combat_event_type_from_wire(br_u8(&r))
+		c.other_id = entity_id_from_wire(br_u8(&r))
+		c.spell_id = spell_id_from_wire(br_u8(&r))
+		c.damage = br_u16(&r)
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.combat_event_count = u8(ccount)
+	return packet, r.ok
+}
+
+serialize_server_roster :: proc(packet: ^Server_Roster_Packet, buffer: []u8) -> int {
+	w := bw_init(buffer)
+	write_header(&w, .Server_Roster)
+	count := min(int(packet.count), MAX_ROSTER_ENTRIES)
+	bw_u8(&w, u8(count))
+	for i in 0..<count {
+		e := &packet.entries[i]
+		bw_u8(&w, u8(e.id))
+		bw_u8(&w, u8(e.team))
+		bw_u8(&w, e.is_bot ? 1 : 0)
+		bw_u8(&w, u8(min(e.stats.kills, 255)))
+		bw_u8(&w, u8(min(e.stats.deaths, 255)))
+		bw_u16(&w, u16(clampf(e.stats.damage_dealt, 0, 65535)))
+		bw_u16(&w, u16(clampf(e.stats.damage_taken, 0, 65535)))
+		bw_name(&w, e.name)
+	}
+	return w.ok ? w.pos : 0
+}
+
+deserialize_server_roster :: proc(buffer: []u8) -> (packet: Server_Roster_Packet, ok: bool) {
+	r := br_init(buffer)
+	if !read_header(&r, .Server_Roster) {
+		return {}, false
+	}
+	count := min(int(br_u8(&r)), MAX_ROSTER_ENTRIES)
+	for i in 0..<count {
+		e := &packet.entries[i]
+		e.id = entity_id_from_wire(br_u8(&r))
+		e.team = team_from_wire(br_u8(&r))
+		e.is_bot = br_u8(&r) != 0
+		e.stats.kills = u16(br_u8(&r))
+		e.stats.deaths = u16(br_u8(&r))
+		e.stats.damage_dealt = f32(br_u16(&r))
+		e.stats.damage_taken = f32(br_u16(&r))
+		e.name = br_name(&r)
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.count = u8(count)
 	return packet, r.ok
 }
 
