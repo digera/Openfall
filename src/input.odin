@@ -16,9 +16,18 @@ Input :: struct {
 	key_d:          bool,
 	key_space:      bool,
 	key_shift:      bool,
+	key_tab:        bool,      // held, for the scoreboard
 	jump:           bool,      // latched press
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
 	window_focused: bool,
+
+	// Typed text for the name field, gathered from CHAR events so the layout
+	// decides what a key means rather than us. Number keys therefore arrive
+	// both here and in slot_press; the lobby picks which one it wants.
+	text_chars:     [16]u8,
+	text_count:     int,
+	enter_press:    bool,
+	backspace_press: bool,
 }
 
 input: Input = {
@@ -34,11 +43,15 @@ input_clear_held :: proc() {
 	input.key_d = false
 	input.key_space = false
 	input.key_shift = false
+	input.key_tab = false
 	input.look_dx = 0
 	input.look_dy = 0
 	input.click_left = false
 	input.jump = false
 	input.slot_press = {}
+	input.text_count = 0
+	input.enter_press = false
+	input.backspace_press = false
 }
 
 input_event :: proc "c" (e: ^sapp.Event) {
@@ -72,6 +85,9 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .S: input.key_s = true
 		case .D: input.key_d = true
 		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = true
+		case .TAB: input.key_tab = true
+		case .ENTER, .KP_ENTER: input.enter_press = true
+		case .BACKSPACE: input.backspace_press = true
 		case .SPACE:
 			input.key_space = true
 			input.jump = true
@@ -107,7 +123,13 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .S: input.key_s = false
 		case .D: input.key_d = false
 		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = false
+		case .TAB: input.key_tab = false
 		case .SPACE: input.key_space = false
+		}
+	case .CHAR:
+		if input.text_count < len(input.text_chars) && e.char_code >= 32 && e.char_code < 127 {
+			input.text_chars[input.text_count] = u8(e.char_code)
+			input.text_count += 1
 		}
 	case .FOCUSED:
 		input.window_focused = true
@@ -141,6 +163,30 @@ input_consume_slot :: proc(slot: int) -> bool {
 	}
 	if input.slot_press[slot - 1] {
 		input.slot_press[slot - 1] = false
+		return true
+	}
+	return false
+}
+
+// Everything typed since the last call. Callers that do not want text must
+// still consume it, or a stray keystroke turns up in the name field later.
+input_consume_text :: proc() -> []u8 {
+	out := input.text_chars[:input.text_count]
+	input.text_count = 0
+	return out
+}
+
+input_consume_enter :: proc() -> bool {
+	if input.enter_press {
+		input.enter_press = false
+		return true
+	}
+	return false
+}
+
+input_consume_backspace :: proc() -> bool {
+	if input.backspace_press {
+		input.backspace_press = false
 		return true
 	}
 	return false

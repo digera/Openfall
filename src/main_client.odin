@@ -48,6 +48,12 @@ Game_Client :: struct {
 	reject_reason:  Lobby_Reject,
 	last_packet_time: f64,
 
+	// Name entry on the team-select screen. Number keys are both letters and
+	// team picks, so the field has to be explicitly finished: while
+	// `name_editing` is set, typing goes into the name and nothing joins.
+	player_name:    Player_Name,
+	name_editing:   bool,
+
 	// Local cooldown mirror (server is authoritative; this drives the HUD)
 	cooldowns:      [Spell_ID]f32,
 	cast_pulse:     f32,
@@ -72,7 +78,7 @@ client_init :: proc "c" () {
 	if env_ip := os.get_env_buf(ip_buf[:], "SERVER_IP"); env_ip != "" {
 		server_host = env_ip
 	}
-	if !network_client_init(&game_client.network, server_host, SERVER_PORT) {
+	if !network_client_init(&game_client.network, server_host, server_port_from_env()) {
 		fmt.eprintln("Failed to initialize network client")
 		return
 	}
@@ -84,6 +90,7 @@ client_init :: proc "c" () {
 
 	game_client.client_world = client_world_init()
 	game_client.phase = .Connecting
+	game_client.name_editing = true
 	game_client.selected_slot = 0
 	game_client.last_packet_time = 0
 	camera_fx_init(&game_client.fx)
@@ -119,21 +126,24 @@ client_frame :: proc "c" () {
 			gc.hello_timer = LOBBY_REFRESH
 		}
 		gc.reject_timer = max(gc.reject_timer - dt, 0)
-		for slot in 1..=TEAM_COUNT {
-			if input_consume_slot(slot) {
-				team := team_from_index(slot - 1)
-				if client_team_allowed(gc, team) {
-					gc.chosen_team = team
-					network_client_send_join(&gc.network, team)
-					gc.join_timer = JOIN_INTERVAL
-					gc.phase = .Joining
-				} else {
-					gc.reject_reason = .Team_Most_Populated
-					gc.reject_timer = 2.0
+		client_edit_name(gc)
+		if !gc.name_editing {
+			for slot in 1..=TEAM_COUNT {
+				if input_consume_slot(slot) {
+					team := team_from_index(slot - 1)
+					if client_team_allowed(gc, team) {
+						gc.chosen_team = team
+						network_client_send_join(&gc.network, team, gc.player_name)
+						gc.join_timer = JOIN_INTERVAL
+						gc.phase = .Joining
+					} else {
+						gc.reject_reason = .Team_Most_Populated
+						gc.reject_timer = 2.0
+					}
 				}
 			}
 		}
-		for slot in TEAM_COUNT + 1..=HOTBAR_SLOTS {
+		for slot in 1..=HOTBAR_SLOTS {
 			_ = input_consume_slot(slot)
 		}
 		_ = input_consume_click()
@@ -142,8 +152,16 @@ client_frame :: proc "c" () {
 		client_release_mouse()
 		gc.join_timer -= dt
 		if gc.join_timer <= 0 {
-			network_client_send_join(&gc.network, gc.chosen_team)
+			network_client_send_join(&gc.network, gc.chosen_team, gc.player_name)
 			gc.join_timer = JOIN_INTERVAL
+		}
+		// Swallow anything typed while we wait, so it does not land in the
+		// name field or a hotbar slot once we are in.
+		_ = input_consume_text()
+		_ = input_consume_enter()
+		_ = input_consume_backspace()
+		for slot in 1..=HOTBAR_SLOTS {
+			_ = input_consume_slot(slot)
 		}
 
 	case .Playing:
@@ -197,6 +215,31 @@ client_release_mouse :: proc() {
 		sapp.lock_mouse(false)
 	}
 	_, _ = input_consume_look()
+}
+
+// The name field on the team-select screen. Enter toggles it: on to type, off
+// to pick a team. Without that the digits in "Zog2" would join Tide halfway
+// through the word.
+@(private = "file")
+client_edit_name :: proc(gc: ^Game_Client) {
+	typed := input_consume_text()
+	rubout := input_consume_backspace()
+	if input_consume_enter() {
+		gc.name_editing = !gc.name_editing
+	}
+	if !gc.name_editing {
+		return
+	}
+	for c in typed {
+		if gc.player_name.len >= MAX_PLAYER_NAME_LEN {
+			break
+		}
+		gc.player_name.text[gc.player_name.len] = c
+		gc.player_name.len += 1
+	}
+	if rubout && gc.player_name.len > 0 {
+		gc.player_name.len -= 1
+	}
 }
 
 client_team_allowed :: proc(gc: ^Game_Client, team: Team_ID) -> bool {
@@ -296,6 +339,10 @@ client_poll_network :: proc(gc: ^Game_Client) {
 		case .Server_GameState:
 			gc.client_world.game_state = packet.gamestate
 			gc.client_world.have_game_state = true
+
+		case .Server_Roster:
+			roster := packet.roster
+			client_world_apply_roster(&gc.client_world, &roster)
 		}
 	}
 }

@@ -29,6 +29,7 @@ Client_Packet :: struct {
 	welcome:   Server_Welcome_Packet,
 	gamestate: Server_GameState_Packet,
 	lobby:     Server_Lobby_Packet,
+	roster:    Server_Roster_Packet,
 }
 
 network_client_resolve_host :: proc(server_host: string, server_port: u16) -> (ep: net.Endpoint, ok: bool) {
@@ -92,9 +93,9 @@ network_client_send_hello :: proc(client: ^Network_Client) -> bool {
 	return client_send_raw(client, buffer[:], serialize_client_hello(buffer[:]))
 }
 
-network_client_send_join :: proc(client: ^Network_Client, team: Team_ID) -> bool {
-	buffer: [16]u8
-	packet := Client_Join_Packet{team = team}
+network_client_send_join :: proc(client: ^Network_Client, team: Team_ID, name := Player_Name{}) -> bool {
+	buffer: [32]u8
+	packet := Client_Join_Packet{team = team, name = name}
 	return client_send_raw(client, buffer[:], serialize_client_join(&packet, buffer[:]))
 }
 
@@ -147,6 +148,11 @@ network_client_poll :: proc(client: ^Network_Client) -> (packet: Client_Packet, 
 		lb, lb_ok := deserialize_server_lobby(buffer[:n])
 		if !lb_ok { return {}, false }
 		packet.lobby = lb
+		return packet, true
+	case .Server_Roster:
+		rs, rs_ok := deserialize_server_roster(buffer[:n])
+		if !rs_ok { return {}, false }
+		packet.roster = rs
 		return packet, true
 	}
 	return {}, false

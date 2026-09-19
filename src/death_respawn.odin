@@ -17,6 +17,10 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			char.health = 0
 			char.vel = {}
 			char.respawn_timer = RESPAWN_DELAY_SEC
+			// The one death transition in the game, so the one place a kill is
+			// credited. A body that drops to zero from a beam, a splash it
+			// never saw, or three people at once is counted here exactly once.
+			combat_record_death(entity_world, Entity_ID(i))
 			if SERVER_VERBOSE {
 				fmt.printf("[Death] Entity %d died\n", i)
 			}
@@ -26,6 +30,7 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			char.respawn_timer -= dt
 			if char.respawn_timer <= 0 {
 				entity_respawn(&char, entity_world.teams[i], i)
+				entity_clear_attacker(entity_world, Entity_ID(i))
 			}
 		}
 
@@ -50,6 +55,15 @@ entity_respawn :: proc(char: ^Character_State, team: Team_ID, slot: int) {
 	}
 }
 
+// A fresh body owes nobody a kill.
+entity_clear_attacker :: proc(entity_world: ^Entity_World, id: Entity_ID) {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return
+	}
+	entity_world.last_attacker[id] = INVALID_ENTITY
+	entity_world.last_attack_spell[id] = .None
+}
+
 // Respawn every active entity (round reset).
 entity_respawn_all :: proc(entity_world: ^Entity_World) {
 	for i in 1..<MAX_ENTITIES {
@@ -58,6 +72,7 @@ entity_respawn_all :: proc(entity_world: ^Entity_World) {
 		}
 		char := entity_world.characters[i]
 		entity_respawn(&char, entity_world.teams[i], i)
+		entity_clear_attacker(entity_world, Entity_ID(i))
 		entity_world.characters[i] = char
 		entity_world.spell_states[i] = {}
 		// Keep the yaw in the input so the next tick doesn't snap it back.

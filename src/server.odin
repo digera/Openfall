@@ -146,6 +146,7 @@ server_tick :: proc(server: ^Server) {
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
 	beams_tick(&server.world, SIMULATION_DT, server.match.state != .Ended)
 	server_age_strikes(server, SIMULATION_DT)
+	combat_log_tick(&server.world.combat_log, SIMULATION_DT)
 
 	obelisk_tick(&server.obelisks, &server.world, SIMULATION_DT)
 	if match_tick(&server.match, &server.obelisks, SIMULATION_DT) {
@@ -164,6 +165,9 @@ server_tick :: proc(server: ^Server) {
 	if server.tick_id % 6 == 0 {
 		server_send_gamestate(server)
 	}
+	if server.tick_id % 30 == 0 {
+		server_send_roster(server)
+	}
 
 	server.tick_id += 1
 	server.total_ticks += 1
@@ -177,6 +181,7 @@ server_round_reset :: proc(server: ^Server) {
 	obelisk_world_reset(&server.obelisks)
 	projectile_clear_all(&server.projectiles)
 	server.strikes = {}
+	combat_reset_stats(&server.world)
 	entity_respawn_all(&server.world)
 	for i in 0..<MAX_BOTS {
 		if server.bots[i].active {
@@ -262,10 +267,12 @@ server_process_packets :: proc(server: ^Server) {
 				server_send_lobby(server, from, reject)
 				continue
 			}
-			new_slot := server_register_client(server, from, join.team)
+			new_slot := server_register_client(server, from, join.team, join.name)
 			if new_slot >= 0 {
 				server_send_welcome(server, new_slot)
 				server_send_gamestate_to(server, new_slot)
+				// Don't make them wait half a second to learn who is here.
+				server_send_roster_to(server, new_slot)
 			} else {
 				server_send_lobby(server, from, .Server_Full)
 			}
@@ -509,7 +516,23 @@ server_validate_join :: proc(server: ^Server, team: Team_ID) -> Lobby_Reject {
 	return .None
 }
 
-server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_ID) -> int {
+// The name a client asked for, or one we make up. `br_name` has already
+// stripped anything unprintable, so what is left to decide is whether there is
+// a name at all: a player who typed only spaces gets Player-NN like everyone
+// who typed nothing.
+@(private = "file")
+server_resolve_name :: proc(requested: Player_Name, id: Entity_ID) -> Player_Name {
+	out := requested
+	for out.len > 0 && out.text[out.len - 1] == ' ' {
+		out.len -= 1
+	}
+	if out.len == 0 {
+		player_name_set(&out, fmt.tprintf("Player-%02d", id))
+	}
+	return out
+}
+
+server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_ID, requested_name: Player_Name) -> int {
 	if server.client_count >= MAX_CLIENTS {
 		return -1
 	}
@@ -530,6 +553,8 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 		}
 	}
 
+	server.world.names[player_id] = server_resolve_name(requested_name, player_id)
+
 	idx := server.client_count
 	server.clients[idx] = Client_Slot{
 		addr        = addr,
@@ -543,8 +568,9 @@ server_register_client :: proc(server: ^Server, addr: net.Endpoint, team: Team_I
 		fmt.printf("[Server] Client %v joined as spectator (%d clients)\n",
 			addr, server.client_count)
 	} else {
-		fmt.printf("[Server] Client %v joined %s as entity %d (%d clients)\n",
-			addr, team_name(team), player_id, server.client_count)
+		fmt.printf("[Server] Client %v joined %s as '%s' (entity %d, %d clients)\n",
+			addr, team_name(team), player_name_display(&server.world.names[player_id], player_id, false),
+			player_id, server.client_count)
 	}
 
 	bots_rebalance(server)
@@ -764,10 +790,76 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 		snapshot.beam_count = u8(btake)
 
+		// This client's own combat log and nobody else's.
+		snapshot.combat_event_count = u8(combat_log_gather(&server.world.combat_log, self_id, &snapshot.combat_events))
+
 		size := serialize_server_snapshot(&snapshot, buffer[:])
 		if size > 0 {
 			network_send(&server.network, buffer[:], size, client.addr)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Roster (everyone in the match, 2Hz)
+//
+// Unlike a snapshot this is not interest-managed. A scoreboard that only knew
+// about the players you happened to be standing near would be worse than no
+// scoreboard, and the name over a target has to survive them stepping out of
+// your nearest-21 for a moment.
+
+#assert(MAX_CLIENTS + MAX_BOTS <= MAX_ROSTER_ENTRIES)
+
+server_build_roster :: proc(server: ^Server) -> Server_Roster_Packet {
+	bot_ids: [MAX_ENTITIES]bool
+	for i in 0..<MAX_BOTS {
+		b := &server.bots[i]
+		if b.active && b.id < MAX_ENTITIES {
+			bot_ids[b.id] = true
+		}
+	}
+
+	packet: Server_Roster_Packet
+	count := 0
+	for i in 1..<MAX_ENTITIES {
+		if !server.world.characters[i].active || count >= MAX_ROSTER_ENTRIES {
+			continue
+		}
+		id := Entity_ID(i)
+		packet.entries[count] = Roster_Entry{
+			id     = id,
+			team   = server.world.teams[i],
+			is_bot = bot_ids[i],
+			name   = server.world.names[i],
+			stats  = server.world.stats[i],
+		}
+		count += 1
+	}
+	packet.count = u8(count)
+	return packet
+}
+
+server_send_roster :: proc(server: ^Server) {
+	if server.client_count == 0 {
+		return
+	}
+	roster := server_build_roster(server)
+	buffer: [MAX_PACKET_SIZE]u8
+	size := serialize_server_roster(&roster, buffer[:])
+	if size <= 0 {
+		return
+	}
+	for i in 0..<server.client_count {
+		network_send(&server.network, buffer[:], size, server.clients[i].addr)
+	}
+}
+
+server_send_roster_to :: proc(server: ^Server, slot: int) {
+	roster := server_build_roster(server)
+	buffer: [MAX_PACKET_SIZE]u8
+	size := serialize_server_roster(&roster, buffer[:])
+	if size > 0 {
+		network_send(&server.network, buffer[:], size, server.clients[slot].addr)
 	}
 }
 
@@ -997,17 +1089,16 @@ server_heal_ally_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, de
 // the splash, and the bolt is queued for every client's snapshots.
 @(private = "file")
 server_strike :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, charge: f32) {
-	target := server.world.characters[target_id]
 	damage := def.damage * charge
-	target.health -= damage
-	server.world.characters[target_id] = target
+	combat_apply_damage(&server.world, caster_id, target_id, def.id, damage)
+	target := server.world.characters[target_id]
 	if SERVER_VERBOSE {
 		server_log("[Combat] %s from %d hit %d for %.0f (%.0f HP left)",
 			def.short_name, caster_id, target_id, damage, target.health)
 	}
 
 	at := strike_center(target.pos)
-	splash_damage(&server.world, at, caster_id, server.world.teams[caster_id], target_id,
+	splash_damage(&server.world, at, caster_id, server.world.teams[caster_id], target_id, def.id,
 		damage * def.aoe_damage_frac, def.aoe_radius, def.knockback)
 
 	// Record it where the bolt meets the ground: the target's feet.
@@ -1146,7 +1237,7 @@ server_shutdown :: proc(server: ^Server) {
 }
 
 main_server :: proc() {
-	server, ok := server_init(SERVER_PORT)
+	server, ok := server_init(server_port_from_env())
 	if !ok {
 		fmt.eprintln("Failed to initialize server")
 		return
