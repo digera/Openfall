@@ -34,7 +34,7 @@ import "core:strconv"
 // carries up to two pylons that changed this tick so cover you are standing
 // in does not wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(12)  // coarse pylon occupancy, no bite stream
+PROTOCOL_VERSION :: u8(13)  // beam chains can target minions
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -155,6 +155,8 @@ Snapshot_Beam :: struct {
 	hit:         bool,      // the far end is a body, not the world
 	chain_count: u8,
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
+	// Minion IDs for chains. 0 means chains[i] is a player, > 0 means minion.
+	chain_minion_ids: [BEAM_MAX_CHAINS]Minion_ID,
 }
 
 // One line of the receiving client's combat log. Sent only to the entity it
@@ -732,7 +734,7 @@ SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2
 // centimetre of quantization there shows up as jitter under the player's feet.
 SNAPSHOT_PROJECTILE_BYTES :: 2 + 1 + 1 + 6 + 6 + 1 + 1
 SNAPSHOT_STRIKE_BYTES :: 1 + 1 + 6
-SNAPSHOT_BEAM_BYTES   :: 1 + 1 + 6 + 1 + BEAM_MAX_CHAINS
+SNAPSHOT_BEAM_BYTES   :: 1 + 1 + 6 + 1 + BEAM_MAX_CHAINS + BEAM_MAX_CHAINS * 2
 SNAPSHOT_EVENT_BYTES  :: 1 + 1 + 1 + 1 + 2
 // pylon id + column heights
 SNAPSHOT_OCC_BYTES    :: 1 + PYLON_OCC_BYTES
@@ -856,6 +858,9 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, flags)
 		for j in 0..<BEAM_MAX_CHAINS {
 			bw_u8(&w, j < chains ? u8(b.chains[j]) : 0)
+		}
+		for j in 0..<BEAM_MAX_CHAINS {
+			bw_u16(&w, b.chain_minion_ids[j])
 		}
 	}
 
@@ -992,6 +997,9 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		b.chain_count = min(flags >> 1, BEAM_MAX_CHAINS)
 		for j in 0..<BEAM_MAX_CHAINS {
 			b.chains[j] = entity_id_from_wire(br_u8(&r))
+		}
+		for j in 0..<BEAM_MAX_CHAINS {
+			b.chain_minion_ids[j] = Minion_ID(br_u16(&r))
 		}
 		if !r.ok {
 			return {}, false

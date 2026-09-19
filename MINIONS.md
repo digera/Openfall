@@ -6,6 +6,12 @@ Ore is banked the instant a player walks over it. There is no personal carry, no
 
 Pinned in [src/minions.odin](src/minions.odin). Minions are a sidecar pool, not `Character_State`s.
 
+## Spell interaction
+
+Minions deliberately do not count as entities, so **targeted spells** (Call Lightning, Friendly Heal) pass them by — exactly the way they pass pylons. Only **positional** damage finds them: projectiles, splash, and beams.
+
+**Thunderbolt** (and any future chain beam) can both hit and chain to minions. The primary ray damages the nearest hostile in front of the caster — player or minion — and the chain arcs jump to the nearest hostile within range, searching both. A wave between you and your target is genuine cover. Friendly minions never take damage.
+
 ## Four wallets
 
 | Ore | Whose rock | What a wave spends it on |

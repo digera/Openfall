@@ -765,15 +765,28 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			}
 			fs_params.beams[i] = {from.x, from.y, from.z, spell_type_code(def.id)}
 			fs_params.beam_ends[i] = {to.x, to.y, to.z, on_body ? 1 : 0}
-			// Chains arc to bodies, so they follow the interpolated remotes
-			// rather than a position that was true a snapshot ago.
+			// Chains arc to bodies (players or minions), so they follow the
+			// interpolated remotes or current minion snapshot positions.
 			for c in 0..<min(int(b.chain_count), BEAM_MAX_CHAINS) {
-				target := &world.remote_entities[int(b.chains[c])]
-				if !target.active {
-					continue
+				minion_id := b.chain_minion_ids[c]
+				if minion_id > 0 {
+					// Minion target: find by ID in client minion snapshot
+					for mi in 0..<world.minion_count {
+						if world.minions[mi].id == minion_id && world.minions[mi].present {
+							m := &world.minions[mi]
+							p := m.pos + vec3{0, 0, MINION_HEIGHT_M * 0.5}
+							fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
+							break
+						}
+					}
+				} else {
+					// Player target
+					target := &world.remote_entities[int(b.chains[c])]
+					if target.active {
+						p := target.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+						fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
+					}
 				}
-				p := target.display_state.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
-				fs_params.beam_chains[i * BEAM_MAX_CHAINS + c] = {p.x, p.y, p.z, 1}
 			}
 		}
 	}

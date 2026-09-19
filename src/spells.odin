@@ -342,6 +342,9 @@ Beam_State :: struct {
 	hit:         Entity_ID,               // the body, if it was one
 	chain_count: int,
 	chains:      [BEAM_MAX_CHAINS]Entity_ID,
+	// Minion IDs for chain targets. 0 means the chain[i] is a player,
+	// > 0 means it's a minion with that ID.
+	chain_minion_ids: [BEAM_MAX_CHAINS]Minion_ID,
 }
 
 // Is the entity's held spell a beam that is actually firing?
