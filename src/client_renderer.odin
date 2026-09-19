@@ -1115,11 +1115,13 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.puts("SLOWED")
 	}
 
-	// Carry state
+	// --- Carry (bottom right) --------------------------------------------------
 	if local.carrying_ore != .None && local.carrying_ore_amount > 0 {
-		sdtx.pos(0, hud_y + 4)
+		carry_text := fmt.tprintf("%s %.0f", ore_name(local.carrying_ore), local.carrying_ore_amount)
+		carry_len := f32(len(carry_text))
+		sdtx.pos(cols - carry_len - 2, rows - 2)
 		sdtx_color(ore_color(local.carrying_ore))
-		sdtx.printf("CARRY: %s %.0f", ore_name(local.carrying_ore), local.carrying_ore_amount)
+		sdtx.puts(carry_text)
 	}
 
 	// --- Hotbar (bottom center) ------------------------------------------------
