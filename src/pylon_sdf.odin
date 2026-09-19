@@ -9,6 +9,14 @@ import "core:math"
 // On the server this field is used once, to stamp each column's max height.
 // Hits and collision use the coarse occupancy grid. The GPU keeps a twin of
 // the hull and grain for shading; the marched surface is occupancy plus grain.
+//
+// VISUAL CONTRACT: This SDF is for rendering only. The occupancy grid in
+// ore_grid.odin is authoritative for collision and damage. Grain displacement
+// can deviate ±PYLON_GRAIN_AMP from the hull, making the visual ~0.4m larger
+// than strict occupancy, but PYLON_COLLIDE_SLACK pads the collision boundary
+// so players cannot walk through what they see. Cut faces (pylon_on_cut) detect
+// where the hull SDF no longer matches the marched occupancy, making damage
+// visually readable.
 
 PYLON_GRAIN_AMP  :: f32(0.16)  // surface displacement, as a fraction of base radius
 PYLON_GRAIN_FREQ :: f32(2.10)

@@ -129,22 +129,86 @@ body_blocks_beam :: proc(world: ^Entity_World, caster: Entity_ID, origin, dir: v
 // because the projectile system is shared with the client and has no server
 // handle to thread through -- the same reason `world_point_free` finds the map
 // boxes that way.
+//
+// Authority: the occupancy grid is the collision surface. A projectile stops
+// when world_point_free returns false, which queries pylon_blocks_point on the
+// grid plus PYLON_COLLIDE_SLACK. The blast point might be a sub-step away from
+// the surface, so we raycast from the blast center toward nearby pylons to find
+// the actual hit location.
 mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 	if g_pylons == nil {
 		return
 	}
 	// The blast has to find the rock it hit. A projectile stops a little short
-	// of the surface, so probe with a generous pad.
-	id, ok := pylon_at_point(g_pylons, at, max(radius, 0.5))
-	if !ok {
+	// of the surface, so we can't just probe at `at` -- it might be outside the
+	// padded collision boundary. Instead, raycast from `at` toward the nearest
+	// pylon center and use whichever is closer: the raycast hit or the blast center.
+	best_id := Pylon_ID(0)
+	best_hit := at
+	best_dist := f32(1e9)
+	found := false
+
+	for i in 0 ..< g_pylons.count {
+		p := &g_pylons.pylons[i]
+		g := g_pylons.grids[i]
+		if g == nil || g.solid == 0 {
+			continue
+		}
+		// Reject pylons too far away to be relevant.
+		pylon_top := p.base + vec3{0, 0, p.bound_z1}
+		d := at - pylon_top
+		rough_dist := len_vec3(d)
+		if rough_dist > p.bound_r + radius + 2.0 {
+			continue
+		}
+		// Raycast toward the pylon center to find the surface.
+		center := p.base + vec3{0, 0, p.shape.height * 0.5}
+		dir := center - at
+		ray_len := len_vec3(dir)
+		if ray_len < 0.01 {
+			// Blast origin is inside or very close to the pylon center.
+			if pylon_cylinder_reject(p, at, radius) {
+				continue
+			}
+			local := pylon_to_local(p, at)
+			if ore_grid_blocks_point(g, local, radius) {
+				best_id = Pylon_ID(i)
+				best_hit = at
+				best_dist = 0
+				found = true
+				break
+			}
+			continue
+		}
+		dir = dir / ray_len
+		// Probe a bit past the blast point, in case we're just barely outside.
+		max_t := ray_len + radius + 1.0
+		local_ro := pylon_to_local(p, at)
+		local_rd := pylon_dir_to_local(p, dir)
+		t, _, _, _, _, ok := ore_grid_raycast(g, local_ro, local_rd, max_t)
+		if !ok {
+			continue
+		}
+		hit := at + dir * t
+		if t < best_dist {
+			best_dist = t
+			best_id = Pylon_ID(i)
+			best_hit = hit
+			found = true
+		}
+	}
+
+	if !found {
+		// No pylon within reach. The projectile might have hit a wall or floor.
 		return
 	}
+
 	r := max(MINE_BITE_MIN_R, radius * BLAST_RADIUS_MULT)
-	ore, mined := pylon_mine(g_pylons, id, at, r, BLAST_AMOUNT, owner, team)
+	ore, mined := pylon_mine(g_pylons, best_id, best_hit, r, BLAST_AMOUNT, owner, team)
 	if !mined {
 		return
 	}
-	pylon_credit_ore(g_pylons, id, ore)
+	pylon_credit_ore(g_pylons, best_id, ore)
 }
 
 // ---------------------------------------------------------------------------
