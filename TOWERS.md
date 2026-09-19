@@ -2,25 +2,27 @@
 
 Replaces the occupancy-grid / voxel-column pylon authority with a spiral shield-node tower system for server-authoritative gameplay logic and scoring.
 
-## Architecture
+## Architecture (Fixed)
 
 Each tower consists of:
 
-1. **Solid Core**: A vertical cylinder whose height is derived from `live_node_count * STACK_STEP`
+1. **Thin Solid Core**: A vertical cylinder (radius = 0.6m) whose height is derived from `live_node_count * STACK_STEP`
+   - Thin stack column / last stand, not a fat pillar
    - Collision surface for world_point_free
    - Not independently synced—height is computed from node count
 
 2. **Shield Nodes (AoS)**: An array of nodes wrapping in a deterministic spiral around the core
    - Each node has: `Node_ID`, `hp`, `max_hp`, `alive`, `ore`, `team`
    - Fixed capacity per tower (24-32 nodes depending on tower type)
-   - Nodes are the authoritative exo-shield
+   - Nodes are the authoritative exo-shield (destructible surface)
 
-3. **Spiral Positioning**: Node visual position is **derived** from sort rank
+3. **Spiral Positioning (Authoritative Sort)**: Node visual position is **derived** from sort rank
+   - `sorted_indices[rank]` array maps rank → node array index
    - Uses golden angle (2.39996 radians) for spiral distribution
-   - Radial position: `SPIRAL_BASE_RADIUS + z * SPIRAL_RADIUS_GROWTH`
+   - Radial position: `SPIRAL_BASE_RADIUS (2.8m) + z * SPIRAL_RADIUS_GROWTH`
    - Never stored as part of node identity
 
-## Damage and Sorting
+## Damage and Sorting (Fixed - Now Authoritative)
 
 ### Hit-Test Contract
 
@@ -28,18 +30,21 @@ Each tower consists of:
 - Splash damage finds nodes within radius, damages by Node_ID
 - When `node.hp <= 0`: mark `alive = false`, decrement `live_count`
 
-### Re-Sort on Node Death
+### Re-Sort on Node Death (NOW WORKS)
 
 After any node dies:
-1. Filter to live nodes only
+1. Filter to live nodes only with their array indices
 2. Sort by: `hp DESC, then Node_ID ASC` (stable tie-break)
-3. Spiral slot is derived from rank in sorted list
-4. Damage never "hops" during resort—hits always address Node_ID
+3. Store sorted array indices in `sorted_indices[rank] = array_index`
+4. All node iteration uses `tower_node_at_rank(t, rank)` helper
+5. Spiral position computed from rank via `tower_node_spiral_pos(rank, core_h)`
 
 This ensures:
-- High-HP nodes appear at bottom (harder to reach)
-- Low-HP nodes spiral upward (easier targets)
+- High-HP nodes appear at bottom (rank 0, harder to reach)
+- Low-HP nodes spiral upward (higher rank, easier targets)
 - Node identity stable across resorts
+- **Damage never "hops"—hits always address Node_ID**
+- Collision, mining splash, and position all use sorted order
 
 ## Minion Rebuild
 
@@ -98,21 +103,28 @@ SNAPSHOT_WORST_BYTES =
   = 1311 bytes < 1400 (MAX_PACKET_SIZE) ✓
 ```
 
-## Collision
+## Collision (Fixed)
+
+### Core Separation
+
+- **CORE_RADIUS = 0.6m** (thin stack column, last stand when nodes gone)
+- **SPIRAL_BASE_RADIUS = 2.8m** (nodes wrap around core at this radius)
+- Beams/projectiles primarily hit **nodes** (the destructible exo-shield)
+- Core is thin vertical cylinder, not a 2.8m pillar that swallows rays
 
 ### world_point_free Integration
 
 Towers plug into `world_point_free` via `g_towers` global (same pattern as old `g_pylons`):
 
-1. Cylinder-reject on tower bounding cylinder
-2. Check core: vertical cylinder from 0 to `core_height`
-3. Check nodes: sphere test against each live node's spiral position
+1. Cylinder-reject on tower bounding cylinder (spiral base radius + growth)
+2. Check core: **thin** vertical cylinder (CORE_RADIUS) from 0 to `core_height`
+3. Check nodes: sphere test against each live node's spiral position (by sorted rank)
 
 ### Raycast
 
 `tower_raycast(world, ro, rd, max_t)` returns `(t, tower_id, node_id, hit)`:
 - Clip ray to bounding cylinder
-- March in steps, checking core + nodes
+- March in steps, checking **thin core** (0.6m) + nodes
 - Returns `node_id = 0` for core hit, `node_id > 0` for node hit
 
 ## Server Changes
@@ -201,3 +213,33 @@ Build with: `./build.sh server` (or PowerShell: `.\build.ps1 -Target server`)
 - Wire format smaller than old occupancy (33 vs 65 bytes)
 
 Collision cost: 7 towers × (1 cylinder + max 32 sphere tests) ≈ 231 checks worst case. Cylinder reject brings average case down to ~10-20 checks per `world_point_free` call that touches a tower.
+
+## Blockers Fixed (PR Quality Review)
+
+### ✅ Blocker 1 - Resort now authoritative
+- Added `sorted_indices[MAX_NODES_PER_TOWER]` to Tower struct
+- `tower_resort_nodes` stores sorted array indices, not just temp sort
+- All node iteration uses `tower_node_at_rank(t, rank)` helper
+- Mining splash, collision, and position all use sorted order
+- Spiral slot is pure function of current HP-sort rank
+
+### ✅ Blocker 2 - Core thin, not fat
+- Separated `CORE_RADIUS = 0.6m` (thin core) from `SPIRAL_BASE_RADIUS = 2.8m` (node spiral)
+- All collision/raycast updated to use CORE_RADIUS for core checks
+- Beams/projectiles now primarily hit nodes (destructible exo-shield)
+- Core is thin stack column / last stand, not 2.8m pillar that swallows rays
+
+### ✅ Blocker 3 - Client updated and playable
+- Replaced `Pylon_World` with `Tower_World` in client_prediction
+- Added `tower_unpack_nodes` for wire → client state
+- `client_world_apply_gamestate_towers` / `apply_snapshot_towers` unpack node HP
+- Updated client_renderer to use tower state (stub SDF march)
+- Fixed HUD to show `tower.intact` percentages
+- Removed pylon texture/atlas GPU state (no SDF upload this PR)
+- **Client can connect, see tower state, collision works**
+
+### ✅ Blocker 4 - Dual authority removed
+- `g_pylons` no longer used anywhere (`g_towers` is sole authority)
+- `ore_grid.odin` no longer in gameplay collision/mining paths
+- Only `tower_blocks_point` used by `world_point_free`
+- Keep `pylons.odin` for shared helpers only (ore_color, team_ore, constants)
