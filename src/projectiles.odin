@@ -196,27 +196,6 @@ projectile_missile_seek :: proc(
 	return d / l, true
 }
 
-// Find the projectile center when it first touches a surface. Convention matches
-// floor collision: returns a resting center (surface + n*radius), not a surface point.
-@(private)
-projectile_compute_contact :: proc(from, to: vec3, radius: f32, n: vec3) -> vec3 {
-	// Binary search along the ray from `from` to `to` to find the last free center.
-	// This gives us a center position just touching the surface (not penetrating).
-	free := from
-	blocked := to
-	
-	for _ in 0..<8 {
-		mid := (free + blocked) * 0.5
-		if world_point_free(mid, radius) {
-			free = mid
-		} else {
-			blocked = mid
-		}
-	}
-	
-	return free
-}
-
 projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32) {
 	for i in 0..<MAX_PROJECTILES {
 		if !world.projectiles[i].active {
@@ -243,13 +222,13 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 				break
 			}
 
-			// Walls, ceiling and cover.
+			// Walls, ceiling and cover. Bisect the last free centre so the
+			// bounce, splash and mining stamp sit on the face that was hit,
+			// not a sub-step back along the flight. The floor path below
+			// already names that resting centre directly.
 			if !world_point_free(new_pos, proj.radius) {
-				n := world_surface_normal(proj.pos, new_pos, proj.radius)
-				// Find the last free center position (resting on surface, not penetrating).
-				// Previously used proj.pos (before collision), which placed bounces/impacts
-				// at wrong positions and caused mining to miss the actual hit point.
-				contact := projectile_compute_contact(proj.pos, new_pos, proj.radius, n)
+				contact, blocked := world_last_free(proj.pos, new_pos, proj.radius)
+				n := world_surface_normal(contact, blocked, proj.radius)
 				if !projectile_surface_contact(world, entity_world, i, contact, n) {
 					break
 				}
