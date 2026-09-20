@@ -1219,7 +1219,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	if world.have_game_state && Match_State(gs.match_state) == .Waiting {
 		sdtx.color3f(0.7, 0.68, 0.62)
 		hud_center_text(cols, 6, "walk over the ore to bank it - your own rock thickens the next wave")
-		hud_center_text(cols, 7, "bring the golden tower down, then build it back: most rock in the stump wins")
+		hud_center_text(cols, 7, "bring the golden tower down, then finish it: most rock laid wins")
 	}
 
 	// Taking a tower does not open a push; it turns the owner's waves into a
@@ -1229,7 +1229,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	if world.have_game_state && Match_State(gs.match_state) == .Active {
 		if gs.centre_open {
 			sdtx.color3f(0.95, 0.88, 0.55)
-			hud_center_text(cols, 6, "the centre is open - your waves are rebuilding it, most rock laid wins")
+			hud_center_text(cols, 6, "the centre is open - finish the tower, most rock laid wins")
 		} else if world.local_team != .None && world.local_team != .Spectator {
 			own := team_index(world.local_team)
 			near := own + 1

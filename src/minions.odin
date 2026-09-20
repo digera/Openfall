@@ -115,13 +115,33 @@ MINION_BUILD_REACH  :: f32(2.6)  // how close to the rock a hop has to get
 // would never reach the centre.
 PYLON_REBUILD_FRAC :: f32(0.85)
 
-// How much of the golden pylon's silhouette has to be back before the team that
-// put most of it there has won the round.
-CENTRE_CLAIM_FRAC :: f32(0.80)
+// The golden pylon must be fully rebuilt (every original node live) before
+// the team that put most of it there has won the round. Chip damage does not
+// delay the claim: `intact` is live_count / max_count, not remaining HP.
+CENTRE_CLAIM_FRAC :: f32(1.0)
 
 // Only fodder pay out, and only in their own team's ore. This is the renewable
 // trickle the whole economy runs on: kill their wave, walk over their rock.
 MINION_ORE_DROP :: f32(10.0)
+
+// How many live nodes close the centre race. 1.0 of 24 is 24; a fractional
+// threshold rounds up so 0.80 of 24 would be 20, not 19.
+centre_claim_nodes :: proc(t: ^Tower) -> int {
+	if t == nil || t.max_count <= 0 {
+		return 0
+	}
+	needed := int(math.ceil(CENTRE_CLAIM_FRAC * f32(t.max_count)))
+	if needed < 1 {
+		needed = 1
+	} else if needed > t.max_count {
+		needed = t.max_count
+	}
+	return needed
+}
+
+centre_claim_ready :: proc(t: ^Tower) -> bool {
+	return t != nil && t.max_count > 0 && t.live_count >= centre_claim_nodes(t)
+}
 
 // ---------------------------------------------------------------------------
 
@@ -489,14 +509,14 @@ minion_splash :: proc(world: ^Minion_World, at: vec3, team: Team_ID, damage, rad
 //
 // Its own team's towers when they are visibly broken, and the centre stump once
 // the golden pylon is gone -- from then on the centre is everybody's to rebuild
-// and the first team to finish it takes the round.
+// until every node is live, and whoever has laid the most then takes the round.
 minion_rebuildable :: proc(towers: ^Tower_World, match: ^Match, id: Pylon_ID, team: Team_ID) -> bool {
 	t := tower_get(towers, id)
 	if t == nil {
 		return false
 	}
 	if t.owner == .None {
-		return match.centre_open && t.intact < CENTRE_CLAIM_FRAC
+		return match.centre_open && !centre_claim_ready(t)
 	}
 	return t.owner == team && t.intact < PYLON_REBUILD_FRAC
 }

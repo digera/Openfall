@@ -1,6 +1,6 @@
 # Minions and ore
 
-Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that rebuilds the centre after the gold pylon is gone wins.
+Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that has laid most of the centre when it is fully rebuilt wins.
 
 Ore is banked the instant a player walks over it. There is no personal carry, no death-drop, no trip home: the wallets are the team's, so whoever reaches the lump first has already decided where it goes. Essence is just the scoreboard; the wallets are what the wave actually reads.
 
@@ -61,4 +61,4 @@ Flattening a lane tower does **not** open a super-minion push. It turns that tea
 
 Essence does not end the round. The clock (12 minutes) is the backstop: highest essence, or a draw.
 
-While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when it closes (`CENTRE_CLAIM_FRAC` of the original) wins.
+While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when the tower is fully rebuilt (every original node live) wins. A tie on nodes laid is a draw. Chip damage does not delay the claim.
