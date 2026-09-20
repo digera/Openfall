@@ -1132,7 +1132,18 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 		sdtx.pos(0, row)
 		sdtx_color(ore_color(carry_dominant(local.carrying_ore)))
-		sdtx.printf("HAUL %.0f/%.0f  [G drop]", haul, CARRY_CAPACITY_MAX)
+		sdtx.printf("HAUL %.0f/%.0f  ", haul, CARRY_CAPACITY_MAX)
+		// G is ignored in your own dump — standing there already banks — so the
+		// haul line says BANKING instead of offering a drop that will not fire.
+		// The server owns the dump; this hint lives for the snapshot delay
+		// while predicted haul is still in the pack.
+		if in_dump_zone(local.pos, world.local_team) {
+			pulse := 0.7 + 0.3 * math.sin(f32(world.local_time) * 3.0)
+			sdtx.color3f(0.85 * pulse, 0.95 * pulse, 0.50 * pulse)
+			sdtx.puts("BANKING")
+		} else {
+			sdtx.puts("[G drop]")
+		}
 	}
 
 	// --- Hotbar (bottom center) ------------------------------------------------

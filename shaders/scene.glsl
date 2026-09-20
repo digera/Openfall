@@ -1847,17 +1847,22 @@ void main() {
                 emissive += otint * edge * 0.30 * standing;
             }
         }
-        // Dump aprons: a team-coloured ring at the back of each base, the
-        // same 8 m radius the server uses (WORLD_SPAWN_R + 2 = 116).
+        // Dump aprons: a team-coloured ring at the back of each base.
+        // Geometry must match DUMP_ZONE_BACK (2) and DUMP_ZONE_RADIUS (8) in
+        // src/mining.odin: centre at WORLD_SPAWN_R + 2 = 116.
+        // fx.z is local team (1 Ember, 2 Tide, 3 Verdant). Only that apron
+        // gets the bright pulse so "bank here" is your porch, not a rival's.
         for (int t = 0; t < 3; t++) {
             float ta = 1.5707963 + float(t) * 2.0943951;
             vec2 dc = vec2(cos(ta), sin(ta)) * 116.0;
             float od = length(hp.xy - dc);
+            float home = 1.0 - step(0.5, abs(fx.z - (float(t) + 1.0)));
             float disc = 1.0 - smoothstep(7.2, 8.0, od);
-            float edge = 1.0 - smoothstep(0.0, 0.22, abs(od - 8.0));
+            float edge = 1.0 - smoothstep(0.0, mix(0.22, 0.30, home), abs(od - 8.0));
+            float pulse = mix(1.0, 0.85 + 0.15 * sin(WORLD_T * 1.8 + float(t) * 2.094), home);
             vec3 dtint = team_tint(float(t) + 1.0);
-            albedo = mix(albedo, albedo * 0.55 + dtint * 0.45, disc * 0.28);
-            emissive += dtint * edge * 0.40;
+            albedo = mix(albedo, albedo * mix(0.55, 0.45, home) + dtint * mix(0.45, 0.55, home), disc * mix(0.28, 0.45, home));
+            emissive += dtint * edge * pulse * mix(0.40, 0.75, home);
         }
         spec_pow = 24.0;
         spec_amt = 0.10;
