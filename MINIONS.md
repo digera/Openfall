@@ -59,6 +59,6 @@ Flattening a lane tower does **not** open a super-minion push. It turns that tea
 
 ## Win
 
-Essence does not end the round. The clock (12 minutes) is the backstop: highest essence, or a draw.
+Essence does not end the round. There is no clock: the round ends only when the gold tower is fully rebuilt.
 
 While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when the tower is fully rebuilt (every original node live) wins. A tie on nodes laid is a draw. Chip damage does not delay the claim.

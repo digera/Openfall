@@ -25,9 +25,8 @@ Match :: struct {
 	// centre. Which ore you are holding is what decides what your next minion
 	// wave can do, so they are tracked separately rather than summed.
 	wallets:        [TEAM_COUNT][ORE_COUNT]f32,
-	// Scoreboard. The sum of everything a team has banked, spent or not. It
-	// settles a round that runs out of clock and nothing else: what ends a
-	// round early is the centre.
+	// Scoreboard. The sum of everything a team has banked, spent or not.
+	// It never ends the round; the centre does.
 	essence:        [TEAM_COUNT]f32,
 
 	// The golden pylon has been flattened and the stump is up for rebuilding.
@@ -37,16 +36,14 @@ Match :: struct {
 	centre_build:   [TEAM_COUNT]f32,
 
 	match_time:     f32,
-	match_duration: f32,
 	ended_time:     f32,     // seconds spent in Ended
 
 	round_number:   int,
 	rounds_played:  int,
 }
 
-DEFAULT_MATCH_DURATION :: f32(12 * 60)
-WARMUP_DURATION        :: f32(8.0)
-ENDED_DURATION         :: f32(12.0)
+WARMUP_DURATION :: f32(8.0)
+ENDED_DURATION  :: f32(12.0)
 
 // Zero, and off. Essence is a scoreboard: a team that mines gold all match
 // without ever touching the centre has a fine score and has not won anything.
@@ -68,10 +65,9 @@ match_configure_test_mode :: proc(win_threshold: f32, essence_multiplier: f32) {
 match_init :: proc() -> Match {
 	match_selftest()
 	return Match{
-		state          = .Waiting,
-		result         = .None,
-		match_duration = DEFAULT_MATCH_DURATION,
-		round_number   = 1,
+		state        = .Waiting,
+		result       = .None,
+		round_number = 1,
 	}
 }
 
@@ -93,25 +89,6 @@ match_tick :: proc(match: ^Match, dt: f32) -> (restarted: bool) {
 					match_end(match, .Team_Wins, team_from_index(i))
 					return false
 				}
-			}
-		}
-		// The clock is the backstop, not the game: a stalemate over a half-built
-		// centre has to end some time, and when it does the scoreboard settles it.
-		if match.match_duration > 0 && match.match_time >= match.match_duration {
-			best := 0
-			tie := false
-			for i in 1..<TEAM_COUNT {
-				if match.essence[i] > match.essence[best] {
-					best = i
-					tie = false
-				} else if match.essence[i] == match.essence[best] {
-					tie = true
-				}
-			}
-			if tie {
-				match_end(match, .Draw, .None)
-			} else {
-				match_end(match, .Team_Wins, team_from_index(best))
 			}
 		}
 
@@ -297,8 +274,7 @@ match_test_set_live :: proc(t: ^Tower, live: int) {
 @(private = "file")
 match_test_fresh :: proc() -> (m: Match, world: Tower_World) {
 	m = Match{
-		state          = .Active,
-		match_duration = DEFAULT_MATCH_DURATION,
+		state = .Active,
 	}
 	world.count = 1
 	t := &world.towers[0]
@@ -394,5 +370,15 @@ match_selftest :: proc() {
 		match_test_set_live(t, t.max_count)
 		match_centre_tick(&m, &world)
 		assert(m.state == .Active, "zero centre_build does not end the round")
+	}
+
+	// Elapsed time does not end the round, even with a stacked scoreboard.
+	{
+		m, _ := match_test_fresh()
+		m.match_time = 60 * 60
+		m.essence = {999, 500, 100}
+		_ = match_tick(&m, 1.0 / 60.0)
+		assert(m.state == .Active, "clock does not end the round")
+		assert(m.result == .None, "clock does not pick a winner")
 	}
 }

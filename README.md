@@ -2,7 +2,7 @@
 
 Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
 
-Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The centre obelisk is worth double essence. First team to 1500 essence (or the leader at 12 minutes) wins the round; rounds auto-reset. By default each team has 1 bot. Humans can join up to `TEAM_SIZE` per team (currently 6), and bots stay in the match alongside them.
+Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The round ends when the golden centre is fully rebuilt; whoever laid the most of it wins. Rounds auto-reset. By default each team has 1 bot. Humans can join up to `TEAM_SIZE` per team (currently 6), and bots stay in the match alongside them.
 
 ## Requirements (Windows)
 
