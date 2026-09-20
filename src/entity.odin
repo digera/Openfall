@@ -39,6 +39,7 @@ Input_State :: struct {
 	jump:         bool,
 	sprint:       bool,
 	aim_lock:     bool,
+	drop:         bool,  // edge: toss carried ore onto the floor this tick
 	yaw:          f32,  // absolute, wrapped to [-pi, pi]
 	pitch:        f32,  // absolute, clamped
 	// Charge-cast intent: `charge_spell` is the spell being wound up this tick

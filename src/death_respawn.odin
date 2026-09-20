@@ -30,10 +30,10 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, chunks: ^Ore_Chun
 		if char.dead {
 			// Retry while the body is down: a full chunk pool must not delete
 			// the haul. Respawn still clears whatever could not be placed.
-			entity_drop_carried_ore(&char, chunks, id)
+			entity_drop_carried_ore(&char, chunks, id, {})
 			char.respawn_timer -= dt
 			if char.respawn_timer <= 0 {
-				entity_drop_carried_ore(&char, chunks, id)
+				entity_drop_carried_ore(&char, chunks, id, {})
 				entity_respawn(&char, entity_world.teams[i], i)
 				entity_clear_attacker(entity_world, id)
 			}
@@ -43,24 +43,48 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, chunks: ^Ore_Chun
 	}
 }
 
-// Spawn one loose chunk per kind still held. Leaves the amount on the body
-// if the floor is full, so a later tick (or the last tick before respawn)
-// can try again instead of silently burning the ore.
-entity_drop_carried_ore :: proc(char: ^Character_State, chunks: ^Ore_Chunk_World, id: Entity_ID) {
+// Spawn one loose chunk per kind still held. `heading` with length is a live
+// toss along look; a zero heading scatters at the feet (death). Leaves the
+// amount on the body if the floor is full, so a later tick (or the last tick
+// before respawn) can try again instead of silently burning the ore.
+entity_drop_carried_ore :: proc(char: ^Character_State, chunks: ^Ore_Chunk_World, id: Entity_ID, heading: vec3) {
 	if chunks == nil {
 		return
 	}
+	toss := len2_vec3(heading) > 1e-6
+	right: vec3
+	kind_n := 0
+	if toss {
+		right = camera_right(char.yaw)
+		for k in 0 ..< ORE_COUNT {
+			if char.carrying_ore[k] > 0 {
+				kind_n += 1
+			}
+		}
+	}
+	kind_i := 0
 	for k in 0 ..< ORE_COUNT {
 		amt := char.carrying_ore[k]
 		if amt <= 0 {
 			continue
 		}
 		kind := ore_from_index(k)
-		if ore_chunk_spawn_loose(chunks, kind, char.pos + vec3{0, 0, 0.35}, amt) == nil {
+		at := char.pos + vec3{0, 0, 0.35}
+		ok: ^Ore_Chunk
+		if toss {
+			spread := kind_n > 1 ? f32(kind_i) - f32(kind_n - 1) * 0.5 : f32(0)
+			at += heading * 0.55 + right * spread * 0.25
+			vel := heading * 3.6 + right * spread * 0.85 + vec3{0, 0, 2.1}
+			ok = ore_chunk_spawn_tossed(chunks, kind, at, amt, vel)
+			kind_i += 1
+		} else {
+			ok = ore_chunk_spawn_loose(chunks, kind, at, amt)
+		}
+		if ok == nil {
 			continue
 		}
 		if SERVER_VERBOSE {
-			fmt.printf("[Death] Entity %d dropped %.0f %s\n", id, amt, ore_name(kind))
+			fmt.printf("[Ore] Entity %d dropped %.0f %s\n", id, amt, ore_name(kind))
 		}
 		char.carrying_ore[k] = 0
 	}

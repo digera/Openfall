@@ -243,6 +243,7 @@ client_prediction_push_input :: proc(pred: ^Client_Prediction, tick: u32, input:
 client_prediction_step :: proc(pred: ^Client_Prediction, tick: u32, input: Input_State) {
 	client_prediction_push_input(pred, tick, input)
 	pred.prev_char = pred.predicted_char
+	carry_apply_predicted_drop(&pred.predicted_char, input.drop)
 	simulate_character_step(&pred.predicted_char, input, SIMULATION_DT)
 	pred.total_predictions += 1
 }
@@ -289,6 +290,7 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 	for i in oldest ..< pred.buffer_head {
 		idx := i % PREDICTION_BUFFER_SIZE
 		if pred.tick_buffer[idx] > ack_input_tick {
+			carry_apply_predicted_drop(&pred.predicted_char, pred.input_buffer[idx].drop)
 			simulate_character_step(&pred.predicted_char, pred.input_buffer[idx], SIMULATION_DT)
 		}
 	}

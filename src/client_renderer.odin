@@ -890,7 +890,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	}
 
 	sdtx.color3f(0.42, 0.40, 0.38)
-	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
+	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  G drop haul  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
 }
 
 @(private = "file")
@@ -1132,7 +1132,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 		sdtx.pos(0, row)
 		sdtx_color(ore_color(carry_dominant(local.carrying_ore)))
-		sdtx.printf("HAUL %.0f/%.0f", haul, CARRY_CAPACITY_MAX)
+		sdtx.printf("HAUL %.0f/%.0f  [G drop]", haul, CARRY_CAPACITY_MAX)
 	}
 
 	// --- Hotbar (bottom center) ------------------------------------------------
