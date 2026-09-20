@@ -26,6 +26,9 @@ Character_State :: struct {
 
 	dead:           bool,
 	respawn_timer:  f32,
+
+	// Ore carry: per-kind amounts, sum capped at CARRY_CAPACITY_MAX
+	carrying_ore: [ORE_COUNT]f32,
 }
 
 // Input for one entity for one tick. Look angles are absolute so a dropped

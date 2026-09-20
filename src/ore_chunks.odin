@@ -147,10 +147,10 @@ ore_chunk_spawn_at_face :: proc(world: ^Ore_Chunk_World, p: ^Pylon) {
 // A lump that did not come off a tower: what a lane minion leaves where it
 // fell. It borrows its team's near-lane pylon as a source so a wave's ore is
 // shaded as the same rock their towers are made of.
-ore_chunk_spawn_loose :: proc(world: ^Ore_Chunk_World, kind: Ore_Kind, at: vec3, amount: f32) {
+ore_chunk_spawn_loose :: proc(world: ^Ore_Chunk_World, kind: Ore_Kind, at: vec3, amount: f32) -> ^Ore_Chunk {
 	c := ore_chunk_claim(world)
 	if c == nil {
-		return
+		return nil
 	}
 	c.ore = kind
 	ti := team_index(ore_team(kind))
@@ -162,6 +162,7 @@ ore_chunk_spawn_loose :: proc(world: ^Ore_Chunk_World, kind: Ore_Kind, at: vec3,
 	c.radius = 0.28
 	c.amount = amount
 	c.seed = f32((h >> 16) & 0xFFFF) / f32(0x10000) * 8
+	return c
 }
 
 // Step every chunk. Collides against the map and the pylons so ore that falls
