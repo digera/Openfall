@@ -68,11 +68,10 @@ TOWER_CROWN_START  :: f32(0.82)
 TOWER_WELD_K     :: f32(0.40)
 TOWER_GRAIN_AMP  :: f32(0.12)
 
-// HP is in "amount" units after toughness. A team bite is 0.60, gold divides
-// by 4.5, so these take a couple of seconds of beam per node rather than a
-// minute, and a focused player can still drop a lane tower in a fight.
-NODE_HP_TEAM :: f32(12.0)
-NODE_HP_GOLD :: f32(16.0)
+// Same budget as an unbolstered fodder. Mining applies combat damage (beam
+// DPS on the bite cadence, projectile damage on a blast) so a slot dies like
+// a wave body; gold still divides that incoming amount by toughness.
+NODE_HP :: MINION_FODDER_HP
 
 // Ore from a fully mined node. Paid once, when the node dies: one chunk on
 // the ground maps to one dead slot. Chips scar the face but do not shed ore.
@@ -281,7 +280,7 @@ tower_column_height :: proc(t: ^Tower, live: int) -> f32 {
 tower_build_full :: proc(t: ^Tower) {
 	t.live_count = 0
 	t.next_node_id = 1
-	hp := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	hp := NODE_HP
 	for i in 0 ..< t.max_count {
 		node := &t.nodes[i]
 		node.id = t.next_node_id
@@ -927,8 +926,7 @@ tower_mine :: proc(
 		}
 	}
 	t.last_bite_n = hit_n
-	hp_node := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
-	tower_stamp_wound(t, t.last_bite, t.node_radius * (0.22 + 0.30 * clampf(removed / max(hp_node, 0.01), 0, 1)))
+	tower_stamp_wound(t, t.last_bite, t.node_radius * (0.22 + 0.30 * clampf(removed / max(NODE_HP, 0.01), 0, 1)))
 	tower_resort_nodes(t)
 	tower_recompute(t)
 	tower_touch(world, t)
@@ -941,7 +939,7 @@ tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int) -> (gained: i
 	if t == nil || count <= 0 {
 		return 0, false
 	}
-	hp := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	hp := NODE_HP
 	for _ in 0 ..< count {
 		if t.live_count >= t.max_count {
 			break
@@ -1237,7 +1235,7 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 		had[idx] = true
 	}
 
-	hp_max := t.ore == .Gold ? NODE_HP_GOLD : NODE_HP_TEAM
+	hp_max := NODE_HP
 	changed := false
 	for i in 0 ..< t.max_count {
 		node := &t.nodes[i]

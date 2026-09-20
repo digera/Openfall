@@ -37,8 +37,10 @@ the same node, or a hole if it died.
 
 Beams and blasts raycast analytically (sphere per live node, cylinder for the
 core). Splash collects overlapping nodes first, then applies damage by array
-index, then re-sorts. Fractional HP counts: a 0.60 bite must dirty the wire
-and stamp a scar, not truncate to zero.
+index, then re-sorts. Each node has the same HP as an unbolstered fodder
+(`NODE_HP` = `MINION_FODDER_HP`). Thunderbolt bites at combat DPS on the
+mining cadence; projectiles stamp their combat damage. Fractional HP counts:
+a chip must dirty the wire and stamp a scar, not truncate to zero.
 
 **Ore payout is 1:1 with node death.** One node killed yields one ore chunk
 carrying that node's full ore (8 team / 18 gold). Chips damage HP and scar

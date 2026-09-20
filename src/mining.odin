@@ -21,11 +21,9 @@ Mining_State :: struct {
 	bite_timer: [MAX_ENTITIES]f32,
 }
 
-// A beam's bite, and how much rock a whole second of it removes. Amount is
-// scaled by toughness into node HP, so gold takes several bites to kill a node.
-BEAM_BITE_AMOUNT :: f32(0.60)
-// A detonation is one big stamp rather than a series of bites.
-BLAST_AMOUNT     :: f32(0.85)
+// A beam bite is combat DPS on the mining cadence, so a second of Thunderbolt
+// on a node is the same budget that kills a fodder. Toughness then scales that
+// into node HP, so gold still takes several bites more than a lane slot.
 BLAST_RADIUS_MULT :: f32(0.55)
 
 // Which spells can work rock at all. A beam is a cutting tool; a bolt of
@@ -97,9 +95,13 @@ mining_beams_tick :: proc(
 		if tw == nil {
 			continue
 		}
+		amount := def.beam_dps * MINE_BITE_DT
+		if amount <= 0 {
+			continue
+		}
 		at := origin + dir * t
 		radius := max(MINE_BITE_MIN_R, tw.node_radius * 1.15)
-		ore, ok := tower_mine(towers, tower_id, at, radius, BEAM_BITE_AMOUNT, id, world.teams[i])
+		ore, ok := tower_mine(towers, tower_id, at, radius, amount, id, world.teams[i])
 		if !ok {
 			continue
 		}
@@ -130,14 +132,15 @@ body_blocks_beam :: proc(world: ^Entity_World, caster: Entity_ID, origin, dir: v
 }
 
 // A detonation against a tower. Called from the projectile impact path, which
-// already knows it ran into something solid but not what.
+// already knows it ran into something solid but not what. `amount` is the
+// projectile's combat damage so an orb that pops a fodder also pops a node.
 //
 // Reads the tower world through the global rather than taking it as an argument
 // because the projectile system is shared with the client and has no server
 // handle to thread through -- the same reason `world_point_free` finds the map
 // boxes that way.
-mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
-	if g_towers == nil {
+mining_blast :: proc(at: vec3, radius: f32, amount: f32, owner: Entity_ID, team: Team_ID) {
+	if g_towers == nil || amount <= 0 {
 		return
 	}
 	pad := max(radius, 0.5) + 2.5
@@ -151,7 +154,7 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 	}
 
 	r := max(MINE_BITE_MIN_R, max(radius * BLAST_RADIUS_MULT, tw.node_radius * 0.85))
-	ore, mined := tower_mine(g_towers, id, at, r, BLAST_AMOUNT, owner, team)
+	ore, mined := tower_mine(g_towers, id, at, r, amount, owner, team)
 	if !mined {
 		return
 	}
