@@ -1,7 +1,5 @@
 package main
 
-import "core:math"
-
 // Ore vocabulary: the shared constants, types and helpers for the four
 // currencies and the seven tower placements. Gameplay authority for mining,
 // collision and scoring is the spiral shield-node system in tower_nodes.odin.

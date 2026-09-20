@@ -53,7 +53,7 @@ Ore_Chunk :: struct {
 	age:    f32,
 	rest:   bool,  // settled on the ground and ready to be taken
 
-	// Which pylon it came off, so the shader can shade it with that pylon's
+	// Which tower it came off, so the shader can shade it with that tower's
 	// vein colour rather than inventing a new material.
 	source: Pylon_ID,
 }
@@ -128,46 +128,6 @@ ore_chunk_claim :: proc(world: ^Ore_Chunk_World) -> ^Ore_Chunk {
 	return c
 }
 
-// Spawn one chunk in the pylon's local frame, thrown along `dir_local`.
-@(private = "file")
-ore_chunk_spawn :: proc(
-	world:  ^Ore_Chunk_World,
-	p:      ^Pylon,
-	local:  vec3,
-	dir_local: vec3,
-	speed:  f32,
-	radius: f32,
-	amount: f32,
-) -> ^Ore_Chunk {
-	c := ore_chunk_claim(world)
-	if c == nil {
-		return nil
-	}
-	c.ore = p.ore
-	c.source = p.id
-	c.pos = pylon_to_world(p, local)
-	c.vel = pylon_dir_to_world(p, dir_local) * speed
-	c.vel.z += speed * 0.35
-	c.amount = amount
-	c.radius = radius > 0.01 ? radius : ore_chunk_radius_for(amount)
-	// Seed off the pylon and the id so each lump is a different rock but the
-	// family resemblance to its tower survives.
-	h := hash_u32(u32(c.id) * 2246822519 + u32(p.id) * 668265263)
-	c.seed = p.shape.seed + f32(h & 0xFFFF) / f32(0x10000) * 3
-	return c
-}
-
-// One chunk popping out of the face a player is currently mining.
-ore_chunk_spawn_at_face :: proc(world: ^Ore_Chunk_World, p: ^Pylon) {
-	n := p.last_bite_n
-	if len2_vec3(n) < 1e-6 {
-		n = {1, 0, 0}
-	}
-	// Push the spawn point clear of the rock so it does not start embedded.
-	local := p.last_bite + n * 0.45
-	ore_chunk_spawn(world, p, local, n, 3.4, 0.30, CHUNK_ORE_BASE)
-}
-
 // Volume-matched radius so a merged pile reads as more rock, not a brighter
 // pebble. Cube-root of (amount / base) keeps a 100-unit haul about a torso
 // wide instead of a millstone.
@@ -189,9 +149,10 @@ ore_chunk_fill_loose :: proc(c: ^Ore_Chunk, kind: Ore_Kind, at: vec3, amount: f3
 	c.seed = f32((h >> 16) & 0xFFFF) / f32(0x10000) * 8
 }
 
-// A lump that did not come off a tower: what a lane minion leaves where it
-// fell. It borrows its team's near-lane pylon as a source so a wave's ore is
-// shaded as the same rock their towers are made of.
+// A lump of ore spawned in world space: what comes off a tower or what a
+// lane minion leaves where it fell. It borrows its team's near-lane tower
+// as a source so a wave's ore is shaded as the same rock their towers are
+// made of.
 ore_chunk_spawn_loose :: proc(world: ^Ore_Chunk_World, kind: Ore_Kind, at: vec3, amount: f32) -> ^Ore_Chunk {
 	c := ore_chunk_claim(world)
 	if c == nil {
