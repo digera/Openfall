@@ -196,6 +196,34 @@ projectile_missile_seek :: proc(
 	return d / l, true
 }
 
+// Compute the contact point when a projectile hits a surface. For tower/box
+// collisions, this finds where the projectile sphere touches. For simple cases,
+// project back from the blocked point along the normal by the projectile radius.
+@(private)
+projectile_compute_contact :: proc(from, to: vec3, radius: f32, n: vec3) -> vec3 {
+	// The contact point is where the projectile's sphere surface touches the
+	// world surface. For a sphere hitting a plane/surface with outward normal n,
+	// the center is at distance `radius` from the surface along n.
+	//
+	// `to` is the blocked center position, `n` points outward from the surface.
+	// Step back by `radius` along the normal to find where the sphere touches.
+	contact := to - n * radius
+	
+	// Clamp so we don't step back past the start position
+	dir := to - from
+	len_d := len_vec3(dir)
+	if len_d > 0.001 {
+		dir_n := dir / len_d
+		// If contact is before from along the ray, clamp it
+		t := dot_vec3(contact - from, dir_n)
+		if t < 0 {
+			contact = from + dir_n * 0.01
+		}
+	}
+	
+	return contact
+}
+
 projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, dt: f32) {
 	for i in 0..<MAX_PROJECTILES {
 		if !world.projectiles[i].active {
@@ -225,7 +253,12 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 			// Walls, ceiling and cover.
 			if !world_point_free(new_pos, proj.radius) {
 				n := world_surface_normal(proj.pos, new_pos, proj.radius)
-				if !projectile_surface_contact(world, entity_world, i, proj.pos, n) {
+				// Compute the actual surface contact point. Previously used proj.pos
+				// (the old position before collision), which caused projectiles to
+				// bounce/detonate from inside tower geometry, leading to wrong damage
+				// application points and stuck tracers.
+				contact := projectile_compute_contact(proj.pos, new_pos, proj.radius, n)
+				if !projectile_surface_contact(world, entity_world, i, contact, n) {
 					break
 				}
 				continue
