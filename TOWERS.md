@@ -108,7 +108,9 @@ A team that has been banking its own ore can do it in one or two waves; a
 jackpot still cannot rebuild the whole tower in a single hop.
 
 Centre scoring still counts donated nodes. First team to have laid most of
-the gold silhouette when it closes (`CENTRE_CLAIM_FRAC`) wins.
+the gold tower when it is fully rebuilt (every original node live,
+`CENTRE_CLAIM_FRAC` = 1) wins. Chips do not delay that: `intact` is
+`live_count / max_count`. A tie on nodes laid is a draw.
 
 ## Wire (protocol v15)
 

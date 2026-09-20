@@ -1,6 +1,6 @@
 # Minions and ore
 
-Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that rebuilds the centre after the gold pylon is gone wins.
+Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that has laid most of the centre when it is fully rebuilt wins.
 
 **Ore must be carried home.** Walking over a chunk picks it up into personal carry (multi-kind, shared 20-unit cap). Entering your team's dump zone (8 m apron at the back of base) banks it to the wallet. Death drops carried ore as loose chunks, reclaimable by anyone. No instant credit, no silent bank on death: retrieval is the errand, and corpse scrambles are now ore scrambles.
 
@@ -59,6 +59,6 @@ Flattening a lane tower does **not** open a super-minion push. It turns that tea
 
 ## Win
 
-Essence does not end the round. The clock (12 minutes) is the backstop: highest essence, or a draw.
+Essence does not end the round. There is no clock: the round ends only when the gold tower is fully rebuilt.
 
-While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when it closes (`CENTRE_CLAIM_FRAC` of the original) wins.
+While the golden pylon stands it is only the richest rock. The moment it is gone the centre is a stump every team's wave will hop. First team to have laid most of the nodes when the tower is fully rebuilt (every original node live) wins. A tie on nodes laid is a draw. Chip damage does not delay the claim.
