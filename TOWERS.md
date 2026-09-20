@@ -83,16 +83,23 @@ instantly on pickup.** Players must carry ore back to their team's dump zone to
 credit it to the team wallet.
 
 - **Pickup:** Walking over a settled chunk picks it up into personal carry.
-  Carry is **multi-kind** with a **shared 20-unit cap** (`CARRY_CAPACITY_MAX`).
+  Carry is **multi-kind** with a **shared 100-unit cap** (`CARRY_CAPACITY_MAX`).
   Partial pickup: if a chunk exceeds remaining space, only the portion that fits
   is picked up; the remainder stays on the ground.
-- **Movement slow:** Carrying ore slows movement linearly. At 0 units: 100% speed.
-  At 20 units (full): 60% speed (`CARRY_SPEED_MIN`). Applies to walk and sprint,
-  server-authoritative (affects bots and players).
+- **Movement slow:** Carrying ore slows walk and sprint linearly from 100% empty
+  to `CARRY_SPEED_MIN` (60%) at `CARRY_CAPACITY_MAX`. The shared simulation
+  step applies it so players, bots, and client prediction all feel the same load.
 - **Dump zone:** An 8 m radius apron at each team base (centered at
-  `WORLD_SPAWN_R + DUMP_ZONE_BACK`). Standing in your team's dump while carrying
-  banks all carried ore to the team wallet. Enemy dumps do nothing. Loaded bots
-  walk home once they pass `CARRY_DUMP_THRESHOLD`.
+  `WORLD_SPAWN_R + DUMP_ZONE_BACK` = 116 m from the center). Standing in your
+  team's dump while carrying banks all carried ore to the team wallet. Enemy
+  dumps do nothing. Loaded bots walk home once they pass `CARRY_DUMP_THRESHOLD`.
+- **Dump zone markers:** Team-colored floor rings mark each dump. Your own
+  apron is the bright one: a stronger disc tint and a pulsing rim so it reads
+  as "bank here". Rivals keep a quieter ring. A haul-line `BANKING` hint
+  replaces `[G drop]` while you are standing in your dump with ore (G is
+  ignored there anyway; the server banks on contact). Rings in
+  `shaders/scene.glsl` must stay on `DUMP_ZONE_BACK` (2.0) and
+  `DUMP_ZONE_RADIUS` (8.0) in `src/mining.odin`.
 - **Drop on death:** Carried ore spawns as loose chunks at death position,
   reclaimable by anyone. No silent bank on death.
 - **Minions:** Standard lane fodder still drop ore on death (`MINION_ORE_DROP`)

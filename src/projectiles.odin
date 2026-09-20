@@ -222,10 +222,14 @@ projectile_tick :: proc(world: ^Projectile_World, entity_world: ^Entity_World, d
 				break
 			}
 
-			// Walls, ceiling and cover.
+			// Walls, ceiling and cover. Bisect the last free centre so the
+			// bounce, splash and mining stamp sit on the face that was hit,
+			// not a sub-step back along the flight. The floor path below
+			// already names that resting centre directly.
 			if !world_point_free(new_pos, proj.radius) {
-				n := world_surface_normal(proj.pos, new_pos, proj.radius)
-				if !projectile_surface_contact(world, entity_world, i, proj.pos, n) {
+				contact, blocked := world_last_free(proj.pos, new_pos, proj.radius)
+				n := world_surface_normal(contact, blocked, proj.radius)
+				if !projectile_surface_contact(world, entity_world, i, contact, n) {
 					break
 				}
 				continue
