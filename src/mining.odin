@@ -169,12 +169,11 @@ mining_blast :: proc(at: vec3, radius: f32, amount: f32, owner: Entity_ID, team:
 // out for a real haul, but you still cannot vacuum the floor.
 CARRY_CAPACITY_MAX :: f32(100.0)
 
-// Linear slow: 100% empty, 60% once you are holding CARRY_SLOW_FULL_AT.
-// Extra ore up to the 100 cap does not drag you any further. Applied in the
-// shared simulation step so bots, players and client prediction all feel
-// the same load.
+// Linear slow from 1.0 empty to CARRY_SPEED_MIN at a full pack. Load and
+// speed share CARRY_CAPACITY_MAX, so a bigger haul always costs more legs.
+// Applied in the shared simulation step so bots, players and client
+// prediction all feel the same weight.
 CARRY_SPEED_MIN :: f32(0.60)
-CARRY_SLOW_FULL_AT :: f32(20.0)
 
 // Full haul saturates a u8. 100.0 packs as 255, ~0.4 unit resolution, four
 // bytes for four kinds instead of sixteen floats that would blow the MTU.
@@ -210,8 +209,8 @@ carry_dominant :: proc(carry: [ORE_COUNT]f32) -> Ore_Kind {
 }
 
 carry_speed_mult :: proc(carry: [ORE_COUNT]f32) -> f32 {
-	load := clampf(carry_total(carry) / CARRY_SLOW_FULL_AT, 0, 1)
-	return 1.0 - (1.0 - CARRY_SPEED_MIN) * load
+	load := saturate(carry_total(carry) / CARRY_CAPACITY_MAX)
+	return lerpf(1.0, CARRY_SPEED_MIN, load)
 }
 
 // Players walking over settled ore pick it up into personal carry (multi-kind,
