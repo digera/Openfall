@@ -83,16 +83,22 @@ instantly on pickup.** Players must carry ore back to their team's dump zone to
 credit it to the team wallet.
 
 - **Pickup:** Walking over a settled chunk picks it up into personal carry.
-  Carry is **multi-kind** with a **shared 20-unit cap** (`CARRY_CAPACITY_MAX`).
+  Carry is **multi-kind** with a **shared 100-unit cap** (`CARRY_CAPACITY_MAX`).
   Partial pickup: if a chunk exceeds remaining space, only the portion that fits
   is picked up; the remainder stays on the ground.
 - **Movement slow:** Carrying ore slows movement linearly. At 0 units: 100% speed.
-  At 20 units (full): 60% speed (`CARRY_SPEED_MIN`). Applies to walk and sprint,
+  At 100 units (full): 60% speed (`CARRY_SPEED_MIN`). Applies to walk and sprint,
   server-authoritative (affects bots and players).
 - **Dump zone:** An 8 m radius apron at each team base (centered at
-  `WORLD_SPAWN_R + DUMP_ZONE_BACK`). Standing in your team's dump while carrying
-  banks all carried ore to the team wallet. Enemy dumps do nothing. Loaded bots
-  walk home once they pass `CARRY_DUMP_THRESHOLD`.
+  `WORLD_SPAWN_R + DUMP_ZONE_BACK` = 116 m from the center). Standing in your 
+  team's dump while carrying banks all carried ore to the team wallet. Enemy 
+  dumps do nothing. Loaded bots walk home once they pass `CARRY_DUMP_THRESHOLD`.
+- **Dump zone markers:** Team-colored floor rings mark each dump zone. The floor
+  disc is tinted with the team's color and pulses at the rim for visibility. 
+  A "BANKING..." HUD message appears when standing in the dump while carrying ore. 
+  Visual markers are defined in `shaders/scene.glsl` (lines 1850-1867) and must 
+  stay synchronized with `DUMP_ZONE_BACK` (2.0) and `DUMP_ZONE_RADIUS` (8.0) 
+  constants in `src/mining.odin`.
 - **Drop on death:** Carried ore spawns as loose chunks at death position,
   reclaimable by anyone. No silent bank on death.
 - **Minions:** Standard lane fodder still drop ore on death (`MINION_ORE_DROP`)
