@@ -86,10 +86,9 @@ credit it to the team wallet.
   Carry is **multi-kind** with a **shared 100-unit cap** (`CARRY_CAPACITY_MAX`).
   Partial pickup: if a chunk exceeds remaining space, only the portion that fits
   is picked up; the remainder stays on the ground.
-- **Movement slow:** Carrying ore slows movement linearly. At 0 units: 100% speed.
-  At `CARRY_SLOW_FULL_AT` (20 units): 60% speed (`CARRY_SPEED_MIN`). Extra ore
-  up to the 100 cap does not slow you further. Applies to walk and sprint,
-  server-authoritative (affects bots and players).
+- **Movement slow:** Carrying ore slows walk and sprint linearly from 100% empty
+  to `CARRY_SPEED_MIN` (60%) at `CARRY_CAPACITY_MAX`. The shared simulation
+  step applies it so players, bots, and client prediction all feel the same load.
 - **Dump zone:** An 8 m radius apron at each team base (centered at
   `WORLD_SPAWN_R + DUMP_ZONE_BACK` = 116 m from the center). Standing in your
   team's dump while carrying banks all carried ore to the team wallet. Enemy
