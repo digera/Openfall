@@ -2,10 +2,10 @@ package main
 
 import "core:math"
 
-// Coarse occupancy constants shared with the client paint of shield-node
-// towers. The 8x8x20 grid is no longer gameplay authority; tower_nodes.odin
-// owns collision, mining and scoring. The GPU still marches an occupancy
-// atlas, filled by painting node spheres and the thin core into these cells.
+// Coarse occupancy grid for GPU rendering of shield-node towers. The 8x8x20
+// grid is used by the client to paint node spheres and the thin core into
+// cells for marching. Gameplay authority (collision, mining, scoring) is in
+// tower_nodes.odin, which works directly with analytic node spheres.
 
 PYLON_NX  :: 8
 PYLON_NY  :: 8
@@ -564,13 +564,4 @@ ore_grid_selftest :: proc() {
 	g2.max_h = g.max_h
 	ore_grid_unpack_heights(&g2, wire[:])
 	assert(ore_grid_heights_equal(&g2, wire[:]))
-	assert(pylon_hp_loss(1, PYLON_TOUGHNESS_GOLD) < pylon_hp_loss(1, PYLON_TOUGHNESS_TEAM))
-	{
-		own: Pylon
-		own.owner = .Alpha
-		assert(!pylon_mineable_by(&own, .Alpha))
-		assert(pylon_mineable_by(&own, .Beta))
-		own.owner = .None
-		assert(pylon_mineable_by(&own, .Alpha))
-	}
 }
