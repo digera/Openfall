@@ -1732,8 +1732,14 @@ void main() {
         if (chunks[i].w < 0.01) continue;
         vec3 tint = ore_tint(chunk_fx[i].x);
         float vfx_packed = chunk_fx[i].w;
-        float land_flash = fract(vfx_packed);
-        float pickup_pop = floor(vfx_packed) * 0.5;
+        // Mutually exclusive unpack: pickup [1,2), landing [0,1)
+        float land_flash = 0.0;
+        float pickup_pop = 0.0;
+        if (vfx_packed >= 1.0) {
+            pickup_pop = clamp(vfx_packed - 1.0, 0.0, 1.0);
+        } else {
+            land_flash = vfx_packed;
+        }
         float twinkle = 0.7 + 0.3 * sin(WORLD_T * 3.0 + chunk_fx[i].y * 6.283);
         // Landing flash: bright burst when chunk settles
         float land_glow = land_flash * land_flash * 2.5;
@@ -1924,8 +1930,14 @@ void main() {
         float ore = chunk_fx[ch_idx].x;
         float seed = chunk_fx[ch_idx].y * 8.0;
         float vfx_packed = chunk_fx[ch_idx].w;
-        float land_flash = fract(vfx_packed);
-        float pickup_pop = floor(vfx_packed) * 0.5;
+        // Mutually exclusive unpack: pickup [1,2), landing [0,1)
+        float land_flash = 0.0;
+        float pickup_pop = 0.0;
+        if (vfx_packed >= 1.0) {
+            pickup_pop = clamp(vfx_packed - 1.0, 0.0, 1.0);
+        } else {
+            land_flash = vfx_packed;
+        }
         vec3 tint = ore_tint(ore);
         // Roughen the sphere: the grain field perturbed along the gradient reads
         // as a broken lump without costing a march.
@@ -2111,8 +2123,14 @@ void main() {
         for (int i = 0; i < NCHUNK; i++) {
             if (chunks[i].w < 0.01) continue;
             float vfx_packed = chunk_fx[i].w;
-            float land_flash = fract(vfx_packed);
-            float pickup_pop = floor(vfx_packed) * 0.5;
+            // Mutually exclusive unpack: pickup [1,2), landing [0,1)
+            float land_flash = 0.0;
+            float pickup_pop = 0.0;
+            if (vfx_packed >= 1.0) {
+                pickup_pop = clamp(vfx_packed - 1.0, 0.0, 1.0);
+            } else {
+                land_flash = vfx_packed;
+            }
             // Brighten chunk's point light during landing and pickup
             float intensity = 0.9 * (1.0 + land_flash * 2.2 + pickup_pop * 3.0);
             color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), intensity, 4.0);

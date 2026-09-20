@@ -624,6 +624,7 @@ client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapsh
 				if world.chunk_count < MAX_SNAPSHOT_CHUNKS {
 					world.chunks[world.chunk_count] = prev[k]
 					world.chunks[world.chunk_count].pickup_pop = 1.0
+					world.chunks[world.chunk_count].land_flash = 0  // Pickup owns VFX channel
 					world.chunk_count += 1
 				}
 				break  // Only trigger once per snapshot

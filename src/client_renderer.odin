@@ -529,10 +529,15 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			continue
 		}
 		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, c.radius}
-		// chunk_fx.w encodes VFX state: land_flash + pickup_pop * 2
-		// Shader reads: land_flash = fract(w), pickup_pop = floor(w) / 2
-		// Clamp land_flash < 1.0 to avoid fract(1.0) == 0 killing the peak
-		vfx := min(c.land_flash, 0.999) + c.pickup_pop * 2.0
+		// chunk_fx.w encodes VFX state (mutually exclusive):
+		// Pickup active: [1.0, 2.0) = 1.0 + pickup_pop
+		// Landing only:  [0.0, 1.0) = land_flash
+		vfx: f32
+		if c.pickup_pop > 0 {
+			vfx = 1.0 + min(c.pickup_pop, 0.999)  // [1, 2) range
+		} else {
+			vfx = min(c.land_flash, 0.999)         // [0, 1) range
+		}
 		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, vfx}
 	}
 	// Minions go up as the ore they are made of rather than as a team colour:
