@@ -145,6 +145,10 @@ Client_World :: struct {
 	chunks:           [MAX_SNAPSHOT_CHUNKS]Client_Chunk,
 	chunk_count:      int,
 	chunk_time:       f64,
+	
+	// Ore pickup VFX state
+	haul_pulse:       f32,  // 1 → 0 when ore is picked up (drives HUD flash)
+	last_haul_total:  f32,  // Previous snapshot's carry total for pickup detection
 
 	// Lane minions, same deal as the ore: interest-managed state, replaced
 	// whole every snapshot. Smoothed towards rather than extrapolated from,
@@ -205,6 +209,10 @@ Client_Chunk :: struct {
 	radius:  f32,
 	rest:    bool,
 	seed:    f32,
+	
+	// VFX state: client-only, not replicated
+	land_flash: f32,  // 1 → 0 when chunk settles
+	pickup_pop: f32,  // 1 → 0 when chunk is picked up
 }
 
 MAX_COMBAT_LOG_LINES :: 5
@@ -556,6 +564,7 @@ client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapsh
 	// about what is nearby, so anything not in it is gone from view.
 	prev := world.chunks
 	prev_n := world.chunk_count
+	
 	world.chunks = {}
 	world.chunk_count = int(snapshot.chunk_count)
 	world.chunk_time = world.local_time
@@ -571,13 +580,58 @@ client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapsh
 		c.rest = s.rest
 		// Keep the lump looking like the same rock across snapshots.
 		c.seed = f32(hash_u32(u32(s.id) * 2246822519) & 0xFFFF) / f32(0x10000) * 8
+		
+		// Find matching previous chunk
+		prev_idx := -1
 		for k in 0..<prev_n {
 			if prev[k].present && prev[k].id == s.id {
 				c.seed = prev[k].seed
+				// Preserve VFX timers
+				c.land_flash = prev[k].land_flash
+				c.pickup_pop = prev[k].pickup_pop
+				prev_idx = k
 				break
 			}
 		}
+		
+		// Landing event: chunk just settled
+		if s.rest && prev_idx >= 0 && !prev[prev_idx].rest {
+			c.land_flash = 1.0
+		}
 	}
+	
+	// Detect pickup: chunk disappeared AND carry increased (using last snapshot's total)
+	// (Prevents false positives from chunks timing out or leaving interest range)
+	new_carry := carry_total(world.prediction.predicted_char.carrying_ore)
+	if new_carry > world.last_haul_total {
+		for k in 0..<prev_n {
+			if !prev[k].present {
+				continue
+			}
+			// Check if this chunk is missing from the new snapshot
+			found := false
+			for i in 0..<world.chunk_count {
+				if world.chunks[i].id == prev[k].id {
+					found = true
+					break
+				}
+			}
+			if !found && prev[k].rest {
+				// Chunk disappeared and carry went up: pickup happened!
+				world.haul_pulse = 1.0
+				// Spawn a brief pickup pop effect at the old chunk's position
+				// by adding a fading ghost chunk (if room in array)
+				if world.chunk_count < MAX_SNAPSHOT_CHUNKS {
+					world.chunks[world.chunk_count] = prev[k]
+					world.chunks[world.chunk_count].pickup_pop = 1.0
+					world.chunk_count += 1
+				}
+				break  // Only trigger once per snapshot
+			}
+		}
+	}
+	// Update last haul total for next snapshot
+	world.last_haul_total = new_carry
 }
 
 @(private = "file")
@@ -638,17 +692,55 @@ client_world_step_minions :: proc(world: ^Client_World, dt: f32) {
 // server owns them -- but extrapolating the airborne ones keeps a shower of
 // rock smooth between snapshots.
 client_world_step_chunks :: proc(world: ^Client_World, dt: f32) {
+	LAND_FLASH_DECAY :: f32(3.5)  // Fast flash: settles in ~0.3s
+	PICKUP_POP_DECAY :: f32(2.5)  // Pop shrinks over ~0.4s
+	HAUL_PULSE_DECAY :: f32(4.0)  // HUD pulse fades in ~0.25s
+	
+	write_idx := 0
 	for i in 0..<world.chunk_count {
 		c := &world.chunks[i]
-		if !c.present || c.rest {
+		if !c.present {
 			continue
 		}
-		c.vel.z -= CHUNK_GRAVITY * dt
-		c.pos += c.vel * dt
-		if c.pos.z < WORLD_FLOOR_Z + c.radius {
-			c.pos.z = WORLD_FLOOR_Z + c.radius
-			c.vel = {}
+		
+		// Decay VFX timers
+		if c.land_flash > 0 {
+			c.land_flash = max(0, c.land_flash - dt * LAND_FLASH_DECAY)
 		}
+		if c.pickup_pop > 0 {
+			c.pickup_pop = max(0, c.pickup_pop - dt * PICKUP_POP_DECAY)
+			// Remove ghost chunk once pickup pop finishes
+			if c.pickup_pop <= 0 {
+				c.present = false
+				continue  // Skip adding to compacted array
+			}
+		}
+		
+		// Extrapolate airborne chunks
+		if !c.rest && c.pickup_pop <= 0 {
+			c.vel.z -= CHUNK_GRAVITY * dt
+			c.pos += c.vel * dt
+			if c.pos.z < WORLD_FLOOR_Z + c.radius {
+				c.pos.z = WORLD_FLOOR_Z + c.radius
+				c.vel = {}
+			}
+		}
+		
+		// Compact: move present chunks to front of array
+		if write_idx != i {
+			world.chunks[write_idx] = c^
+		}
+		write_idx += 1
+	}
+	// Clear tail of array
+	for i in write_idx..<world.chunk_count {
+		world.chunks[i] = {}
+	}
+	world.chunk_count = write_idx
+	
+	// Decay HUD pickup pulse
+	if world.haul_pulse > 0 {
+		world.haul_pulse = max(0, world.haul_pulse - dt * HAUL_PULSE_DECAY)
 	}
 }
 

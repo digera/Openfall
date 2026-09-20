@@ -529,7 +529,11 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			continue
 		}
 		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, c.radius}
-		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, 0}
+		// chunk_fx.w encodes VFX state: land_flash + pickup_pop * 2
+		// Shader reads: land_flash = fract(w), pickup_pop = floor(w) / 2
+		// Clamp land_flash < 1.0 to avoid fract(1.0) == 0 killing the peak
+		vfx := min(c.land_flash, 0.999) + c.pickup_pop * 2.0
+		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, vfx}
 	}
 	// Minions go up as the ore they are made of rather than as a team colour:
 	// their team is legible because their team's rock is, and it is the same
@@ -1131,7 +1135,11 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			row = hud_y + 4
 		}
 		sdtx.pos(0, row)
-		sdtx_color(ore_color(carry_dominant(local.carrying_ore)))
+		base_color := ore_color(carry_dominant(local.carrying_ore))
+		// Pickup pulse: brighten the haul text when ore is collected
+		pulse := world.haul_pulse * world.haul_pulse  // Ease out
+		brightened := base_color * (1.0 + pulse * 0.8) + vec3{pulse * 0.4, pulse * 0.4, pulse * 0.4}
+		sdtx.color3f(brightened.x, brightened.y, brightened.z)
 		sdtx.printf("HAUL %.0f/%.0f  [G drop]", haul, CARRY_CAPACITY_MAX)
 	}
 

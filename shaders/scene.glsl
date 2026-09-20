@@ -1731,8 +1731,17 @@ void main() {
     for (int i = 0; i < NCHUNK; i++) {
         if (chunks[i].w < 0.01) continue;
         vec3 tint = ore_tint(chunk_fx[i].x);
+        float vfx_packed = chunk_fx[i].w;
+        float land_flash = fract(vfx_packed);
+        float pickup_pop = floor(vfx_packed) * 0.5;
         float twinkle = 0.7 + 0.3 * sin(WORLD_T * 3.0 + chunk_fx[i].y * 6.283);
-        aura += tint * corona(ro, rd, glow_tmax, chunks[i].xyz, chunks[i].w * 2.4) * 0.5 * twinkle;
+        // Landing flash: bright burst when chunk settles
+        float land_glow = land_flash * land_flash * 2.5;
+        // Pickup pop: expanding bright sphere as chunk is collected
+        float pickup_glow = pickup_pop * (1.0 + pickup_pop * 1.2);
+        float corona_size = chunks[i].w * 2.4 * (1.0 + pickup_pop * 0.8);
+        aura += tint * corona(ro, rd, glow_tmax, chunks[i].xyz, corona_size) * 
+                (0.5 * twinkle + land_glow + pickup_glow);
     }
 
     aura += target_mark_glow(ro, rd, glow_tmax, target_mark.xyz, target_mark.w);
@@ -1914,6 +1923,9 @@ void main() {
         vec4 ch = chunks[ch_idx];
         float ore = chunk_fx[ch_idx].x;
         float seed = chunk_fx[ch_idx].y * 8.0;
+        float vfx_packed = chunk_fx[ch_idx].w;
+        float land_flash = fract(vfx_packed);
+        float pickup_pop = floor(vfx_packed) * 0.5;
         vec3 tint = ore_tint(ore);
         // Roughen the sphere: the grain field perturbed along the gradient reads
         // as a broken lump without costing a march.
@@ -1927,7 +1939,12 @@ void main() {
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
         albedo = ore_stone(ore) * (0.85 + 0.5 * pylon_grain(lp, 1.0, seed));
         // All of a chunk is broken surface, so the seams are open all over it.
-        emissive += tint * (0.55 + 0.9 * pylon_vein(lp * 2.0, seed)) * (0.5 + 0.5 * ndv);
+        float base_glow = 0.55 + 0.9 * pylon_vein(lp * 2.0, seed);
+        // Land flash: chunk brightens briefly when it hits the ground
+        float land_boost = land_flash * land_flash * 1.8;
+        // Pickup pop: chunk flares bright then fades out as it's picked up
+        float pickup_boost = pickup_pop * (2.0 + 1.5 * (1.0 - pickup_pop));
+        emissive += tint * base_glow * (0.5 + 0.5 * ndv) * (1.0 + land_boost + pickup_boost);
         spec_pow = 20.0;
         spec_amt = 0.10;
     } else if (mat == MAT_MINION) {
@@ -2093,7 +2110,12 @@ void main() {
         }
         for (int i = 0; i < NCHUNK; i++) {
             if (chunks[i].w < 0.01) continue;
-            color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), 0.9, 4.0);
+            float vfx_packed = chunk_fx[i].w;
+            float land_flash = fract(vfx_packed);
+            float pickup_pop = floor(vfx_packed) * 0.5;
+            // Brighten chunk's point light during landing and pickup
+            float intensity = 0.9 * (1.0 + land_flash * 2.2 + pickup_pop * 3.0);
+            color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), intensity, 4.0);
         }
         for (int i = 0; i < 12; i++) {
             vec4 p = projectiles[i];
