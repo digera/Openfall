@@ -45,7 +45,7 @@ layout(binding=1) uniform fs_params {
     vec4 pylon_collapse[7]; // x settle 1->0, y from core height, z from-mask 0..15, w from-mask 16..31
     vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
-    vec4 chunk_fx[8];       // x ore kind, y seed, z 1 if settled
+    vec4 chunk_fx[8];       // x ore, y seed, z settled, w land [0,1) / pickup [1,2)
     vec4 minions[14];       // xyz feet pos, w = ore kind + 1 (0 = none)
     vec4 minion_fx[14];     // x yaw, y hp 0..1, z kind (1 fodder, 2 pusher, 3 heavy), w seed
     vec4 projectiles[12];   // xyz pos, w = type + radius
@@ -470,6 +470,15 @@ vec3 ore_tint(float ore) {
     if (ore < 2.5) return vec3(0.34, 0.68, 1.00);   // tide
     if (ore < 3.5) return vec3(0.42, 0.95, 0.52);   // verdant
     return vec3(1.00, 0.82, 0.32);                  // gold
+}
+
+// chunk_fx.w: landing flash in [0,1), pickup pop in [1,2). One channel so a
+// mixed fade cannot unpack as the other event. x = land, y = pickup.
+vec2 chunk_vfx(float packed) {
+    if (packed >= 1.0) {
+        return vec2(0.0, clamp(packed - 1.0, 0.0, 1.0));
+    }
+    return vec2(max(packed, 0.0), 0.0);
 }
 
 // The rock itself, before any vein light. Darker and warmer than the arena
@@ -1731,8 +1740,13 @@ void main() {
     for (int i = 0; i < NCHUNK; i++) {
         if (chunks[i].w < 0.01) continue;
         vec3 tint = ore_tint(chunk_fx[i].x);
+        vec2 ev = chunk_vfx(chunk_fx[i].w);
         float twinkle = 0.7 + 0.3 * sin(WORLD_T * 3.0 + chunk_fx[i].y * 6.283);
-        aura += tint * corona(ro, rd, glow_tmax, chunks[i].xyz, chunks[i].w * 2.4) * 0.5 * twinkle;
+        float land_glow = ev.x * ev.x * 2.5;
+        float pickup_glow = ev.y * (1.0 + ev.y * 1.2);
+        float corona_size = chunks[i].w * 2.4 * (1.0 + ev.y * 0.8);
+        aura += tint * corona(ro, rd, glow_tmax, chunks[i].xyz, corona_size) *
+                (0.5 * twinkle + land_glow + pickup_glow);
     }
 
     aura += target_mark_glow(ro, rd, glow_tmax, target_mark.xyz, target_mark.w);
@@ -1919,6 +1933,7 @@ void main() {
         vec4 ch = chunks[ch_idx];
         float ore = chunk_fx[ch_idx].x;
         float seed = chunk_fx[ch_idx].y * 8.0;
+        vec2 ev = chunk_vfx(chunk_fx[ch_idx].w);
         vec3 tint = ore_tint(ore);
         // Roughen the sphere: the grain field perturbed along the gradient reads
         // as a broken lump without costing a march.
@@ -1932,7 +1947,10 @@ void main() {
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
         albedo = ore_stone(ore) * (0.85 + 0.5 * pylon_grain(lp, 1.0, seed));
         // All of a chunk is broken surface, so the seams are open all over it.
-        emissive += tint * (0.55 + 0.9 * pylon_vein(lp * 2.0, seed)) * (0.5 + 0.5 * ndv);
+        float base_glow = 0.55 + 0.9 * pylon_vein(lp * 2.0, seed);
+        float land_boost = ev.x * ev.x * 1.8;
+        float pickup_boost = ev.y * (2.0 + 1.5 * (1.0 - ev.y));
+        emissive += tint * base_glow * (0.5 + 0.5 * ndv) * (1.0 + land_boost + pickup_boost);
         spec_pow = 20.0;
         spec_amt = 0.10;
     } else if (mat == MAT_MINION) {
@@ -2098,7 +2116,9 @@ void main() {
         }
         for (int i = 0; i < NCHUNK; i++) {
             if (chunks[i].w < 0.01) continue;
-            color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), 0.9, 4.0);
+            vec2 ev = chunk_vfx(chunk_fx[i].w);
+            float intensity = 0.9 * (1.0 + ev.x * 2.2 + ev.y * 3.0);
+            color += albedo * point_light(hp, hit_n, chunks[i].xyz, ore_tint(chunk_fx[i].x), intensity, 4.0);
         }
         for (int i = 0; i < 12; i++) {
             vec4 p = projectiles[i];
