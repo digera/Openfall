@@ -124,7 +124,8 @@ Snapshot_Entity :: struct {
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
 
-	// Ore carry: per-kind amounts (4 kinds, 4 bytes each = 16 bytes)
+	// Ore carry: per-kind amounts. On the wire each kind is one u8 of tenths
+	// (CARRY_WIRE_SCALE), not a float: four bytes, not sixteen.
 	carrying_ore: [ORE_COUNT]f32,
 }
 
@@ -727,8 +728,8 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
 SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 8   // version+type, tick, ack, eight counts
-SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 16
-                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, carry[4]
+SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 4
+                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, carry[4] u8
 // Projectiles used to carry full f32 position and velocity, which they never
 // needed: the server owns them outright and nobody reconciles a prediction
 // against one. Centimetres and cm/s inside the arena are visually identical and
@@ -810,11 +811,11 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_u8(&w, u8(e.channel_spell))
 		bw_u8(&w, quant_u8(e.channel_frac, 255))
 		for k in 0..<ORE_COUNT {
-			bw_f32(&w, e.carrying_ore[k])
+			bw_u8(&w, quant_u8(e.carrying_ore[k], CARRY_WIRE_SCALE))
 		}
 	}
 
-	// A minion costs eleven bytes against a player's forty. Position drops to
+	// A minion costs eleven bytes against a player's forty-four. Position drops to
 	// centimetres and the facing to one-and-a-half degrees, because nothing
 	// about a lane body is reconciled: the client draws where the server said
 	// it was and never has to agree with itself about where it will be.
@@ -939,7 +940,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.channel_spell = spell_id_from_wire(br_u8(&r))
 		e.channel_frac = f32(br_u8(&r)) / 255.0
 		for k in 0..<ORE_COUNT {
-			e.carrying_ore[k] = br_f32(&r)
+			e.carrying_ore[k] = f32(br_u8(&r)) / CARRY_WIRE_SCALE
 		}
 		if !r.ok {
 			return {}, false

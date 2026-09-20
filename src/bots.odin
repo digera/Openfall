@@ -10,7 +10,8 @@ import "core:math/rand"
 //
 // Behaviour: pick an enemy ore pylon, walk there through the lane graph with
 // local obstacle steering, mine it, and fight anything hostile with
-// line-of-sight on the way.
+// line-of-sight on the way. A loaded bot breaks off and walks its own dump
+// before going back out — otherwise the carry cap just parks ore on the AI.
 
 BOTS_PER_TEAM :: 1
 MAX_BOTS      :: TEAM_COUNT * TEAM_SIZE
@@ -18,6 +19,7 @@ MAX_BOTS      :: TEAM_COUNT * TEAM_SIZE
 Bot_Mode :: enum u8 {
 	Travel,
 	Mine,
+	Dump,
 }
 
 Bot :: struct {
@@ -229,7 +231,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	// Stand off far enough not to be inside the rock, close enough to hold a
 	// beam on it. Hysteresis so a bot at the boundary does not flicker.
 	stand := obj.design_radius + BOT_MINE_STANDOFF
-	if obj_dist < stand {
+	haul := carry_total(char.carrying_ore)
+	if haul >= CARRY_DUMP_THRESHOLD || (b.mode == .Dump && haul > 0) {
+		b.mode = .Dump
+	} else if obj_dist < stand {
 		b.mode = .Mine
 	} else if obj_dist > stand * 1.25 {
 		b.mode = .Travel
@@ -261,7 +266,11 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 
 	// --- Movement direction ----------------------------------------------
 	move_dir := vec3{}
-	if b.mode == .Travel {
+	if b.mode == .Dump {
+		home := team_dump_position(b.team)
+		wp := nav_next_waypoint(char.pos, home)
+		move_dir = norm_vec3(vec3{wp.x - char.pos.x, wp.y - char.pos.y, 0})
+	} else if b.mode == .Travel {
 		wp := nav_next_waypoint(char.pos, obj_pos)
 		move_dir = norm_vec3(vec3{wp.x - char.pos.x, wp.y - char.pos.y, 0})
 	} else {
@@ -276,8 +285,9 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 	}
 
-	// Combat footwork: strafe, and back off if too close
-	if have_target {
+	// Combat footwork: strafe, and back off if too close. A dump run keeps
+	// walking home — fighting in the lane with a full bag never banks.
+	if have_target && b.mode != .Dump {
 		b.strafe_timer -= dt
 		if b.strafe_timer <= 0 {
 			b.strafe_dir = -b.strafe_dir
@@ -303,7 +313,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	b.stuck_timer += dt
 	if b.stuck_timer >= 1.5 {
 		moved := len_vec3(vec3{char.pos.x - b.stuck_pos.x, char.pos.y - b.stuck_pos.y, 0})
-		if b.mode == .Travel && moved < 0.8 && !have_target {
+		if (b.mode == .Travel || b.mode == .Dump) && moved < 0.8 && !have_target {
 			b.steer = b.steer == 0 ? (rand.float32() < 0.5 ? -1 : 1) : -b.steer
 			b.steer_timer = 1.2
 			b.jump_timer = 0
@@ -418,13 +428,13 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 	jump := false
 	if b.jump_timer <= 0 {
 		b.jump_timer = rand.float32_range(2.5, 6.0)
-		jump = b.mode == .Travel && !have_target && rand.float32() < 0.35
+		jump = (b.mode == .Travel || b.mode == .Dump) && !have_target && rand.float32() < 0.35
 	}
 	if b.steer != 0 && b.steer_timer > 0.65 && rand.float32() < 0.02 {
 		jump = true
 	}
 
-	sprint := b.mode == .Travel && !have_target && char.stamina > 30
+	sprint := (b.mode == .Travel || b.mode == .Dump) && !have_target && char.stamina > 30
 
 	input := Input_State{
 		move_fwd = fwd,

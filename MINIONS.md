@@ -2,7 +2,7 @@
 
 Every 30 seconds each team gets a wave of **lane fodder**. They walk their lane toward the golden centre, suicide-rush the first enemy player or minion that comes in range, and explode on death. If a friendly tower is missing nodes, they hop onto the **nearest** one and donate a rebuild. A flattened lane tower takes about three waves to stand again. The team that rebuilds the centre after the gold pylon is gone wins.
 
-**Ore must be carried home.** Walking over a chunk picks it up into personal carry (one kind at a time; chunks stack). Entering your team's dump zone (8 m apron at base) banks it to the wallet. Death drops carried ore as loose chunks, reclaimable by anyone. No instant credit, no silent bank on death: retrieval is the errand, and corpse scrambles are now ore scrambles.
+**Ore must be carried home.** Walking over a chunk picks it up into personal carry (multi-kind, shared 20-unit cap). Entering your team's dump zone (8 m apron at the back of base) banks it to the wallet. Death drops carried ore as loose chunks, reclaimable by anyone. No instant credit, no silent bank on death: retrieval is the errand, and corpse scrambles are now ore scrambles.
 
 Pinned in [src/minions.odin](src/minions.odin). Minions are a sidecar pool, not `Character_State`s.
 

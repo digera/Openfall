@@ -55,7 +55,7 @@ layout(binding=1) uniform fs_params {
     vec4 wisp_aim[16];      // xyz aim direction (unit), w = charge 0..1
     vec4 robes[16];         // xyz hem ring centre, w = body yaw
     vec4 robe_waists[16];   // xyz waist ring centre, w = hem yaw (pleat twist)
-    vec4 robe_fx[16];       // x flutter 0..1, y seconds since this wisp died (0 = alive)
+    vec4 robe_fx[16];       // x flutter 0..1, y seconds since death, z haul 0..1, w dominant ore kind
     vec4 impacts[8];        // xyz pos, w = type + age (0 = none)
     vec4 lightning[4];      // xyz ground pos, w = life 1 -> 0 (0 = none)
     vec4 beams[4];          // xyz origin, w = spell render code (0 = none)
@@ -1825,6 +1825,18 @@ void main() {
                 emissive += otint * edge * 0.30 * standing;
             }
         }
+        // Dump aprons: a team-coloured ring at the back of each base, the
+        // same 8 m radius the server uses (WORLD_SPAWN_R + 2 = 116).
+        for (int t = 0; t < 3; t++) {
+            float ta = 1.5707963 + float(t) * 2.0943951;
+            vec2 dc = vec2(cos(ta), sin(ta)) * 116.0;
+            float od = length(hp.xy - dc);
+            float disc = 1.0 - smoothstep(7.2, 8.0, od);
+            float edge = 1.0 - smoothstep(0.0, 0.22, abs(od - 8.0));
+            vec3 dtint = team_tint(float(t) + 1.0);
+            albedo = mix(albedo, albedo * 0.55 + dtint * 0.45, disc * 0.28);
+            emissive += dtint * edge * 0.40;
+        }
         spec_pow = 24.0;
         spec_amt = 0.10;
     } else if (mat == MAT_WALL) {
@@ -2008,6 +2020,12 @@ void main() {
         // Cloth, hood and face all glow harder as a dying wisp fills, so what
         // bursts reads as the light that was inside it all along.
         emissive += tint * death_glow(robe_fx[robe_idx].y);
+        // A loaded haul tints the cloth the colour of the rock so you can
+        // see who is walking a bag home from a lane away.
+        float haul = robe_fx[robe_idx].z;
+        if (haul > 0.02) {
+            emissive += ore_tint(robe_fx[robe_idx].w) * haul * 0.40;
+        }
     }
 
     vec3 color = emissive;

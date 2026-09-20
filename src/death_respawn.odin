@@ -5,12 +5,13 @@ import "core:fmt"
 
 RESPAWN_DELAY_SEC :: f32(4.0)
 
-entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
+entity_tick_death_respawn :: proc(entity_world: ^Entity_World, chunks: ^Ore_Chunk_World, dt: f32) {
 	for i in 1..<MAX_ENTITIES {
 		if !entity_world.characters[i].active {
 			continue
 		}
 		char := entity_world.characters[i]
+		id := Entity_ID(i)
 
 		if char.health <= 0 && !char.dead {
 			char.dead = true
@@ -20,34 +21,48 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, dt: f32) {
 			// The one death transition in the game, so the one place a kill is
 			// credited. A body that drops to zero from a beam, a splash it
 			// never saw, or three people at once is counted here exactly once.
-			combat_record_death(entity_world, Entity_ID(i))
-			// Drop carried ore on death
-			if g_ore_chunks != nil {
-				for k in 0..<ORE_COUNT {
-					if char.carrying_ore[k] > 0 {
-						kind := ore_from_index(k)
-						ore_chunk_spawn_loose(g_ore_chunks, kind, char.pos + vec3{0, 0, 0.35}, char.carrying_ore[k])
-						if SERVER_VERBOSE {
-							fmt.printf("[Death] Entity %d dropped %.0f %s\n", i, char.carrying_ore[k], ore_name(kind))
-						}
-						char.carrying_ore[k] = 0
-					}
-				}
-			}
+			combat_record_death(entity_world, id)
 			if SERVER_VERBOSE {
 				fmt.printf("[Death] Entity %d died\n", i)
 			}
 		}
 
 		if char.dead {
+			// Retry while the body is down: a full chunk pool must not delete
+			// the haul. Respawn still clears whatever could not be placed.
+			entity_drop_carried_ore(&char, chunks, id)
 			char.respawn_timer -= dt
 			if char.respawn_timer <= 0 {
+				entity_drop_carried_ore(&char, chunks, id)
 				entity_respawn(&char, entity_world.teams[i], i)
-				entity_clear_attacker(entity_world, Entity_ID(i))
+				entity_clear_attacker(entity_world, id)
 			}
 		}
 
 		entity_world.characters[i] = char
+	}
+}
+
+// Spawn one loose chunk per kind still held. Leaves the amount on the body
+// if the floor is full, so a later tick (or the last tick before respawn)
+// can try again instead of silently burning the ore.
+entity_drop_carried_ore :: proc(char: ^Character_State, chunks: ^Ore_Chunk_World, id: Entity_ID) {
+	if chunks == nil {
+		return
+	}
+	for k in 0 ..< ORE_COUNT {
+		amt := char.carrying_ore[k]
+		if amt <= 0 {
+			continue
+		}
+		kind := ore_from_index(k)
+		if ore_chunk_spawn_loose(chunks, kind, char.pos + vec3{0, 0, 0.35}, amt) == nil {
+			continue
+		}
+		if SERVER_VERBOSE {
+			fmt.printf("[Death] Entity %d dropped %.0f %s\n", id, amt, ore_name(kind))
+		}
+		char.carrying_ore[k] = 0
 	}
 }
 

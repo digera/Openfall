@@ -88,15 +88,16 @@ credit it to the team wallet.
   At 20 units (full): 60% speed (`CARRY_SPEED_MIN`). Applies to walk and sprint,
   server-authoritative (affects bots and players).
 - **Dump zone:** An 8 m radius apron at each team base (centered at
-  `WORLD_SPAWN_R + 2.0`). Standing in your team's dump while carrying banks all
-  carried ore to the team wallet. Enemy dumps do nothing.
+  `WORLD_SPAWN_R + DUMP_ZONE_BACK`). Standing in your team's dump while carrying
+  banks all carried ore to the team wallet. Enemy dumps do nothing. Loaded bots
+  walk home once they pass `CARRY_DUMP_THRESHOLD`.
 - **Drop on death:** Carried ore spawns as loose chunks at death position,
   reclaimable by anyone. No silent bank on death.
 - **Minions:** Standard lane fodder still drop ore on death (`MINION_ORE_DROP`)
   as before, which must also be retrieved.
 
-The carry state is replicated in snapshots (per-kind array, 16 bytes = 4 × f32)
-so remotes and spectators see who is hauling what. Respawn clears carry.
+The carry state is replicated in snapshots as four u8 tenths (4 bytes per
+entity) so remotes and spectators see who is hauling what. Respawn clears carry.
 
 ## Minion rebuild
 
@@ -116,9 +117,9 @@ Quantized node HP, 32 bytes per tower, 0 = dead. Alive nodes never pack as 0
 on smaller towers are zero. Snapshot still carries at most two dirty towers;
 GameState carries all seven. `SNAPSHOT_WORST_BYTES` stays under MTU.
 
-Entity snapshots now include carry state: per-kind array (4 × f32 = 16 bytes per
-entity). With 15 entities max, snapshot overhead is ~240 bytes. Byte budget
-updated: `SNAPSHOT_ENTITY_BYTES` = 56 (was 40 before carry, 45 after single-kind).
+Entity snapshots now include carry state: four u8 tenths (4 bytes per entity).
+With 15 entities max that is 60 bytes, and `SNAPSHOT_ENTITY_BYTES` is 44.
+Four uncompressed floats would have been 240 bytes and blown the 1400-byte MTU.
 
 The client unpacks HP by array index. Collision and drawing use those same
 slots: the GPU gets max_count, spiral radius, stack step, a 32-bit alive

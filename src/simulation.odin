@@ -78,16 +78,7 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	if sprinting {
 		speed *= CHARACTER_SPRINT_MULT
 	}
-	// Ore carry slow: linear scale from 1.0 at 0 units to CARRY_SPEED_MIN (0.60) at cap
-	carry_total := f32(0)
-	for amt in char.carrying_ore {
-		carry_total += amt
-	}
-	if carry_total > 0 {
-		carry_frac := carry_total / CARRY_CAPACITY_MAX
-		carry_mult := 1.0 - (1.0 - CARRY_SPEED_MIN) * carry_frac
-		speed *= carry_mult
-	}
+	speed *= carry_speed_mult(char.carrying_ore)
 	if char.slow_ticks > 0 {
 		speed *= CHARACTER_SLOW_MULT
 	}

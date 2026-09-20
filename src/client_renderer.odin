@@ -620,7 +620,13 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			hem := waist + robe.hem_off
 			fs_params.robes[k] = {hem.x, hem.y, hem.z, yaw}
 			fs_params.robe_waists[k] = {waist.x, waist.y, waist.z, robe.hem_yaw}
-			fs_params.robe_fx[k] = {robe.flutter, robe.death_t, 0, 0}
+			haul := carry_total(remote.carrying_ore)
+			fs_params.robe_fx[k] = {
+				robe.flutter,
+				robe.death_t,
+				clampf(haul / CARRY_CAPACITY_MAX, 0, 1),
+				f32(u8(carry_dominant(remote.carrying_ore))),
+			}
 
 			// The cast orb, held out along the aim so a glance says both what
 			// is coming and who it is coming for. Where a wisp is pointing is
@@ -1115,31 +1121,18 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		sdtx.puts("SLOWED")
 	}
 
-	// --- Carry (bottom right) --------------------------------------------------
-	carry_total := f32(0)
-	for amt in local.carrying_ore {
-		carry_total += amt
-	}
-	if carry_total > 0 {
-		// Find dominant kind (for color)
-		dominant_kind := Ore_Kind.None
-		dominant_amt := f32(0)
-		for k in 0..<ORE_COUNT {
-			if local.carrying_ore[k] > dominant_amt {
-				dominant_amt = local.carrying_ore[k]
-				dominant_kind = ore_from_index(k)
-			}
+	// Haul sits with the vitals, not the combat log. Bottom-right is already
+	// the kill feed; a capacity readout next to HP is what you glance at
+	// while turning for home.
+	haul := carry_total(local.carrying_ore)
+	if haul > 0 {
+		row := hud_y + 3
+		if local.slow_ticks > 0 {
+			row = hud_y + 4
 		}
-		
-		carry_text := fmt.tprintf("%.0f/%.0f", carry_total, CARRY_CAPACITY_MAX)
-		carry_len := f32(len(carry_text))
-		sdtx.pos(cols - carry_len - 2, rows - 2)
-		if dominant_kind != .None {
-			sdtx_color(ore_color(dominant_kind))
-		} else {
-			sdtx.color3f(0.8, 0.8, 0.8)
-		}
-		sdtx.puts(carry_text)
+		sdtx.pos(0, row)
+		sdtx_color(ore_color(carry_dominant(local.carrying_ore)))
+		sdtx.printf("HAUL %.0f/%.0f", haul, CARRY_CAPACITY_MAX)
 	}
 
 	// --- Hotbar (bottom center) ------------------------------------------------
@@ -1426,6 +1419,11 @@ hud_target_panel :: proc(world: ^Client_World, cols: f32, row: f32) {
 	sdtx.pos(cols * 0.5 - 10, row + 1)  // 16-cell bar plus " 100" centres at -10
 	draw_bar(hp, HEALTH_MAX, 14)
 	sdtx.printf(" %3.0f", hp)
+	haul := carry_total(remote.carrying_ore)
+	if haul > 0 {
+		sdtx_color(ore_color(carry_dominant(remote.carrying_ore)))
+		hud_center_text(cols, row + 2, fmt.tprintf("haul %.0f/%.0f", haul, CARRY_CAPACITY_MAX))
+	}
 }
 
 draw_bar :: proc(value: f32, max_value: f32, width: int) {
