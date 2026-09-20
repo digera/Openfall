@@ -112,14 +112,6 @@ PYLON_GOLD_RADIUS :: f32(3.6)
 PYLON_TOUGHNESS_TEAM :: f32(1.0)
 PYLON_TOUGHNESS_GOLD :: f32(4.5)
 
-// Ore accounting. One killed node is worth this much ore, scaled by how rich
-// the vein is where the bite landed. Used by tower_nodes.odin.
-ORE_PER_VOXEL  :: f32(1.0)
-ORE_VEIN_BONUS :: f32(2.2)
-
-// Ore accumulated before a carryable chunk pops out of the rock face.
-ORE_PER_CHUNK :: f32(8.0)
-
 // Mining cadence. A held beam bites at a fixed rate rather than every tick,
 // so mining has an audible rhythm instead of melting the rock smoothly.
 MINE_BITE_HZ    :: f32(10.0)

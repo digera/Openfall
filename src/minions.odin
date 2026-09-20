@@ -411,7 +411,7 @@ minion_center :: proc(m: ^Minion) -> vec3 {
 	return m.pos + vec3{0, 0, MINION_HEIGHT_M * 0.5}
 }
 
-// Nearest minion hostile to `team` along a ray. Mirrors `pylon_raycast` so the
+// Nearest minion hostile to `team` along a ray. Mirrors `tower_raycast` so the
 // three things a beam can land on -- a body, a minion, a tower -- are all found
 // the same way.
 minion_raycast :: proc(world: ^Minion_World, team: Team_ID, ro, rd: vec3, max_t: f32) -> (t: f32, slot: int, hit: bool) {

@@ -154,7 +154,7 @@ world_map_point_free :: proc(p: vec3, pad: f32) -> bool {
 // sweeps, `world_segment_clear` for line of sight, `world_ray_hit` for beam
 // reach -- so a tower becomes cover, stops spells and blocks sight in one move
 // instead of four. `tower_blocks_point` rejects on a bound cylinder first, so a
-// point nowhere near a tower costs seven distance compares and no occupancy.
+// point nowhere near a tower costs seven distance compares, not a node walk.
 world_point_free :: proc(p: vec3, pad: f32) -> bool {
 	if !world_map_point_free(p, pad) {
 		return false

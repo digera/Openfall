@@ -145,8 +145,9 @@ minion rebuild. Lighting and the percent readout therefore move on the
 first chip, not the first kill. Collapse does not change mass or intact; it
 only rearranges where that mass sits.
 
-Gameplay authority is `g_towers` in `tower_nodes.odin`. `pylons.odin` now
-contains only shared ore vocabulary and constants.
+Gameplay authority is `g_towers` in `tower_nodes.odin`. `pylons.odin` holds
+shared ore vocabulary and placement constants. The occupancy-grid pylon,
+its hex SDF, and the occupancy wire are gone.
 
 ## Out of scope
 
