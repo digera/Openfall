@@ -6,12 +6,12 @@ import "core:slice"
 
 // Spiral shield-node tower authority.
 //
-// Gameplay is an array of overlapping ore nodes wrapped around a thin core.
-// Node_ID is identity. Spiral position is a function of array index (slot 0
-// on the floor, last slot at the cap) so a bite leaves a hole instead of
-// sliding a healthier neighbour under the aim. HP is still sorted for
-// bookkeeping; that sort must not move geometry. Hits address the Node_ID
-// found at the impact point.
+// Gameplay is an array of overlapping ore nodes on a tapered helix. Node_ID is
+// identity. Spiral position is a function of array index (slot 0 on the floor,
+// last slot a crown on the axis) so a bite leaves a hole instead of sliding a
+// healthier neighbour under the aim. HP is still sorted for bookkeeping; that
+// sort must not move geometry. Hits address the Node_ID found at the impact
+// point.
 //
 // Holes stay until the column is unsound: a run of three or more empty slots
 // with live rock still above them. Every few seconds that tower then has a
@@ -19,10 +19,12 @@ import "core:slice"
 // shortens to the new cap, and identity (id, HP) rides with the node. Minion
 // hops still fill the first dead slot, which after a collapse is the new top.
 //
-// The client draws this geometry analytically (core cylinder + node spheres)
-// from the same slot indices and alive mask. A collapse is a helix settle
-// driven by collapse_t; SDF welding can later use that same 0..1 morph.
-// Chip scars live in the shader. See TOWERS.md.
+// Collision stays on the node spheres. The client welds those same live slots
+// into one lumpy column (smooth-union + grain) so the silhouette reads as ore
+// rather than a grape cluster. The thin core is last-stand only: it is absent
+// while the shell is up, and only drawn / raycast once few nodes remain.
+// Collapse is a helix settle driven by collapse_t; the shader smears along
+// that same from-to path. Chip scars live in the shader. See TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -37,21 +39,34 @@ TOWER_NODES_FAR     :: 12
 #assert(TOWER_NODES_FAR  <= MAX_NODES_PER_TOWER)
 #assert(MAX_NODES_PER_TOWER <= 32) // GPU alive mask is two 16-bit floats
 
-// Thin last-stand column. Nodes are the destructible shell; this is what is
-// left in the gaps once the shell is gone, not a fat pillar that swallows rays.
+// Thin last-stand column. Nodes are the destructible shell; this stick only
+// exists once the shell is stripped down to TOWER_CORE_EXPOSE_LIVE nodes.
 CORE_RADIUS :: f32(0.55)
+TOWER_CORE_EXPOSE_LIVE :: 2
 
-// Phyllotaxis on a cylinder. Consecutive slots are a golden step apart, so
+// Phyllotaxis on a tapering cone. Consecutive slots are a golden step apart, so
 // neighbours in space are Fibonacci parastichies -- overlapping blobs, with
-// holes that read once a slot dies.
+// holes that read once a slot dies. Must stay in lockstep with shaders/scene.glsl.
 SPIRAL_GOLDEN_ANGLE :: f32(2.399963229728653)
 
 // Node spheres are one course of the column: slot 0 sits on the floor, the
-// last slot kisses the cap, and they wrap the core. Radius is a fraction of
-// the full-tower pitch so a dead slot is a missing course, not a boulder that
-// was hanging through the floor. Must stay in lockstep with shaders/scene.glsl.
+// last slot kisses the cap. Radius is a fraction of the full-tower pitch so a
+// dead slot is a missing course, not a boulder that was hanging through the
+// floor. Wrap is the base helix radius as a fraction of node radius — tight
+// enough that golden-angle neighbours overlap into a shaft once welded.
 TOWER_NODE_RADIUS_STEPS :: f32(1.42)
-TOWER_NODE_WRAP         :: f32(0.20)
+TOWER_NODE_WRAP         :: f32(0.52)
+
+// Silhouette: the helix necks in toward the top, and the last slot sits almost
+// on the axis so the column has a crown instead of a grape stuck on the side.
+TOWER_SPIRAL_TAPER :: f32(0.38)
+TOWER_CROWN_RADIAL :: f32(0.10)
+TOWER_CROWN_START  :: f32(0.82)
+
+// GPU smooth-union and grain. Collision stays on the analytic spheres; the
+// bound cylinder is padded so the marched surface is not clipped.
+TOWER_WELD_K     :: f32(0.40)
+TOWER_GRAIN_AMP  :: f32(0.12)
 
 // HP is in "amount" units after toughness. A team bite is 0.60, gold divides
 // by 4.5, so these take a couple of seconds of beam per node rather than a
@@ -246,7 +261,7 @@ tower_layout :: proc(t: ^Tower) {
 	} else {
 		t.stack_step = t.design_height
 	}
-	t.spiral_radius = CORE_RADIUS + r * TOWER_NODE_WRAP
+	t.spiral_radius = r * TOWER_NODE_WRAP
 }
 
 tower_column_height :: proc(t: ^Tower, live: int) -> f32 {
@@ -338,7 +353,30 @@ tower_touch :: proc(world: ^Tower_World, t: ^Tower) {
 // Geometry
 
 tower_outer_radius :: proc(t: ^Tower) -> f32 {
-	return t.spiral_radius + t.node_radius
+	// Weld and grain push the marched surface a little past the sphere union.
+	pad := t.node_radius * (TOWER_WELD_K * 0.25 + TOWER_GRAIN_AMP)
+	return t.spiral_radius + t.node_radius + pad
+}
+
+tower_core_exposed :: proc(t: ^Tower) -> bool {
+	return t.live_count > 0 && t.live_count <= TOWER_CORE_EXPOSE_LIVE && t.core_height > 0.01
+}
+
+// Helix radius at a slot. Foot is full spiral_radius, shaft tapers, last slot
+// is the crown. Twin of pylon_slot_radial in shaders/scene.glsl.
+tower_slot_radial :: proc(t: ^Tower, array_index: int) -> f32 {
+	n := t.max_count
+	if n <= 1 {
+		return t.spiral_radius * TOWER_CROWN_RADIAL
+	}
+	u := f32(array_index) / f32(n - 1)
+	u2 := u * u
+	rad := lerpf(t.spiral_radius, t.spiral_radius * TOWER_SPIRAL_TAPER, u2)
+	if u > TOWER_CROWN_START {
+		cap := (u - TOWER_CROWN_START) / (1 - TOWER_CROWN_START)
+		rad = lerpf(rad, t.spiral_radius * TOWER_CROWN_RADIAL, cap * cap)
+	}
+	return rad
 }
 
 // Alive bits 0..max_count-1, packed for the GPU as two 16-bit integers.
@@ -365,7 +403,8 @@ tower_node_spiral_pos :: proc(t: ^Tower, array_index: int) -> vec3 {
 	}
 	z := t.node_radius + f32(array_index) * t.stack_step
 	angle := f32(array_index) * SPIRAL_GOLDEN_ANGLE
-	return {math.cos(angle) * t.spiral_radius, math.sin(angle) * t.spiral_radius, z}
+	rad := tower_slot_radial(t, array_index)
+	return {math.cos(angle) * rad, math.sin(angle) * rad, z}
 }
 
 tower_node_world_pos :: proc(t: ^Tower, array_index: int) -> vec3 {
@@ -602,10 +641,12 @@ tower_blocks_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> bool {
 			continue
 		}
 		local := tower_to_local(t, wp)
-		core_r := CORE_RADIUS + pad
-		if local.z >= -pad && local.z <= t.core_height + pad {
-			if local.x * local.x + local.y * local.y <= core_r * core_r {
-				return true
+		if tower_core_exposed(t) {
+			core_r := CORE_RADIUS + pad
+			if local.z >= -pad && local.z <= t.core_height + pad {
+				if local.x * local.x + local.y * local.y <= core_r * core_r {
+					return true
+				}
 			}
 		}
 		if _, _, hit := tower_node_at_point(t, wp, pad); hit {
@@ -650,7 +691,7 @@ tower_raycast :: proc(world: ^Tower_World, ro, rd: vec3, max_t: f32) -> (t: f32,
 				found_node = node.id
 			}
 		}
-		if tw.core_height > 0.01 {
+		if tower_core_exposed(tw) {
 			if d, ok := ray_cylinder_hit(ro, rdn, tw.base, CORE_RADIUS, tw.core_height, best); ok {
 				best = d
 				found_tower = i
@@ -723,7 +764,7 @@ tower_normal_world :: proc(world: ^Tower_World, id: Pylon_ID, wp: vec3) -> vec3 
 		}
 	}
 
-	if local.z >= 0 && local.z <= t.core_height {
+	if tower_core_exposed(t) && local.z >= 0 && local.z <= t.core_height {
 		n := norm_vec3(vec3{local.x, local.y, 0})
 		if len2_vec3(n) > 0.01 {
 			return tower_dir_to_world(t, n)
@@ -752,10 +793,12 @@ tower_at_point :: proc(world: ^Tower_World, wp: vec3, pad: f32) -> (id: Pylon_ID
 			continue
 		}
 		local := tower_to_local(t, wp)
-		core_r := CORE_RADIUS + pad
-		if local.z >= -pad && local.z <= t.core_height + pad {
-			if local.x * local.x + local.y * local.y <= core_r * core_r {
-				return Pylon_ID(i), true
+		if tower_core_exposed(t) {
+			core_r := CORE_RADIUS + pad
+			if local.z >= -pad && local.z <= t.core_height + pad {
+				if local.x * local.x + local.y * local.y <= core_r * core_r {
+					return Pylon_ID(i), true
+				}
 			}
 		}
 		if _, _, hit := tower_node_at_point(t, wp, pad); hit {
@@ -1357,6 +1400,10 @@ tower_selftest :: proc() {
 	assert(abs(radial - t.spiral_radius) < 0.001, "slot 0 on the spiral")
 	top := tower_node_spiral_pos(t, t.max_count - 1)
 	assert(abs(top.z + t.node_radius - t.design_height) < 0.001, "last slot kisses the cap")
+	crown := math.sqrt(top.x * top.x + top.y * top.y)
+	assert(crown < t.spiral_radius * TOWER_CROWN_RADIAL + 0.02, "last slot is the crown")
+	assert(crown < radial * 0.35, "crown sits tighter than the foot")
+	assert(!tower_core_exposed(t), "full shell hides the last-stand core")
 	assert(abs(t.core_height - tower_column_height(t, t.max_count)) < 0.001, "standing core stays at design height")
 
 	same: [MAX_NODES_PER_TOWER]u8
@@ -1573,5 +1620,18 @@ tower_selftest :: proc() {
 		assert(abs(p.core_height - p.design_height) < 0.002, "production shaft stays up through holes")
 		hi2 := tower_node_spiral_pos(&p, p.max_count - 1)
 		assert(abs(hi2.z - hi.z) < 0.0001, "production cap slot does not move after a floor kill")
+		cap_r := math.sqrt(hi.x * hi.x + hi.y * hi.y)
+		assert(cap_r < p.spiral_radius * 0.35, "production crown sits near the axis")
 	}
+
+	// Last-stand core only appears once the shell is stripped.
+	tower_build_full(t)
+	for i in 2 ..< t.max_count {
+		t.nodes[i].alive = false
+		t.nodes[i].hp = 0
+	}
+	tower_resort_nodes(t)
+	tower_recompute(t)
+	assert(t.live_count == 2, "two nodes left")
+	assert(tower_core_exposed(t), "stripped tower shows the last-stand core")
 }

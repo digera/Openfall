@@ -443,18 +443,26 @@ bool solid_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n) {
 // ---------------------------------------------------------------------------
 // Ore pylons
 //
-// Same geometry as tower_raycast: a solid Z-up core cylinder with a golden-angle
-// spiral of node spheres at array-index slots. Analytic hits, no occupancy
-// atlas. Chip damage is a scar (pylon_wounds); dead slots are omitted (visible
-// holes). A collapse packs live nodes down; pylon_collapse.x is the 0..1 morph
-// (1 = still gappy, 0 = packed) so SDF welding can later smear along the same
-// from-to path. Must stay in lockstep with src/tower_nodes.odin.
+// Same slots as tower_raycast: a golden-angle helix of node spheres, tapered
+// toward a crown on the axis. The GPU welds live nodes into one lumpy column
+// (smooth-union + grain). Dead slots are omitted so holes read. The thin core
+// is last-stand only. A collapse packs live nodes down; pylon_collapse.x is
+// the 0..1 morph (1 = still gappy, 0 = packed) and SDF welding smears along
+// that same from-to path. Chip damage is a scar (pylon_wounds). Must stay in
+// lockstep with src/tower_nodes.odin for slot positions.
 
 const float PYLON_GRAIN_FREQ = 2.10;
 const float PYLON_CORE_R = 0.55;                 // CORE_RADIUS
-const float TOWER_NODE_WRAP = 0.20;              // TOWER_NODE_WRAP
+const float TOWER_NODE_WRAP = 0.52;              // TOWER_NODE_WRAP
+const float TOWER_SPIRAL_TAPER = 0.38;
+const float TOWER_CROWN_RADIAL = 0.10;
+const float TOWER_CROWN_START = 0.82;
+const float TOWER_WELD_K = 0.40;
+const float TOWER_GRAIN_AMP = 0.12;
+const int TOWER_CORE_EXPOSE_LIVE = 2;
 const float SPIRAL_GOLDEN_ANGLE = 2.399963229728653;
 const int PYLON_NODE_MAX = 32;
+const int PYLON_MARCH = 32;
 const float PYLON_TMIN = 0.02;
 
 vec3 ore_tint(float ore) {
@@ -464,11 +472,13 @@ vec3 ore_tint(float ore) {
     return vec3(1.00, 0.82, 0.32);                  // gold
 }
 
-// The rock itself, before any vein light. Gold ore is warmer stone than the
-// team ores so the centre reads as the prize from anywhere on the map.
+// The rock itself, before any vein light. Darker and warmer than the arena
+// walls so a pylon does not camouflage as furniture. Gold is the prize.
 vec3 ore_stone(float ore) {
-    if (ore > 3.5) return vec3(0.30, 0.26, 0.17);
-    return vec3(0.22, 0.21, 0.23);
+    if (ore > 3.5) return vec3(0.28, 0.22, 0.11);
+    if (ore < 1.5) return vec3(0.20, 0.12, 0.10);   // ember
+    if (ore < 2.5) return vec3(0.10, 0.14, 0.20);   // tide
+    return vec3(0.11, 0.18, 0.12);                  // verdant
 }
 
 uint pylon_uhash(int x, int y, int z) {
@@ -529,12 +539,26 @@ float pylon_vein(vec3 p, float seed) {
     return pow(clamp(v, 0.0, 1.0), 6.0);
 }
 
+// Helix radius at a slot. Twin of tower_slot_radial in src/tower_nodes.odin.
+float pylon_slot_radial(int index, int max_count, float spiral_r) {
+    float crown = spiral_r * TOWER_CROWN_RADIAL;
+    if (max_count <= 1) return crown;
+    float u = float(index) / float(max_count - 1);
+    float rad = mix(spiral_r, spiral_r * TOWER_SPIRAL_TAPER, u * u);
+    if (u > TOWER_CROWN_START) {
+        float cap = (u - TOWER_CROWN_START) / (1.0 - TOWER_CROWN_START);
+        rad = mix(rad, crown, cap * cap);
+    }
+    return rad;
+}
+
 // Node position from ARRAY INDEX, not HP rank.
 // Must match tower_node_spiral_pos in src/tower_nodes.odin.
-vec3 pylon_node_local(int array_index, float spiral_r, float step, float node_r) {
+vec3 pylon_node_local(int array_index, int max_count, float spiral_r, float step, float node_r) {
     float z = node_r + float(array_index) * step;
     float angle = float(array_index) * SPIRAL_GOLDEN_ANGLE;
-    return vec3(cos(angle) * spiral_r, sin(angle) * spiral_r, z);
+    float rad = pylon_slot_radial(array_index, max_count, spiral_r);
+    return vec3(cos(angle) * rad, sin(angle) * rad, z);
 }
 
 // k-th set bit in a 32-bit alive mask. Used to corkscrew a packed node
@@ -548,55 +572,6 @@ int pylon_nth_set(uint mask, int n) {
         }
     }
     return n;
-}
-
-// Finite Z-up cylinder on the origin. Twin of ray_cylinder_hit in src/math.odin,
-// with a surface normal. NaN-free on every path (see intersect_sphere).
-bool intersect_z_cylinder(vec3 ro, vec3 rd, float radius, float z0, float z1,
-                          float tmin, float tmax, out float t, out vec3 n) {
-    t = tmax;
-    n = vec3(0.0, 0.0, 1.0);
-
-    float enter = 0.0;
-    float exit = tmax;
-    float miss = 0.0;
-
-    if (abs(rd.z) < 1e-6) {
-        if (ro.z < z0 || ro.z > z1) miss = 1.0;
-    } else {
-        float inv = 1.0 / rd.z;
-        float a = (z0 - ro.z) * inv;
-        float b = (z1 - ro.z) * inv;
-        enter = max(enter, min(a, b));
-        exit = min(exit, max(a, b));
-    }
-
-    float qa = rd.x * rd.x + rd.y * rd.y;
-    float qc = ro.x * ro.x + ro.y * ro.y - radius * radius;
-    if (qa < 1e-12) {
-        if (qc > 0.0) miss = 1.0;
-    } else {
-        float qb = ro.x * rd.x + ro.y * rd.y;
-        float disc = qb * qb - qa * qc;
-        float root = sqrt(max(disc, 0.0));
-        float ia = 1.0 / max(qa, 1e-12);
-        enter = max(enter, (-qb - root) * ia);
-        exit = min(exit, (-qb + root) * ia);
-        if (disc < 0.0) miss = 1.0;
-    }
-
-    float tt = (enter < tmin) ? exit : enter;
-    if (miss > 0.5 || enter > exit || tt < tmin || tt > tmax) return false;
-    t = tt;
-    vec3 p = ro + rd * t;
-    float cap_lo = abs(p.z - z0);
-    float cap_hi = abs(p.z - z1);
-    float xy_len = length(p.xy);
-    float side_d = abs(xy_len - radius);
-    vec3 n_side = vec3(p.xy / max(xy_len, 1e-4), 0.0);
-    vec3 n_cap = vec3(0.0, 0.0, (cap_hi < cap_lo) ? 1.0 : -1.0);
-    n = (min(cap_lo, cap_hi) < side_d) ? n_cap : n_side;
-    return true;
 }
 
 // Bite scars in tower-local space. Collision stays on the node sphere; this
@@ -649,41 +624,74 @@ bool pylon_bound_clip(vec3 ro, vec3 rd, float z0, float z1, float radius, float 
     return true;
 }
 
-// Core cylinder plus live node spheres in the tower's local frame.
-// part: 0 = core, 1 = node. Slots are fixed by array index; dead bits skip.
-// collapse.x > 0: lerp the k-th live node from the gappy from-mask toward
-// its packed slot, with a mid-morph slump toward the core. That 0..1 is the
-// morph SDF welding will drive when these become a deformed volume.
+// Polynomial smooth-union. Lipschitz is ~1; the marcher steps a fraction of d.
+float pylon_smin(float a, float b, float k) {
+    float kk = max(k, 1e-4);
+    float h = clamp(0.5 + 0.5 * (b - a) / kk, 0.0, 1.0);
+    return mix(b, a, h) - kk * h * (1.0 - h);
+}
+
+float pylon_cyl_sdf(vec3 p, float radius, float z0, float z1) {
+    vec2 d = vec2(length(p.xy) - radius, max(p.z - z1, z0 - p.z));
+    return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0)));
+}
+
+// Welded live nodes (+ last-stand core) with grain. `centers` is filled once
+// per ray so collapse morph is not recomputed every step.
+float pylon_shell_sdf(vec3 p, vec3 centers[PYLON_NODE_MAX], int nmax, uint alive_mask,
+                     float node_r, float weld_k, float core_on, float core_h, float seed,
+                     out float part) {
+    float d = 1e5;
+    for (int i = 0; i < PYLON_NODE_MAX; i++) {
+        if (i < nmax && ((alive_mask & (1u << uint(i))) != 0u)) {
+            d = pylon_smin(d, length(p - centers[i]) - node_r, weld_k);
+        }
+    }
+    part = 1.0;
+    if (core_on > 0.5) {
+        float cd = pylon_cyl_sdf(p, PYLON_CORE_R, 0.0, core_h);
+        if (cd < d) part = 0.0;
+        d = pylon_smin(d, cd, weld_k * 0.65);
+    }
+    float grain = pylon_grain(p, max(node_r, 0.5), seed);
+    d += node_r * TOWER_GRAIN_AMP * (grain * 2.0 - 1.0);
+    return d;
+}
+
+// Welded shell in the tower's local frame.
+// part: 0 = last-stand core, 1 = ore node. Slots are fixed by array index;
+// dead bits skip. collapse.x > 0: lerp the k-th live node from the gappy
+// from-mask toward its packed slot, with a mid-morph slump toward the axis.
 bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
                        int max_count, float spiral_r, float step, uint alive_mask,
-                       float node_r, float outer_r, float max_t, vec4 collapse,
+                       float node_r, float outer_r, float seed, float max_t, vec4 collapse,
                        out float t, out vec3 n, out float part) {
     t = max_t;
     n = vec3(0.0, 0.0, 1.0);
-    part = 0.0;
+    part = 1.0;
 
+    float grain_pad = node_r * TOWER_GRAIN_AMP + 0.04;
     float clip_h = core_h;
     if (collapse.x > 0.001) clip_h = max(core_h, collapse.y);
     float clip0, clip1;
-    if (!pylon_bound_clip(ro, rd, -0.02, clip_h + 0.02, outer_r, max_t, clip0, clip1)) {
+    if (!pylon_bound_clip(ro, rd, -grain_pad, clip_h + grain_pad, outer_r, max_t, clip0, clip1)) {
         return false;
     }
-
-    bool hit = false;
-    float best = max_t;
-    vec3 bn = vec3(0.0, 0.0, 1.0);
-    float bpart = 0.0;
 
     int nmax = max_count;
     if (nmax > PYLON_NODE_MAX) nmax = PYLON_NODE_MAX;
     uint from_mask = uint(collapse.z + 0.5) | (uint(collapse.w + 0.5) << 16u);
+
+    vec3 centers[PYLON_NODE_MAX];
+    int live = 0;
     int rank = 0;
     for (int k = 0; k < PYLON_NODE_MAX; k++) {
+        centers[k] = vec3(0.0);
         if (k < nmax && ((alive_mask & (1u << uint(k))) != 0u)) {
-            vec3 c = pylon_node_local(k, spiral_r, step, node_r);
+            vec3 c = pylon_node_local(k, max_count, spiral_r, step, node_r);
             if (collapse.x > 0.001) {
                 int from = pylon_nth_set(from_mask, rank);
-                vec3 c0 = pylon_node_local(from, spiral_r, step, node_r);
+                vec3 c0 = pylon_node_local(from, max_count, spiral_r, step, node_r);
                 float u = 1.0 - clamp(collapse.x, 0.0, 1.0);
                 u = u * u * (3.0 - 2.0 * u);
                 c = mix(c0, c, u);
@@ -691,33 +699,47 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
                 c.xy *= 1.0 - 0.16 * sag;
                 c.z -= node_r * 0.10 * sag;
             }
+            centers[k] = c;
             rank += 1;
-            float et;
-            vec3 en;
-            if (intersect_sphere(ro, rd, c, node_r, PYLON_TMIN, best, et, en)) {
-                best = et;
-                bn = en;
-                bpart = 1.0;
-                hit = true;
-            }
+            live += 1;
         }
     }
 
-    if (core_h > 0.01) {
-        float et;
-        vec3 en;
-        if (intersect_z_cylinder(ro, rd, PYLON_CORE_R, 0.0, core_h, PYLON_TMIN, best, et, en)) {
-            best = et;
-            bn = en;
-            bpart = 0.0;
+    float core_on = (live > 0 && live <= TOWER_CORE_EXPOSE_LIVE && core_h > 0.01) ? 1.0 : 0.0;
+    float weld_k = node_r * TOWER_WELD_K;
+    float tcur = max(clip0, PYLON_TMIN);
+    float hit_t = max_t;
+    float hit_part = 1.0;
+    bool hit = false;
+    float scale = 0.55;
+
+    for (int s = 0; s < PYLON_MARCH; s++) {
+        vec3 p = ro + rd * tcur;
+        float part_s;
+        float d = pylon_shell_sdf(p, centers, nmax, alive_mask, node_r, weld_k, core_on, core_h, seed, part_s);
+        if (d < 0.0018 * max(tcur, 1.0)) {
             hit = true;
+            hit_t = tcur;
+            hit_part = part_s;
+            break;
         }
+        tcur += max(d * scale, 0.003);
+        if (tcur > clip1 || tcur > max_t) break;
     }
 
     if (!hit) return false;
-    t = best;
-    n = bn;
-    part = bpart;
+
+    vec3 p = ro + rd * hit_t;
+    vec2 e = vec2(0.04, -0.04);
+    float p0, p1, p2, p3;
+    float d0 = pylon_shell_sdf(p + e.xyy, centers, nmax, alive_mask, node_r, weld_k, core_on, core_h, seed, p0);
+    float d1 = pylon_shell_sdf(p + e.yyx, centers, nmax, alive_mask, node_r, weld_k, core_on, core_h, seed, p1);
+    float d2 = pylon_shell_sdf(p + e.yxy, centers, nmax, alive_mask, node_r, weld_k, core_on, core_h, seed, p2);
+    float d3 = pylon_shell_sdf(p + e.xxx, centers, nmax, alive_mask, node_r, weld_k, core_on, core_h, seed, p3);
+    vec3 g = e.xyy * d0 + e.yyx * d1 + e.yxy * d2 + e.xxx * d3;
+    n = g * inversesqrt(max(dot(g, g), 1e-12));
+    t = hit_t;
+    part = hit_part;
     return true;
 }
 
@@ -747,7 +769,7 @@ bool pylon_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int 
         float lt;
         vec3 ln;
         float lp_part;
-        if (!pylon_trace_local(lo, ld, sh.x, max_count, spiral_r, step, alive_mask, b.y, b.z, t, pylon_collapse[i], lt, ln, lp_part)) continue;
+        if (!pylon_trace_local(lo, ld, sh.x, max_count, spiral_r, step, alive_mask, b.y, b.z, sh.z, t, pylon_collapse[i], lt, ln, lp_part)) continue;
         vec3 lp = lo + ld * lt;
         t = lt;
         n = unrot_z(ln, s, c);
@@ -1813,7 +1835,7 @@ void main() {
         for (int i = 0; i < NPYLON; i++) {
             vec2 d = hp.xy - pylons[i].xy;
             float od = length(d);
-            float radius = pylon_shape[i].y * 1.7;
+            float radius = pylon_bound[i].z * 1.35;
             if (od < radius + 0.4) {
                 vec3 otint = ore_tint(pylon_shape[i].w);
                 float standing = pylon_bound[i].w;
@@ -1866,24 +1888,27 @@ void main() {
         vec3 tint = ore_tint(ore);
         vec3 stone = ore_stone(ore);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
-        float grain = pylon_grain(py_local, max(sh.y, 0.5), sh.z);
+        float node_r = max(pylon_bound[py_idx].y, 0.5);
+        float grain = pylon_grain(py_local, node_r, sh.z);
         float vein = pylon_vein(py_local, sh.z);
         float scar = pylon_scar(py_idx, py_local);
 
         if (py_part < 0.5) {
-            albedo = stone * (0.50 + 0.18 * grain);
-            albedo = mix(albedo, tint * 0.28, 0.16);
-            emissive += tint * (0.06 + 0.16 * vein);
-            spec_pow = 32.0;
-            spec_amt = 0.14;
+            // Last-stand stick: darker, stripped, still the team's ore.
+            albedo = stone * (0.42 + 0.22 * grain);
+            albedo = mix(albedo, tint * 0.35, 0.20);
+            emissive += tint * (0.04 + 0.20 * vein);
+            spec_pow = 28.0;
+            spec_amt = 0.16;
         } else {
-            albedo = stone * (0.78 + 0.38 * grain);
-            albedo = mix(albedo, albedo * 0.60 + vec3(0.42, 0.40, 0.38), scar * 0.60);
-            emissive += tint * vein * (0.18 + 2.6 * scar);
-            emissive += tint * scar * 0.45;
-            emissive += tint * pow(1.0 - ndv, 3.0) * 0.10;
-            spec_pow = 18.0;
-            spec_amt = 0.06 + 0.16 * scar;
+            albedo = stone * (0.55 + 0.70 * grain);
+            albedo = mix(albedo, tint * 0.55, 0.18 + 0.50 * vein);
+            albedo = mix(albedo, albedo * 0.55 + vec3(0.38, 0.32, 0.26), scar * 0.70);
+            emissive += tint * (0.10 + 1.55 * vein);
+            emissive += tint * scar * (0.55 + 2.4 * vein);
+            emissive += tint * pow(1.0 - ndv, 2.4) * (0.22 + 0.65 * vein);
+            spec_pow = 14.0;
+            spec_amt = 0.05 + 0.22 * scar + 0.10 * vein;
         }
     } else if (mat == MAT_CHUNK) {
         vec4 ch = chunks[ch_idx];
