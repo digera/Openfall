@@ -146,6 +146,14 @@ Client_World :: struct {
 	chunk_count:      int,
 	chunk_time:       f64,
 
+	// Landing and pickup flashes are client-only. `haul_pulse` is the HUD
+	// beat; `last_haul_total` is the last server-credited carry so a predicted
+	// G-drop cannot look like a pickup, and `have_haul` ignores the first
+	// snapshot of a session (joining already loaded must not flash).
+	haul_pulse:      f32,
+	last_haul_total: f32,
+	have_haul:       bool,
+
 	// Lane minions, same deal as the ore: interest-managed state, replaced
 	// whole every snapshot. Smoothed towards rather than extrapolated from,
 	// because a minion that has stopped to rebuild a tower stops dead and
@@ -205,6 +213,9 @@ Client_Chunk :: struct {
 	radius:  f32,
 	rest:    bool,
 	seed:    f32,
+	ghost:      bool,  // drawn after the server dropped it; gone when the pop ends
+	land_flash: f32,
+	pickup_pop: f32,
 }
 
 MAX_COMBAT_LOG_LINES :: 5
@@ -243,6 +254,7 @@ client_prediction_push_input :: proc(pred: ^Client_Prediction, tick: u32, input:
 client_prediction_step :: proc(pred: ^Client_Prediction, tick: u32, input: Input_State) {
 	client_prediction_push_input(pred, tick, input)
 	pred.prev_char = pred.predicted_char
+	carry_apply_predicted_drop(&pred.predicted_char, input.drop)
 	simulate_character_step(&pred.predicted_char, input, SIMULATION_DT)
 	pred.total_predictions += 1
 }
@@ -289,6 +301,7 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 	for i in oldest ..< pred.buffer_head {
 		idx := i % PREDICTION_BUFFER_SIZE
 		if pred.tick_buffer[idx] > ack_input_tick {
+			carry_apply_predicted_drop(&pred.predicted_char, pred.input_buffer[idx].drop)
 			simulate_character_step(&pred.predicted_char, pred.input_buffer[idx], SIMULATION_DT)
 		}
 	}
@@ -443,6 +456,9 @@ client_world_reset_session :: proc(world: ^Client_World) {
 	world.combat_log = {}
 	world.chunk_count = 0
 	world.chunks = {}
+	world.haul_pulse = 0
+	world.last_haul_total = 0
+	world.have_haul = false
 	world.minion_count = 0
 	world.minions = {}
 	// A new session is a new round's worth of towers. GameState on
@@ -548,19 +564,77 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 	client_world_apply_minions(world, snapshot)
 }
 
+// Carry on the wire steps by about 0.4. Anything smaller is jitter, not a pickup.
+HAUL_PICKUP_EPS :: f32(0.35)
+
+// Harvest reach plus a snapshot of travel, so a lump you just walked over
+// still counts as yours when the packet that consumed it arrives.
+CHUNK_PICKUP_VFX_R :: CHUNK_PICKUP_R + 1.5
+
+@(private = "file")
+client_chunks_have_id :: proc(chunks: []Client_Chunk, n: int, id: Ore_Chunk_ID) -> bool {
+	for i in 0 ..< n {
+		if chunks[i].present && chunks[i].id == id {
+			return true
+		}
+	}
+	return false
+}
+
+@(private = "file")
+client_chunk_keep :: proc(world: ^Client_World, src: Client_Chunk) {
+	if world.chunk_count >= MAX_SNAPSHOT_CHUNKS {
+		return
+	}
+	world.chunks[world.chunk_count] = src
+	world.chunk_count += 1
+}
+
+@(private = "file")
+client_chunk_near_local :: proc(world: ^Client_World, pos: vec3) -> bool {
+	at := world.prediction.predicted_char.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+	r := CHUNK_PICKUP_VFX_R
+	return len2_vec3(pos - at) <= r * r
+}
+
 @(private = "file")
 client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
 	// Ore is interest-managed state: the newest snapshot is the whole truth
-	// about what is nearby, so anything not in it is gone from view.
+	// about what is nearby, so anything not in it is gone from view. Pickup
+	// ghosts are the exception -- they have to outlive the packet that
+	// dropped them, or the pop is a single frame and the floor just blinks.
 	prev := world.chunks
 	prev_n := world.chunk_count
+
 	world.chunks = {}
 	world.chunk_count = int(snapshot.chunk_count)
 	world.chunk_time = world.local_time
-	for i in 0..<world.chunk_count {
+
+	// Server carry, not predicted: G-drop clears the pack locally and would
+	// look like a reverse-pickup if we read predicted_char here.
+	new_carry := world.last_haul_total
+	saw_local := false
+	for i in 0 ..< int(snapshot.entity_count) {
+		if snapshot.entities[i].id == world.local_entity_id {
+			new_carry = carry_total(snapshot.entities[i].carrying_ore)
+			saw_local = true
+			break
+		}
+	}
+	picked := world.have_haul && new_carry > world.last_haul_total + HAUL_PICKUP_EPS
+	if picked {
+		world.haul_pulse = 1
+	}
+	if saw_local {
+		world.last_haul_total = new_carry
+		world.have_haul = true
+	}
+
+	for i in 0 ..< world.chunk_count {
 		s := &snapshot.chunks[i]
 		c := &world.chunks[i]
 		c.present = true
+		c.ghost = false
 		c.id = s.id
 		c.ore = s.ore
 		c.pos = s.pos
@@ -569,11 +643,41 @@ client_world_apply_chunks :: proc(world: ^Client_World, snapshot: ^Server_Snapsh
 		c.rest = s.rest
 		// Keep the lump looking like the same rock across snapshots.
 		c.seed = f32(hash_u32(u32(s.id) * 2246822519) & 0xFFFF) / f32(0x10000) * 8
-		for k in 0..<prev_n {
+		prev_idx := -1
+		for k in 0 ..< prev_n {
 			if prev[k].present && prev[k].id == s.id {
 				c.seed = prev[k].seed
+				c.land_flash = prev[k].land_flash
+				c.pickup_pop = prev[k].pickup_pop
+				prev_idx = k
 				break
 			}
+		}
+		if s.rest && prev_idx >= 0 && !prev[prev_idx].rest {
+			c.land_flash = 1
+		}
+		// A pile that shrank while carry went up is a partial pickup: the
+		// remainder stays on the floor and flashes in place.
+		if picked && prev_idx >= 0 && s.radius + 0.01 < prev[prev_idx].radius {
+			c.pickup_pop = 1
+			c.land_flash = 0
+		}
+	}
+
+	for k in 0 ..< prev_n {
+		p := prev[k]
+		if !p.present || client_chunks_have_id(world.chunks[:], world.chunk_count, p.id) {
+			continue
+		}
+		ghost := p
+		ghost.ghost = true
+		ghost.vel = {}
+		if picked && !p.ghost && p.rest && client_chunk_near_local(world, p.pos) {
+			ghost.pickup_pop = 1
+			ghost.land_flash = 0
+			client_chunk_keep(world, ghost)
+		} else if p.ghost && p.pickup_pop > 0 {
+			client_chunk_keep(world, ghost)
 		}
 	}
 }
@@ -636,17 +740,47 @@ client_world_step_minions :: proc(world: ^Client_World, dt: f32) {
 // server owns them -- but extrapolating the airborne ones keeps a shower of
 // rock smooth between snapshots.
 client_world_step_chunks :: proc(world: ^Client_World, dt: f32) {
-	for i in 0..<world.chunk_count {
+	LAND_FLASH_DECAY :: f32(3.5)  // ~0.3 s
+	PICKUP_POP_DECAY :: f32(2.5)  // ~0.4 s
+	HAUL_PULSE_DECAY :: f32(4.0)  // ~0.25 s
+
+	write_idx := 0
+	for i in 0 ..< world.chunk_count {
 		c := &world.chunks[i]
-		if !c.present || c.rest {
+		if !c.present {
 			continue
 		}
-		c.vel.z -= CHUNK_GRAVITY * dt
-		c.pos += c.vel * dt
-		if c.pos.z < WORLD_FLOOR_Z + c.radius {
-			c.pos.z = WORLD_FLOOR_Z + c.radius
-			c.vel = {}
+		if c.land_flash > 0 {
+			c.land_flash = max(0, c.land_flash - dt * LAND_FLASH_DECAY)
 		}
+		if c.pickup_pop > 0 {
+			c.pickup_pop = max(0, c.pickup_pop - dt * PICKUP_POP_DECAY)
+		}
+		// Finished ghosts leave. A live pile that flashed for a partial
+		// pickup stays; wiping it would blink remaining ore off the floor.
+		if c.ghost && c.pickup_pop <= 0 {
+			continue
+		}
+		if !c.rest && !c.ghost {
+			c.vel.z -= CHUNK_GRAVITY * dt
+			c.pos += c.vel * dt
+			if c.pos.z < WORLD_FLOOR_Z + c.radius {
+				c.pos.z = WORLD_FLOOR_Z + c.radius
+				c.vel = {}
+			}
+		}
+		if write_idx != i {
+			world.chunks[write_idx] = c^
+		}
+		write_idx += 1
+	}
+	for i in write_idx ..< world.chunk_count {
+		world.chunks[i] = {}
+	}
+	world.chunk_count = write_idx
+
+	if world.haul_pulse > 0 {
+		world.haul_pulse = max(0, world.haul_pulse - dt * HAUL_PULSE_DECAY)
 	}
 }
 

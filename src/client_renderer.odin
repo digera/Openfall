@@ -528,8 +528,19 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			fs_params.chunk_fx[i] = {}
 			continue
 		}
-		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, c.radius}
-		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, 0}
+		radius := c.radius
+		if c.pickup_pop > 0 {
+			radius *= 0.55 + 0.45 * c.pickup_pop
+		}
+		fs_params.chunks[i] = {c.pos.x, c.pos.y, c.pos.z, radius}
+		// chunk_fx.w is one event: pickup lives in [1, 2), landing in [0, 1).
+		vfx: f32
+		if c.pickup_pop > 0 {
+			vfx = 1.0 + min(c.pickup_pop, 0.999)
+		} else {
+			vfx = min(c.land_flash, 0.999)
+		}
+		fs_params.chunk_fx[i] = {f32(u8(c.ore)), c.seed / 8, c.rest ? 1 : 0, vfx}
 	}
 	// Minions go up as the ore they are made of rather than as a team colour:
 	// their team is legible because their team's rock is, and it is the same
@@ -890,7 +901,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	}
 
 	sdtx.color3f(0.42, 0.40, 0.38)
-	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
+	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  G drop haul  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
 }
 
 @(private = "file")
@@ -1131,8 +1142,21 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			row = hud_y + 4
 		}
 		sdtx.pos(0, row)
-		sdtx_color(ore_color(carry_dominant(local.carrying_ore)))
-		sdtx.printf("HAUL %.0f/%.0f", haul, CARRY_CAPACITY_MAX)
+		base := ore_color(carry_dominant(local.carrying_ore))
+		glow := world.haul_pulse * world.haul_pulse
+		sdtx_color(base * (1.0 + glow * 0.8) + vec3{glow * 0.4, glow * 0.4, glow * 0.4})
+		sdtx.printf("HAUL %.0f/%.0f  ", haul, CARRY_CAPACITY_MAX)
+		// G is ignored in your own dump — standing there already banks — so the
+		// haul line says BANKING instead of offering a drop that will not fire.
+		// The server owns the dump; this hint lives for the snapshot delay
+		// while predicted haul is still in the pack.
+		if in_dump_zone(local.pos, world.local_team) {
+			pulse := 0.7 + 0.3 * math.sin(f32(world.local_time) * 3.0)
+			sdtx.color3f(0.85 * pulse, 0.95 * pulse, 0.50 * pulse)
+			sdtx.puts("BANKING")
+		} else {
+			sdtx.puts("[G drop]")
+		}
 	}
 
 	// --- Hotbar (bottom center) ------------------------------------------------

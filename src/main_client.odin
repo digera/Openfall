@@ -376,6 +376,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		gc.move_input = {}
 		gc.aim_locked = false
 		_ = input_consume_jump()
+		_ = input_consume_drop()
 		// Clear slot presses
 		for slot in 1..=HOTBAR_SLOTS {
 			_ = input_consume_slot(slot)
@@ -391,6 +392,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		gc.move_input = {}
 		gc.aim_locked = false
 		_ = input_consume_jump()
+		_ = input_consume_drop()
 		return
 	}
 
@@ -415,6 +417,9 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	// Hold Space to jump; also latch a press that landed between sim ticks.
 	if input_consume_jump() || input.key_space {
 		gc.move_input.jump = true
+	}
+	if input_consume_drop() {
+		gc.move_input.drop = true
 	}
 
 	// The lock is only claimed on the wire when it actually ran, so the server
@@ -497,6 +502,7 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	}
 	if ticks > 0 {
 		gc.move_input.jump = false
+		gc.move_input.drop = false
 	}
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }

@@ -19,6 +19,7 @@ Input :: struct {
 	key_shift:      bool,
 	key_tab:        bool,      // held, for the scoreboard
 	jump:           bool,      // latched press
+	drop_press:     bool,      // latched G, toss the haul
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
 	window_focused: bool,
 
@@ -50,6 +51,7 @@ input_clear_held :: proc() {
 	input.look_dy = 0
 	input.click_left = false
 	input.jump = false
+	input.drop_press = false
 	input.slot_press = {}
 	input.text_count = 0
 	input.enter_press = false
@@ -99,6 +101,8 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .SPACE:
 			input.key_space = true
 			input.jump = true
+		case .G:
+			input.drop_press = true
 		case ._1, ._2, ._3, ._4, ._5, ._6, ._7, ._8, ._9:
 			slot := int(e.key_code) - int(sapp.Keycode._1)
 			if slot < HOTBAR_SLOTS {
@@ -159,6 +163,14 @@ input_consume_click :: proc() -> bool {
 input_consume_jump :: proc() -> bool {
 	if input.jump {
 		input.jump = false
+		return true
+	}
+	return false
+}
+
+input_consume_drop :: proc() -> bool {
+	if input.drop_press {
+		input.drop_press = false
 		return true
 	}
 	return false

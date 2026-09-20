@@ -34,7 +34,7 @@ import "core:strconv"
 // carries up to two pylons that changed this tick so cover you are standing
 // in does not wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(15)  // ore carry + dump zones
+PROTOCOL_VERSION :: u8(17)  // G drops haul; ground ore consolidates into piles
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -124,8 +124,8 @@ Snapshot_Entity :: struct {
 	channel_spell: Spell_ID,
 	channel_frac:  f32,
 
-	// Ore carry: per-kind amounts. On the wire each kind is one u8 of tenths
-	// (CARRY_WIRE_SCALE), not a float: four bytes, not sixteen.
+	// Ore carry: per-kind amounts. On the wire each kind is one u8 scaled by
+	// CARRY_WIRE_SCALE, not a float: four bytes, not sixteen.
 	carrying_ore: [ORE_COUNT]f32,
 }
 
@@ -630,6 +630,7 @@ input_flags :: proc(input: Input_State) -> u8 {
 	if input.jump     { f |= 1 }
 	if input.sprint   { f |= 2 }
 	if input.aim_lock { f |= 4 }
+	if input.drop     { f |= 8 }
 	return f
 }
 
@@ -669,6 +670,7 @@ deserialize_client_input :: proc(buffer: []u8) -> (packet: Client_Input_Packet, 
 		in_.jump = flags & 1 != 0
 		in_.sprint = flags & 2 != 0
 		in_.aim_lock = flags & 4 != 0
+		in_.drop = flags & 8 != 0
 		in_.yaw = dequant_angle(br_i16(&r))
 		in_.pitch = dequant_angle(br_i16(&r))
 		in_.charge_spell = spell_id_from_wire(br_u8(&r))

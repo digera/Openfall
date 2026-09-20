@@ -155,16 +155,23 @@ server_tick :: proc(server: ^Server) {
 	server_update_resources(server, SIMULATION_DT)
 	entity_tick_death_respawn(&server.world, &server.chunks, SIMULATION_DT)
 
+	live := server.match.state != .Ended
+	// Drop before movement so this tick's legs already run at the unloaded
+	// speed, and before harvest so the tossed lumps (still airborne) cannot
+	// be swallowed back on the same tick.
+	if live {
+		mining_drop_tick(&server.chunks, &server.world)
+	}
+
 	simulate_world_step(&server.world)
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
-	beams_tick(&server.world, SIMULATION_DT, server.match.state != .Ended)
+	beams_tick(&server.world, SIMULATION_DT, live)
 	server_age_strikes(server, SIMULATION_DT)
 	combat_log_tick(&server.world.combat_log, SIMULATION_DT)
 
 	// Mining comes after the beams so a beam that went out this tick gets no
 	// free bite, and before the structure check so a bite that severs a slab is
 	// resolved in the same tick the player made it.
-	live := server.match.state != .Ended
 	mining_beams_tick(&server.mining, &server.towers, &server.chunks, &server.world, SIMULATION_DT, live)
 	tower_world_tick(&server.towers, &server.chunks, SIMULATION_DT)
 	ore_chunk_tick(&server.chunks, SIMULATION_DT)

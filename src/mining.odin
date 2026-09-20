@@ -21,11 +21,9 @@ Mining_State :: struct {
 	bite_timer: [MAX_ENTITIES]f32,
 }
 
-// A beam's bite, and how much rock a whole second of it removes. Amount is
-// scaled by toughness into node HP, so gold takes several bites to kill a node.
-BEAM_BITE_AMOUNT :: f32(0.60)
-// A detonation is one big stamp rather than a series of bites.
-BLAST_AMOUNT     :: f32(0.85)
+// A beam bite is combat DPS on the mining cadence, so a second of Thunderbolt
+// on a node is the same budget that kills a fodder. Toughness then scales that
+// into node HP, so gold still takes several bites more than a lane slot.
 BLAST_RADIUS_MULT :: f32(0.55)
 
 // Which spells can work rock at all. A beam is a cutting tool; a bolt of
@@ -97,9 +95,13 @@ mining_beams_tick :: proc(
 		if tw == nil {
 			continue
 		}
+		amount := def.beam_dps * MINE_BITE_DT
+		if amount <= 0 {
+			continue
+		}
 		at := origin + dir * t
 		radius := max(MINE_BITE_MIN_R, tw.node_radius * 1.15)
-		ore, ok := tower_mine(towers, tower_id, at, radius, BEAM_BITE_AMOUNT, id, world.teams[i])
+		ore, ok := tower_mine(towers, tower_id, at, radius, amount, id, world.teams[i])
 		if !ok {
 			continue
 		}
@@ -130,14 +132,15 @@ body_blocks_beam :: proc(world: ^Entity_World, caster: Entity_ID, origin, dir: v
 }
 
 // A detonation against a tower. Called from the projectile impact path, which
-// already knows it ran into something solid but not what.
+// already knows it ran into something solid but not what. `amount` is the
+// projectile's combat damage so an orb that pops a fodder also pops a node.
 //
 // Reads the tower world through the global rather than taking it as an argument
 // because the projectile system is shared with the client and has no server
 // handle to thread through -- the same reason `world_point_free` finds the map
 // boxes that way.
-mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
-	if g_towers == nil {
+mining_blast :: proc(at: vec3, radius: f32, amount: f32, owner: Entity_ID, team: Team_ID) {
+	if g_towers == nil || amount <= 0 {
 		return
 	}
 	pad := max(radius, 0.5) + 2.5
@@ -151,7 +154,7 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 	}
 
 	r := max(MINE_BITE_MIN_R, max(radius * BLAST_RADIUS_MULT, tw.node_radius * 0.85))
-	ore, mined := tower_mine(g_towers, id, at, r, BLAST_AMOUNT, owner, team)
+	ore, mined := tower_mine(g_towers, id, at, r, amount, owner, team)
 	if !mined {
 		return
 	}
@@ -161,22 +164,24 @@ mining_blast :: proc(at: vec3, radius: f32, owner: Entity_ID, team: Team_ID) {
 // ---------------------------------------------------------------------------
 // Harvest + Carry
 
-// Shared across all ore kinds. One gold node is 18, a lane node is 8, so the
-// cap is a little more than one prize lump and a little less than three
-// ordinary ones: you can haul a jackpot home, but you cannot vacuum the floor.
-CARRY_CAPACITY_MAX :: f32(20.0)
+// Shared across all ore kinds. A gold node is 18 and a lane node is 8, so a
+// full pack is several prize lumps or a dozen ordinary chunks: you can stay
+// out for a real haul, but you still cannot vacuum the floor.
+CARRY_CAPACITY_MAX :: f32(100.0)
 
-// Linear slow: 100% empty, 60% at the cap. Applied in the shared simulation
-// step so bots, players and client prediction all feel the same load.
+// Linear slow from 1.0 empty to CARRY_SPEED_MIN at a full pack. Load and
+// speed share CARRY_CAPACITY_MAX, so a bigger haul always costs more legs.
+// Applied in the shared simulation step so bots, players and client
+// prediction all feel the same weight.
 CARRY_SPEED_MIN :: f32(0.60)
 
-// Tenths of a unit on the wire. 20.0 packs as 200 in a u8, 0.1 resolution,
-// four bytes for four kinds instead of sixteen floats that would blow the MTU.
-CARRY_WIRE_SCALE :: f32(10.0)
+// Full haul saturates a u8. 100.0 packs as 255, ~0.4 unit resolution, four
+// bytes for four kinds instead of sixteen floats that would blow the MTU.
+CARRY_WIRE_SCALE :: f32(2.55)
 
-// Bots turn for home once they are holding more than a single typical chunk,
-// and keep walking until the dump actually empties them.
-CARRY_DUMP_THRESHOLD :: f32(12.0)
+// Bots turn for home once they are holding most of a pack, and keep walking
+// until the dump actually empties them.
+CARRY_DUMP_THRESHOLD :: f32(60.0)
 
 // Dump apron at the back of each base, matching the spawn fan. Shader rings
 // in scene.glsl must stay on these two numbers.
@@ -204,50 +209,107 @@ carry_dominant :: proc(carry: [ORE_COUNT]f32) -> Ore_Kind {
 }
 
 carry_speed_mult :: proc(carry: [ORE_COUNT]f32) -> f32 {
-	load := clampf(carry_total(carry) / CARRY_CAPACITY_MAX, 0, 1)
-	return 1.0 - (1.0 - CARRY_SPEED_MIN) * load
+	load := saturate(carry_total(carry) / CARRY_CAPACITY_MAX)
+	return lerpf(1.0, CARRY_SPEED_MIN, load)
 }
 
 // Players walking over settled ore pick it up into personal carry (multi-kind,
-// shared 20 cap). Partial pickup leaves the remainder on the ground.
+// shared 100 cap). Partial pickup leaves the remainder on the ground.
+//
+// One pass over the floor: each lump goes to the nearest living body in range
+// that still has room. Walking a pile therefore vacuums it in a tick, and two
+// people standing on the same scatter split it by who is closer to each rock
+// rather than by entity-id order taking the whole heap.
 mining_harvest_tick :: proc(chunks: ^Ore_Chunk_World, world: ^Entity_World) {
-	for i in 1 ..< MAX_ENTITIES {
-		id := Entity_ID(i)
-		if !entity_alive(world, id) {
-			continue
-		}
-		team := world.teams[i]
-		if team == .None || team == .Spectator {
-			continue
-		}
-		char := &world.characters[i]
-		// Reach from the body's middle, not its feet, so ore resting against a
-		// step is still collectable.
-		at := char.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
-		index, ok := ore_chunk_find_pickup(chunks, at)
-		if !ok {
-			continue
-		}
-		c := &chunks.chunks[index]
-		total := carry_total(char.carrying_ore)
-		if total >= CARRY_CAPACITY_MAX {
+	if chunks.count <= 0 {
+		return
+	}
+	reach2 := CHUNK_PICKUP_R * CHUNK_PICKUP_R
+	for ci in 0 ..< MAX_ORE_CHUNKS {
+		c := &chunks.chunks[ci]
+		if !c.active || !c.rest {
 			continue
 		}
 		slot := ore_index_of(c.ore)
 		if slot < 0 {
 			continue
 		}
+		best_i := -1
+		best_d2 := reach2
+		for i in 1 ..< MAX_ENTITIES {
+			id := Entity_ID(i)
+			if !entity_alive(world, id) {
+				continue
+			}
+			team := world.teams[i]
+			if team == .None || team == .Spectator {
+				continue
+			}
+			char := &world.characters[i]
+			if carry_total(char.carrying_ore) >= CARRY_CAPACITY_MAX {
+				continue
+			}
+			// Reach from the body's middle, not its feet, so ore resting against a
+			// step is still collectable.
+			at := char.pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
+			d2 := len2_vec3(c.pos - at)
+			if d2 < best_d2 {
+				best_d2 = d2
+				best_i = i
+			}
+		}
+		if best_i < 0 {
+			continue
+		}
+		char := &world.characters[best_i]
+		total := carry_total(char.carrying_ore)
 		pickup := min(c.amount, CARRY_CAPACITY_MAX - total)
+		if pickup <= 0 {
+			continue
+		}
 		char.carrying_ore[slot] += pickup
 		if SERVER_VERBOSE {
 			server_log("[Ore] %d picked up %.0f %s (now carrying %.0f / %.0f)",
-				id, pickup, ore_name(c.ore), carry_total(char.carrying_ore), CARRY_CAPACITY_MAX)
+				Entity_ID(best_i), pickup, ore_name(c.ore), carry_total(char.carrying_ore), CARRY_CAPACITY_MAX)
 		}
 		if pickup >= c.amount {
-			ore_chunk_consume(chunks, index)
+			ore_chunk_consume(chunks, ci)
 		} else {
 			c.amount -= pickup
+			c.radius = ore_chunk_radius_for(c.amount)
 		}
+	}
+}
+
+// G tosses the pack onto the floor. Ignored in your own dump (standing there
+// already banks) and while dead (death has its own drop). Newly tossed lumps
+// are airborne, so harvest this tick cannot swallow them back.
+mining_drop_tick :: proc(chunks: ^Ore_Chunk_World, world: ^Entity_World) {
+	for i in 1 ..< MAX_ENTITIES {
+		id := Entity_ID(i)
+		if !world.inputs[i].drop {
+			continue
+		}
+		if !entity_alive(world, id) {
+			continue
+		}
+		char := world.characters[i]
+		if carry_total(char.carrying_ore) <= 0 {
+			continue
+		}
+		if in_dump_zone(char.pos, world.teams[i]) {
+			continue
+		}
+		entity_drop_carried_ore(&char, chunks, id, camera_forward(char.yaw, 0))
+		world.characters[i] = char
+	}
+}
+
+// Client prediction: clear the pack so the legs speed up this tick. The server
+// still owns the lumps on the floor; a failed spawn reconciles the ore back.
+carry_apply_predicted_drop :: proc(char: ^Character_State, drop: bool) {
+	if drop && !char.dead {
+		char.carrying_ore = {}
 	}
 }
 

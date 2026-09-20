@@ -427,7 +427,7 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 	// tower carves the rock; one in open air finds nothing and costs a cylinder
 	// test per pylon.
 	if direct == INVALID_ENTITY {
-		mining_blast(at, max(proj.aoe_radius, proj.radius * 3), proj.owner_id, proj.owner_team)
+		mining_blast(at, max(proj.aoe_radius, proj.radius * 3), proj.damage, proj.owner_id, proj.owner_team)
 	}
 	projectile_destroy(world, slot)
 }
