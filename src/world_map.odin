@@ -98,6 +98,7 @@ world_map_init :: proc "contextless" () {
 		world_solid_boxes[s] = {center = d * 85.0 - side * 2.2 + vec3{0, 0, 1.15}, half = {1.0, 0.9, 1.15}, yaw = a}; s += 1
 	}
 	// s == NUM_SOLID_BOXES (3 pillars + 3 * 4 crates)
+	world_last_free_selftest()
 }
 
 // Transform a world point into a box's local frame.
@@ -269,6 +270,46 @@ world_segment_clear :: proc(a, b: vec3, step: f32 = 0.6) -> bool {
 		}
 	}
 	return true
+}
+
+// Last free centre on the segment `from` → `to`. `from` already passed
+// world_point_free; `to` is the first sample that did not. Eight splits put a
+// 0.4 m projectile sub-step inside a centimetre, the same band world_ray_hit
+// spends after its march. The blocked sample comes back too so
+// world_surface_normal can read the face that was actually hit, not a point a
+// sub-step deep in the solid.
+world_last_free :: proc(from, to: vec3, pad: f32) -> (free: vec3, blocked: vec3) {
+	free = from
+	blocked = to
+	for _ in 0..<8 {
+		mid := (free + blocked) * 0.5
+		if world_point_free(mid, pad) {
+			free = mid
+		} else {
+			blocked = mid
+		}
+	}
+	return
+}
+
+@(private = "file")
+world_last_free_selftest :: proc() {
+	// Missile-sized sphere, last half-metre of a step that leaves the plaza
+	// through the axis-aligned +X face (y=20 so the 45° square does not cover
+	// it). Returning the start of the segment (the old projectile bug) sits
+	// 0.24 m short of the wall; the bisection has to land on the shrunk face.
+	pad := f32(0.16)
+	from := vec3{31.6, 20, 1.2}
+	to := vec3{32.2, 20, 1.2}
+	assert(world_point_free(from, pad), "plaza interior is free")
+	assert(!world_point_free(to, pad), "past the plaza wall is blocked")
+	free, blocked := world_last_free(from, to, pad)
+	assert(world_point_free(free, pad), "last free still passes occupancy")
+	assert(!world_point_free(blocked, pad), "blocked sample fails occupancy")
+	wall := WORLD_PLAZA_HALF - pad
+	assert(abs(free.x - wall) < 0.02, "last free sits on the plaza face")
+	n := world_surface_normal(free, blocked, pad)
+	assert(n.x < -0.9, "plaza wall normal points back into the walkable volume")
 }
 
 // How far a ray gets before it meets a wall, the floor, the ceiling or cover:
