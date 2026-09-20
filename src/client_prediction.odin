@@ -476,7 +476,7 @@ client_world_apply_gamestate_towers :: proc(world: ^Client_World, gs: ^Server_Ga
 }
 
 client_world_apply_snapshot_towers :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
-	n := min(int(snapshot.tower_count), MAX_SNAPSHOT_OCC_PYLONS)
+	n := min(int(snapshot.tower_count), MAX_SNAPSHOT_TOWERS)
 	for i in 0 ..< n {
 		tw := &snapshot.towers[i]
 		t := tower_get(&world.towers, tw.tower_id)

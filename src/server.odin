@@ -676,7 +676,7 @@ server_send_snapshots :: proc(server: ^Server) {
 		}
 	}
 
-	dirty: [MAX_SNAPSHOT_OCC_PYLONS]Pylon_ID
+	dirty: [MAX_SNAPSHOT_TOWERS]Pylon_ID
 	dirty_n := tower_collect_dirty(&server.towers, dirty[:])
 
 	for ci in 0..<server.client_count {

@@ -17,7 +17,7 @@ import "core:strconv"
 //   Lobby            team populations + join verdict
 //   Welcome          entity id + team
 //   Snapshot         per-client world state, 30Hz, nearest-N entities
-//   GameState        match / pylon occupancy / team wallets, 10Hz
+//   GameState        match / tower node HP / team wallets, 10Hz
 //   Roster           who is playing and how they are doing, 2Hz, everyone
 //
 // The snapshot is interest-managed: it carries the nearest handful of bodies
@@ -29,10 +29,10 @@ import "core:strconv"
 // Combat events do belong in the snapshot: they are per-client, they are
 // wanted the instant they happen, and they are gone a second later.
 //
-// Pylon occupancy is small enough to snapshot. GameState carries all seven
-// column-height blobs every 10 Hz (joiners, catch-up). The 30 Hz snapshot
-// carries up to two pylons that changed this tick so cover you are standing
-// in does not wait on the HUD packet.
+// Tower node HP is small enough to snapshot. GameState carries all seven
+// towers every 10 Hz (joiners, catch-up). The 30 Hz snapshot carries up to
+// two towers that changed this tick so cover you are standing in does not
+// wait on the HUD packet.
 
 PROTOCOL_VERSION :: u8(17)  // G drops haul; ground ore consolidates into piles
 MAX_PACKET_SIZE  :: 1400
@@ -62,6 +62,7 @@ MAX_SNAPSHOT_STRIKES       :: 4
 MAX_SNAPSHOT_BEAMS         :: 4
 MAX_SNAPSHOT_COMBAT_EVENTS :: 8
 MAX_SNAPSHOT_CHUNKS        :: 8
+MAX_SNAPSHOT_TOWERS        :: 2
 
 // Everyone who can be in a match at once. Checked against MAX_CLIENTS +
 // MAX_BOTS where those are in scope; the client build has neither, so the
@@ -219,7 +220,7 @@ Server_Snapshot_Packet :: struct {
 	combat_event_count: u8,
 	combat_events:      [MAX_SNAPSHOT_COMBAT_EVENTS]Snapshot_Combat_Event,
 	tower_count:      u8,
-	towers:           [MAX_SNAPSHOT_OCC_PYLONS]Snapshot_Tower_Nodes,
+	towers:           [MAX_SNAPSHOT_TOWERS]Snapshot_Tower_Nodes,
 	chunk_count:      u8,
 	chunks:           [MAX_SNAPSHOT_CHUNKS]Snapshot_Chunk,
 }
@@ -757,7 +758,7 @@ SNAPSHOT_WORST_BYTES ::
 	MAX_SNAPSHOT_STRIKES * SNAPSHOT_STRIKE_BYTES +
 	MAX_SNAPSHOT_BEAMS * SNAPSHOT_BEAM_BYTES +
 	MAX_SNAPSHOT_COMBAT_EVENTS * SNAPSHOT_EVENT_BYTES +
-	MAX_SNAPSHOT_OCC_PYLONS * SNAPSHOT_TOWER_NODE_BYTES +
+	MAX_SNAPSHOT_TOWERS * SNAPSHOT_TOWER_NODE_BYTES +
 	MAX_SNAPSHOT_CHUNKS * SNAPSHOT_CHUNK_BYTES
 
 #assert(SNAPSHOT_WORST_BYTES <= MAX_PACKET_SIZE)
@@ -885,7 +886,7 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	}
 
 	// Dirty tower nodes, at most two per snapshot so nodes update at 30 Hz.
-	tcount := min(int(packet.tower_count), MAX_SNAPSHOT_OCC_PYLONS)
+	tcount := min(int(packet.tower_count), MAX_SNAPSHOT_TOWERS)
 	bw_u8(&w, u8(tcount))
 	for i in 0..<tcount {
 		t := &packet.towers[i]
@@ -1033,7 +1034,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	}
 	packet.combat_event_count = u8(ccount)
 
-	tcount := min(int(br_u8(&r)), MAX_SNAPSHOT_OCC_PYLONS)
+	tcount := min(int(br_u8(&r)), MAX_SNAPSHOT_TOWERS)
 	for i in 0..<tcount {
 		t := &packet.towers[i]
 		tid := br_u8(&r)
