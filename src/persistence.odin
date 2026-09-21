@@ -1,5 +1,6 @@
 // Phase 5: Persistence Layer
 // Event-sourced item ledger + accounts
+// NOT YET WIRED — Phase 5 scaffolding; arena server runs without this.
 package main
 
 import "core:fmt"

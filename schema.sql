@@ -1,5 +1,6 @@
 -- Nexus Arena: Phase 5 Persistence Schema
 -- Event-sourced item ledger + accounts
+-- NOT YET WIRED — Phase 5 scaffolding; arena server runs without this.
 
 -- Accounts: minimal player identity
 CREATE TABLE accounts (

@@ -1,5 +1,6 @@
 // Phase 5: Spatial Grid
 // Abstract spatial index for entity queries (arena = single chunk, MMO = sparse multi-chunk)
+// NOT YET WIRED — Phase 5 scaffolding; arena server runs without this.
 package main
 
 import "core:fmt"
