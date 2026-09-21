@@ -656,8 +656,8 @@ bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f3
 	   char.mana >= SPELL_DEFS[.Call_Lightning].mana_cost && r < 0.3 {
 		return .Call_Lightning
 	}
-	// The orb only lands at short range now that it lobs, and the lance is too
-	// slow to connect across the map.
+	// The orb is a mid-range lob now that its speed is doubled, and the lance
+	// is too slow to connect across the map.
 	if dist < 26 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.4 {
 		return .Arcane_Orb
 	}
