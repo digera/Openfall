@@ -658,7 +658,7 @@ bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f3
 	}
 	// The orb only lands at short range now that it lobs, and the lance is too
 	// slow to connect across the map.
-	if dist < 13 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.4 {
+	if dist < 26 && cds[.Arcane_Orb] <= 0 && char.mana >= SPELL_DEFS[.Arcane_Orb].mana_cost && r < 0.4 {
 		return .Arcane_Orb
 	}
 	if dist < 24 && cds[.Frost_Lance] <= 0 && char.mana >= SPELL_DEFS[.Frost_Lance].mana_cost && r < 0.6 {
