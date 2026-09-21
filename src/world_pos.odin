@@ -1,5 +1,6 @@
 // Phase 5: World Position Types
 // 64-bit integer world coordinates + local float offsets
+// NOT YET WIRED — Phase 5 scaffolding; arena server runs without this.
 package main
 
 import "core:math"

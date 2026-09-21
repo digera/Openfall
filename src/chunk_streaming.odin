@@ -1,5 +1,6 @@
 // Phase 5: Chunk Streaming Scaffold
 // Load/unload world chunks (NVMe-backed, MMO-ready)
+// NOT YET WIRED — Phase 5 scaffolding; arena server runs without this.
 package main
 
 import "core:fmt"
