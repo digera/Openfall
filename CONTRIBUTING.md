@@ -59,7 +59,7 @@ See the [README](README.md) for full build and playtest instructions. Quick summ
 ./bin/nexus_client
 ```
 
-The graphical client defaults to `primord.io:27015`. For local testing, set `$env:SERVER_IP = "127.0.0.1"` (Windows) or `export SERVER_IP=127.0.0.1` (Linux).
+The graphical client defaults to `primord.io:27015` (BDFL generously hosting a game server). For local testing, set `$env:SERVER_IP = "127.0.0.1"` (Windows) or `export SERVER_IP=127.0.0.1` (Linux).
 
 ## PR process
 
