@@ -4,7 +4,7 @@
 
 **Openfall** is a server-authoritative spell arena built in Odin. The current focus is **Nexus Dominion**: three teams fighting for control of seven obelisks on a three-lane map with spell combat, tower destruction, and ore-based economy. The match ends when the golden centre tower is fully rebuilt; whoever laid most of it wins.
 
-The vision evolves toward a larger open world, but **Aether-Mesh** remains a held idea documented in `AETHER_MESH.md` — it is not current work.
+The vision evolves toward a larger open world, but **Aether-Mesh** remains a held future idea documented separately — it is not current work.
 
 ## We're excited for PRs that:
 
