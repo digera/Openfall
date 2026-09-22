@@ -613,7 +613,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			pos.z += CHARACTER_HEIGHT_M * 0.50 + 0.06 * math.sin(r.world_t * 2.07 + phase)
 			fs_params.wisps[k] = {pos.x, pos.y, pos.z, f32(u8(remote.team)) + hp}
 
-			// The sticky target is framed where it is actually drawn, bob and
+			// The crosshair's target is framed where it is actually drawn, bob and
 			// all, so the mark rides the body instead of hanging beside it.
 			// Only a wisp near enough to be one of the sixteen gets one: a
 			// frame around a body this client is not drawing marks nothing.
@@ -1162,7 +1162,6 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	// --- Hotbar (bottom center) ------------------------------------------------
 	slot_w: f32 = 14
 	start := cols * 0.5 - slot_w * f32(HOTBAR_SLOTS) * 0.5
-	_, have_strike_target := client_world_strike_target(world)
 	for i in 0..<HOTBAR_SLOTS {
 		spell := HOTBAR[i]
 		def := &SPELL_DEFS[spell]
@@ -1225,10 +1224,6 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		} else if !ready {
 			sdtx.color3f(0.45, 0.55, 0.85)
 			sdtx.printf("need %.0f mp", def.mana_cost)
-		} else if def.payload == .Strike && !have_strike_target {
-			// Affordable and off cooldown, but nobody under the crosshair.
-			sdtx.color3f(0.6, 0.6, 0.65)
-			sdtx.puts("no target")
 		} else {
 			sdtx.color3f(0.5, 0.75, 0.55)
 			sdtx.puts("==========")

@@ -16,7 +16,7 @@ Spell_ID :: enum u8 {
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // straight piercing lance, heavy damage + slow
 	Friendly_Heal  = 5,    // wind-up mend: caster and a targeted ally
-	Call_Lightning = 6,    // bolt from the sky onto the crosshair's target
+	Call_Lightning = 6,    // hitscan bolt: the body under the crosshair at release
 	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
 }
 
@@ -40,7 +40,7 @@ Spell_Def :: struct {
 	cast_time:     f32,   // seconds of wind-up before a full-power fire
 
 	payload:       Spell_Payload_Type,
-	target_filter: Spell_Target_Filter, // what may be sticky-targeted while this spell is selected
+	target_filter: Spell_Target_Filter, // who the sticky crosshair may hold; a strike does not use it
 
 	proj_speed:    f32,
 	proj_lifetime: f32,
@@ -72,8 +72,8 @@ Spell_Payload_Type :: enum u8 {
 	None = 0,
 	Projectile,
 	Teleport,
-	Strike,     // lands on the targeted entity when the wind-up completes
-	Heal,       // restores health to the caster and a targeted ally
+	Strike,     // hitscan: the hostile body under the crosshair when the wind-up ends
+	Heal,       // restores health to the caster and a soft-targeted ally
 	Beam,       // does its work every tick it is held; the release is nothing
 }
 
@@ -173,11 +173,11 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		heal          = 50,
 	},
 
-	// The only spell that cannot be dodged, so everything else about it is
-	// slow: the longest wind-up on the bar, the biggest mana bill, and it
-	// needs the target in the open when it lands. The wind-up is the
-	// counterplay -- step behind a pillar before the bolt comes down and the
-	// caster has spent 1.8 s for nothing.
+	// Placed when the button comes up, not locked when the wind-up starts.
+	// The ray has to meet a hostile body or the bolt fizzles with the mana
+	// unspent; cover and a minion in the way count as a miss. The long
+	// wind-up is still the tell. Unlike Heal there is no soft target, so a
+	// cursor that has drifted off the body spends the 1.8 s on nothing.
 	.Call_Lightning = {
 		id              = .Call_Lightning,
 		name            = "Call Lightning",
@@ -216,35 +216,35 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 	},
 }
 
-// Widest the crosshair may drift off a target between picking it and the
-// release before the server calls it a different shot. Generous on purpose:
-// the soft target exists so that aim wobble during a wind-up is forgiven.
-STRIKE_AIM_COS :: f32(0.766) // cos 40 deg
+// Widest the crosshair may drift off a soft target between picking it and the
+// release before the server calls it a different heal. Generous on purpose:
+// the latch exists so that aim wobble during a wind-up is forgiven. Call
+// Lightning does not use this; that bolt is a hitscan of the release ray.
+SOFT_AIM_COS :: f32(0.766) // cos 40 deg
 
-// Where a strike lands (and where its splash starts): the target's centre.
+// Where a bolt or a mend is aimed: the target's centre. Splash starts here too.
 strike_center :: proc(target_pos: vec3) -> vec3 {
 	return target_pos + vec3{0, 0, CHARACTER_HEIGHT_M * 0.5}
 }
 
-// Geometry of a strike, shared by the server's validation and the client's
-// cast decision so the bar never offers a bolt the server would refuse. Who
-// the target is (alive, hostile) is checked by each side on its own view of
-// the world.
+// Geometry of a soft target, shared by the server's heal check and the
+// client's cast decision. Who the target is (alive, friendly, hurt) is
+// checked by each side on its own view of the world.
 //
-// In range: close enough and roughly where the caster is looking. This is
-// all a wind-up needs to start; cover does not stop a bolt being *called*.
-strike_target_in_range :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
+// In range: close enough and roughly where the caster is looking. Cover does
+// not stop a heal being started.
+soft_target_in_range :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
 	to := strike_center(target_pos) - eye
 	dist := len_vec3(to)
 	if dist > def.range || dist < 1e-3 {
 		return false
 	}
-	return dot_vec3(to, look) >= STRIKE_AIM_COS * dist
+	return dot_vec3(to, look) >= SOFT_AIM_COS * dist
 }
 
-// In reach: in range and in the open. This is what firing demands.
-strike_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
-	return strike_target_in_range(def, eye, look, target_pos) &&
+// In reach: in range and in the open. This is what a heal landing on an ally demands.
+soft_target_in_reach :: proc(def: ^Spell_Def, eye, look, target_pos: vec3) -> bool {
+	return soft_target_in_range(def, eye, look, target_pos) &&
 	       world_segment_clear(eye, strike_center(target_pos))
 }
 
@@ -326,9 +326,14 @@ Entity_Spell_State :: struct {
 	// server decides how long it has actually been held. Once the button has
 	// come up, `channel_committed` keeps that wind-up going until a full-power
 	// fire — an early release is a commit, not a half-charged shot.
+	// `release_aim` is the look on that commit. A hitscan fires along it even
+	// when the bar fills a few ticks later and the caster has since looked away.
 	channel_spell:     Spell_ID,
 	channel_time:      f32,
 	channel_committed: bool,
+	release_aim:       bool,
+	release_yaw:       f32,
+	release_pitch:     f32,
 
 	// Where the held beam ended this tick, for the snapshot. Only meaningful
 	// while channel_spell is a beam.

@@ -384,6 +384,12 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		hd := math.sqrt(d.x * d.x + d.y * d.y)
 		desired_yaw = math.atan2(d.y, d.x) + b.aim_err_yaw
 		desired_pitch = math.atan2(d.z, hd) + b.aim_err_pitch
+		// A hitscan bolt has no cone to hide in. The noise a missile forgives
+		// puts this ray beside the body, so the bolt is aimed dead on.
+		if SPELL_DEFS[aim_spell].payload == .Strike {
+			desired_yaw = math.atan2(d.y, d.x)
+			desired_pitch = math.atan2(d.z, hd)
+		}
 	} else if b.mining {
 		// Rock does not dodge, so there is no lead and no aim error worth
 		// modelling -- just look at the spot being cut.
@@ -473,8 +479,11 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		}
 	} else if b.charge_spell != .None {
 		// A self-cast needs neither a target nor settled aim, so a bot that is
-		// backing out of a fight can still finish the heal it started.
+		// backing out of a fight can still finish the heal it started. A bolt
+		// is the opposite: it waits until the release ray is on the body, and
+		// gives up if that never happens.
 		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
+		hitscan := SPELL_DEFS[b.charge_spell].payload == .Strike
 		if !have_target && !self_cast {
 			b.charge_spell = .None
 			b.charge_time = 0
@@ -482,17 +491,35 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		} else {
 			b.charge_time += dt
 			def := &SPELL_DEFS[b.charge_spell]
-			// The aim gate can't stall the release forever, or a bot that never
-			// settles would hold its charge for the rest of the match.
-			aimed := self_cast || abs(yaw_diff) < 0.12
-			if b.charge_time >= def.cast_time && (aimed || b.charge_time >= def.cast_time + 0.6) {
-				// The cast reads the entity's yaw/pitch, which the sim sets from
-				// input next tick; apply our aim now so the shot goes where we look.
+			release := false
+			give_up := false
+			if b.charge_time >= def.cast_time {
+				if hitscan {
+					c := server.world.characters[b.id]
+					eye_now := vec3{c.pos.x, c.pos.y, c.pos.z + PLAYER_EYE_M}
+					look_now := camera_forward(b.aim_yaw, b.aim_pitch)
+					hit, on := server_strike_hitscan(server, b.id, eye_now, look_now, def.range)
+					release = on && hit == b.target
+					// The aim gate can't stall the release forever, or a bot
+					// that never settles would hold its charge for the match.
+					give_up = !release && b.charge_time >= def.cast_time + 0.6
+				} else {
+					release = self_cast || abs(yaw_diff) < 0.12 || b.charge_time >= def.cast_time + 0.6
+				}
+			}
+			if give_up {
+				b.charge_spell = .None
+				b.charge_time = 0
+				b.cast_timer = 0.25
+			} else if release {
+				// Projectiles read the entity's yaw, which the sim sets from
+				// input next tick; apply our aim now so the shot goes where we
+				// look. The bolt reads the angles passed in, the release look.
 				c := server.world.characters[b.id]
 				c.yaw = b.aim_yaw
 				c.pitch = b.aim_pitch
 				server.world.characters[b.id] = c
-				ok := server_handle_spell_cast(server, b.id, b.charge_spell, 1.0, server.tick_id, b.target)
+				ok := server_handle_spell_cast(server, b.id, b.charge_spell, 1.0, server.tick_id, b.target, b.aim_yaw, b.aim_pitch)
 				b.charge_spell = .None
 				b.charge_time = 0
 				b.cast_timer = ok ? rand.float32_range(0.45, 1.0) : 0.15
@@ -649,9 +676,9 @@ bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool 
 bot_pick_spell :: proc(server: ^Server, b: ^Bot, char: Character_State, dist: f32) -> Spell_ID {
 	cds := &server.world.spell_states[b.id].cooldowns
 	r := rand.float32()
-	// The bolt cannot be dodged, so a bot that can afford it reaches for it
-	// first at mid range, where a lance would take long enough to arrive to be
-	// sidestepped. Point blank it is a waste of the wind-up.
+	// The bolt is a hitscan at the end of a long wind-up, so it is worth it
+	// where the bot can keep a body under the ray and a lance would still be
+	// in the air. Point blank the wind-up is a waste.
 	if dist > 8 && dist < SPELL_DEFS[.Call_Lightning].range - 3 && cds[.Call_Lightning] <= 0 &&
 	   char.mana >= SPELL_DEFS[.Call_Lightning].mana_cost && r < 0.3 {
 		return .Call_Lightning

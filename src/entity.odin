@@ -47,8 +47,9 @@ Input_State :: struct {
 	// on the tick it actually fires.
 	charge_spell: Spell_ID,
 	cast_spell:   Spell_ID,
-	// The crosshair's sticky soft target. Targeted spells land on it, after the
-	// server has re-validated it; nothing about it is trusted.
+	// The crosshair's target. Heal keeps this sticky and the server re-checks
+	// the cone; nothing about the id is trusted. Call Lightning does not read
+	// it — that bolt is a hitscan of the look at the moment of release.
 	target_id:    Entity_ID,
 }
 

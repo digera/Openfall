@@ -434,9 +434,9 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 }
 
 // Aiming is the only thing that picks a target, so anything that stops the
-// player aiming drops it the same way it drops a charge. When switching spells,
-// clear the target if it's invalid for the new spell's filter, or retarget
-// under the crosshair if a valid one is there.
+// player aiming drops it the same way it drops a charge. Call Lightning holds
+// whoever the ray is on this frame. Every other slot, Heal included, keeps the
+// sticky latch and retargets when the new spell's filter rejects it.
 client_update_target :: proc(gc: ^Game_Client) {
 	pred := &gc.client_world.prediction
 	if gc.phase != .Playing || gc.is_spectating || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
@@ -447,11 +447,15 @@ client_update_target :: proc(gc: ^Game_Client) {
 	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
 	look := camera_forward(gc.view_yaw, gc.view_pitch)
 
-	// Get the currently selected spell's filter
 	spell := HOTBAR[gc.selected_slot]
-	filter := SPELL_DEFS[spell].target_filter
+	def := &SPELL_DEFS[spell]
+	if def.payload == .Strike {
+		id, ok := client_world_hitscan_strike(&gc.client_world, eye, look, def.range)
+		gc.client_world.target_id = ok ? id : INVALID_ENTITY
+		return
+	}
 
-	// If the current target doesn't match the new filter, clear it and try to retarget
+	filter := def.target_filter
 	if !client_world_target_valid_for_spell(&gc.client_world, gc.client_world.target_id, filter) {
 		gc.client_world.target_id = INVALID_ENTITY
 	}
@@ -545,23 +549,12 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 				client_drop_charge(gc)
 				return .None, .None
 			}
-			// A strike needs someone to call it on, in range, when it starts.
-			// Cover is not asked about until it fires: the target is free to
-			// duck, and the caster is free to wait them out.
-			if def.payload == .Strike {
-				target, ok := client_world_strike_target(&gc.client_world)
-				if !ok || !strike_target_in_range(def, eye, look, target.display_state.pos) {
-					client_sfx_note_fizzle(gc)
-					client_drop_charge(gc)
-					return .None, .None
-				}
-			}
 			// A heal can start on the caster alone. At full health it needs a
-			// wounded ally in range, the same way a strike needs a hostile.
+			// wounded ally in range. A bolt does not: it is placed on release.
 			if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
 				target, ok := client_world_heal_target(&gc.client_world)
 				if !ok || target.display_state.health >= HEALTH_MAX ||
-				   !strike_target_in_range(def, eye, look, target.display_state.pos) {
+				   !soft_target_in_range(def, eye, look, target.display_state.pos) {
 					client_sfx_note_fizzle(gc)
 					client_drop_charge(gc)
 					return .None, .None
@@ -604,17 +597,10 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 		return .None, gc.charging_spell
 	}
 
-	// Losing the target mid-wind-up (they died, or the crosshair moved on to
-	// a teammate) drops the charge so the player can start over at once
-	// rather than find out when it fires. A heal at full health is the same
-	// for its ally; a wounded caster keeps winding even if the ally is gone.
-	if def.payload == .Strike {
-		if _, ok := client_world_strike_target(&gc.client_world); !ok {
-			client_sfx_note_fizzle(gc)
-			client_drop_charge(gc)
-			return .None, .None
-		}
-	}
+	// A heal wound up at full health is for an ally. If that ally is gone or
+	// topped off, drop the charge so the player can start over. A wounded
+	// caster keeps winding either way. Call Lightning does not: the cursor
+	// places it at release, so looking away mid-cast is allowed.
 	if def.payload == .Heal && pred.predicted_char.health >= HEALTH_MAX {
 		target, ok := client_world_heal_target(&gc.client_world)
 		if !ok || target.display_state.health >= HEALTH_MAX {
@@ -637,11 +623,10 @@ client_finish_cast :: proc(gc: ^Game_Client, eye, look: vec3) -> (cast_spell: Sp
 	spell := gc.charging_spell
 	def := &SPELL_DEFS[spell]
 	client_drop_charge(gc)
-	// A strike whose target is out of reach fizzles here for the same reason
+	// A bolt with nobody under the crosshair fizzles here for the same reason
 	// the server would refuse it, and without pretending a cooldown started.
 	if def.payload == .Strike {
-		target, ok := client_world_strike_target(&gc.client_world)
-		if !ok || !strike_target_in_reach(def, eye, look, target.display_state.pos) {
+		if _, ok := client_world_hitscan_strike(&gc.client_world, eye, look, def.range); !ok {
 			client_audio_play(.Fizzle)
 			return .None, .None
 		}
@@ -653,7 +638,7 @@ client_finish_cast :: proc(gc: ^Game_Client, eye, look: vec3) -> (cast_spell: Sp
 		ally_ok := false
 		if target, ok := client_world_heal_target(&gc.client_world); ok &&
 		   target.display_state.health < HEALTH_MAX {
-			ally_ok = strike_target_in_reach(def, eye, look, target.display_state.pos)
+			ally_ok = soft_target_in_reach(def, eye, look, target.display_state.pos)
 		}
 		if !self_ok && !ally_ok {
 			client_audio_play(.Fizzle)
@@ -737,7 +722,9 @@ client_apply_aim_lock :: proc(gc: ^Game_Client, dt: f32) -> bool {
 	}
 
 	// Only hostiles. Heal has its own sticky target and dragging the view onto
-	// an ally would fight the player rather than help them.
+	// an ally would fight the player rather than help them. While Call
+	// Lightning is selected the latch is the hitscan, so this only pulls
+	// toward a body the ray is already on.
 	target_id := world.target_id
 	if target_id == INVALID_ENTITY || int(target_id) >= MAX_ENTITIES {
 		return false

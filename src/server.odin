@@ -407,11 +407,17 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 		spell_state.channel_spell = .None
 		spell_state.channel_time = 0
 		spell_state.channel_committed = false
+		spell_state.release_aim = false
 		return
 	}
 
 	if input.cast_spell != .None {
 		if spell_state.channel_spell == input.cast_spell {
+			// This is the release. A hitscan has to follow this look even when
+			// the bar fills a few ticks later and the caster has looked away.
+			spell_state.release_yaw = input.yaw
+			spell_state.release_pitch = input.pitch
+			spell_state.release_aim = true
 			def := &SPELL_DEFS[input.cast_spell]
 			if spell_charge_frac(def, spell_state.channel_time) >= 1 {
 				server_fire_channel(server, id, input)
@@ -432,6 +438,7 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 			// Keep the committed wind-up.
 		} else {
 			spell_state.channel_committed = false
+			spell_state.release_aim = false
 			if SPELL_DEFS[input.charge_spell].payload == .Beam {
 				// Refused, a beam stays dark while the button is held and relights
 				// the tick it becomes castable, the way a held wind-up restarts
@@ -461,11 +468,18 @@ server_advance_channel :: proc(server: ^Server, id: Entity_ID, input: Input_Stat
 server_fire_channel :: proc(server: ^Server, id: Entity_ID, input: Input_State) {
 	spell_state := &server.world.spell_states[id]
 	spell := spell_state.channel_spell
+	yaw := input.yaw
+	pitch := input.pitch
+	if spell_state.release_aim {
+		yaw = spell_state.release_yaw
+		pitch = spell_state.release_pitch
+	}
 	spell_state.channel_spell = .None
 	spell_state.channel_time = 0
 	spell_state.channel_committed = false
+	spell_state.release_aim = false
 	if spell != .None {
-		server_handle_spell_cast(server, id, spell, 1.0, server.tick_id, input.target_id)
+		server_handle_spell_cast(server, id, spell, 1.0, server.tick_id, input.target_id, yaw, pitch)
 	}
 }
 
@@ -1102,10 +1116,21 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 	}
 }
 
-// Validate and execute a spell cast at the given charge. `target_id` is what
-// the caster's crosshair was holding; only targeted spells read it, and they
-// re-check it here before anything is spent. Returns true if the cast happened.
-server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id: Spell_ID, charge_frac: f32, tick: u32, target_id := INVALID_ENTITY) -> bool {
+// Validate and execute a spell cast at the given charge. `target_id` is the
+// sticky crosshair latch; only a heal reads it, and it is re-checked here
+// before anything is spent. A strike ignores the latch and hitscans along
+// `aim_yaw` / `aim_pitch`, the look at the moment of release. Returns true
+// if the cast happened.
+server_handle_spell_cast :: proc(
+	server: ^Server,
+	caster_id: Entity_ID,
+	spell_id: Spell_ID,
+	charge_frac: f32,
+	tick: u32,
+	target_id := INVALID_ENTITY,
+	aim_yaw := f32(0),
+	aim_pitch := f32(0),
+) -> bool {
 	if !entity_alive(&server.world, caster_id) {
 		return false
 	}
@@ -1130,10 +1155,17 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	origin := vec3{char.pos.x, char.pos.y, char.pos.z + PLAYER_EYE_M}
 	direction := camera_forward(char.yaw, char.pitch)
 
-	// A strike with nowhere to land is refused, not refunded: the wind-up was
-	// the price of letting the target slip behind cover.
-	if def.payload == .Strike && !server_strike_target_ok(server, caster_id, target_id, def, origin, direction) {
-		return false
+	// A bolt with nobody under the release crosshair is refused before the
+	// mana is spent. The wind-up was the cost of missing. The client's named
+	// target is not consulted: the ray decides.
+	strike_id := INVALID_ENTITY
+	if def.payload == .Strike {
+		look := camera_forward(wrap_angle(aim_yaw), clampf(aim_pitch, -CAM_PITCH_MAX, CAM_PITCH_MAX))
+		id, ok := server_strike_hitscan(server, caster_id, origin, look, def.range)
+		if !ok {
+			return false
+		}
+		strike_id = id
 	}
 	// A heal with nobody missing health is the same: refused before the mana
 	// is spent, whether that is the caster, a reachable ally, or both.
@@ -1182,7 +1214,7 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	case .Strike:
 		// Touches the target and bystanders only; the splash skips its owner,
 		// so the caster copy written back below stays authoritative.
-		server_strike(server, caster_id, target_id, def, charge)
+		server_strike(server, caster_id, strike_id, def, charge)
 
 	case .Heal:
 		amount := spell_heal_amount(def, charge)
@@ -1215,17 +1247,35 @@ server_handle_spell_cast :: proc(server: ^Server, caster_id: Entity_ID, spell_id
 	return true
 }
 
-// Everything the server demands of a strike target: alive, hostile, and
-// within the shared reach test from the caster's real eye and look.
-@(private = "file")
-server_strike_target_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, eye, look: vec3) -> bool {
-	if target_id == caster_id || !entity_alive(&server.world, target_id) {
-		return false
+// The body a Call Lightning bolt lands on: the first hostile player the
+// release ray meets. The world clips the ray, and a hostile minion in front
+// of that player is cover — the bolt names a person, so it does not pass
+// through a wave to hit the body behind. `look` must be unit length.
+server_strike_hitscan :: proc(server: ^Server, caster_id: Entity_ID, eye, look: vec3, range: f32) -> (id: Entity_ID, ok: bool) {
+	reach := world_ray_hit(eye, look, range)
+	if mt, _, blocked := minion_raycast(g_minions, server.world.teams[caster_id], eye, look, reach); blocked {
+		reach = mt
 	}
-	if !teams_are_enemies(server.world.teams[caster_id], server.world.teams[target_id]) {
-		return false
+
+	best := INVALID_ENTITY
+	best_dist := reach
+	caster_team := server.world.teams[caster_id]
+	for i in 1..<MAX_ENTITIES {
+		tid := Entity_ID(i)
+		if tid == caster_id || !entity_alive(&server.world, tid) {
+			continue
+		}
+		if !teams_are_enemies(caster_team, server.world.teams[i]) {
+			continue
+		}
+		dist, hit := ray_cylinder_hit(eye, look, server.world.characters[i].pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, best_dist)
+		if !hit {
+			continue
+		}
+		best = tid
+		best_dist = dist
 	}
-	return strike_target_in_reach(def, eye, look, server.world.characters[target_id].pos)
+	return best, best != INVALID_ENTITY
 }
 
 // A heal is worth firing if the caster is missing health, or a reachable ally
@@ -1239,7 +1289,7 @@ server_heal_does_work :: proc(server: ^Server, caster_id, target_id: Entity_ID, 
 }
 
 // Everything the server demands of a heal's ally: alive, friendly, missing
-// health, and within the same reach test a strike uses.
+// health, and inside the soft-target cone with a clear line to their centre.
 @(private = "file")
 server_heal_ally_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, def: ^Spell_Def, eye, look: vec3) -> bool {
 	if !entity_alive(&server.world, target_id) {
@@ -1251,7 +1301,7 @@ server_heal_ally_ok :: proc(server: ^Server, caster_id, target_id: Entity_ID, de
 	if !spell_target_valid_for_filter(.Friendly, caster_id, target_id, server.world.teams[caster_id], server.world.teams[target_id]) {
 		return false
 	}
-	return strike_target_in_reach(def, eye, look, server.world.characters[target_id].pos)
+	return soft_target_in_reach(def, eye, look, server.world.characters[target_id].pos)
 }
 
 // Land a strike: the target takes the hit, anyone hostile around them takes

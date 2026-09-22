@@ -161,8 +161,9 @@ Client_World :: struct {
 	minions:          [MAX_SNAPSHOT_MINIONS]Client_Minion,
 	minion_count:     int,
 
-	// Sticky soft target. Drawn under the crosshair, and sent up with every
-	// input so a targeted spell lands on it once the server has validated it.
+	// Crosshair target. Sticky for Heal and for the name under the reticle;
+	// while Call Lightning is selected it is whoever the hitscan ray is on
+	// this frame, and it is cleared the moment the cursor leaves that body.
 	target_id:        Entity_ID,
 
 	// Who is in the match and how they are doing, from the roster packet.
@@ -1120,11 +1121,12 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 }
 
 // ---------------------------------------------------------------------------
-// Sticky soft target
+// Crosshair target
 //
-// The crosshair latches onto the nearest entity it touches and holds it until
-// it touches another one -- aim wobble during a wind-up must not lose the
-// target that the cast was meant for.
+// Heal latches onto the nearest ally the ray touches and holds that latch
+// until it touches another, so a wobble during the wind-up still mends the
+// ally the cast was started on. Call Lightning does not latch: the bolt is
+// whoever this ray meets at the moment of release.
 
 client_world_target_valid :: proc(world: ^Client_World, id: Entity_ID) -> bool {
 	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
@@ -1143,21 +1145,43 @@ client_world_target_valid_for_spell :: proc(world: ^Client_World, id: Entity_ID,
 	return spell_target_valid_for_filter(filter, world.local_entity_id, id, world.local_team, remote.team)
 }
 
-// The current target if it is someone a strike may land on: alive and
-// hostile. Where they stand is the caller's question; the server asks the same
-// things of its own state, this only keeps the client from winding up or
-// releasing a bolt that would be refused.
-client_world_strike_target :: proc(world: ^Client_World) -> (remote: ^Remote_Entity, ok: bool) {
-	if !client_world_target_valid(world, world.target_id) {
-		return nil, false
+// Who a Call Lightning bolt would hit right now: the first hostile body along
+// the look ray, clipped by the world and by a hostile minion in front of them.
+// The same test the server runs in `server_strike_hitscan`, against the bodies
+// this client is drawing. A miss is a fizzle, not a sticky fallback.
+client_world_hitscan_strike :: proc(world: ^Client_World, eye, look: vec3, range: f32) -> (id: Entity_ID, ok: bool) {
+	reach := world_ray_hit(eye, look, range)
+	for i in 0..<world.minion_count {
+		m := &world.minions[i]
+		if !m.present || m.hp <= 0 || !teams_are_enemies(world.local_team, m.team) {
+			continue
+		}
+		if dist, hit := ray_cylinder_hit(eye, look, m.pos, MINION_RADIUS_M, MINION_HEIGHT_M, reach); hit {
+			reach = dist
+		}
 	}
-	remote = &world.remote_entities[world.target_id]
-	return remote, teams_are_enemies(world.local_team, remote.team)
+
+	best := INVALID_ENTITY
+	for i in 1..<MAX_ENTITIES {
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.display_state.dead || Entity_ID(i) == world.local_entity_id {
+			continue
+		}
+		if !teams_are_enemies(world.local_team, remote.team) {
+			continue
+		}
+		dist, hit := ray_cylinder_hit(eye, look, remote.display_state.pos, CHARACTER_RADIUS_M, CHARACTER_HEIGHT_M, reach)
+		if !hit {
+			continue
+		}
+		reach = dist
+		best = Entity_ID(i)
+	}
+	return best, best != INVALID_ENTITY
 }
 
 // The current target if it is someone a heal may land on: alive and friendly.
-// Missing health and reach are the caller's question, matching how a strike
-// leaves where they stand to the server.
+// Missing health and reach are the caller's question.
 client_world_heal_target :: proc(world: ^Client_World) -> (remote: ^Remote_Entity, ok: bool) {
 	if !client_world_target_valid(world, world.target_id) {
 		return nil, false
