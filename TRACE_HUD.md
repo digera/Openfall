@@ -1,4 +1,4 @@
-# Nexus Arena - Combat Tracers & HUD
+# Openfall - Combat Tracers & HUD
 
 ## Overview
 Graphical client now renders in-flight projectiles and displays a combat HUD showing Health, Mana, Stamina, and active spell selection.

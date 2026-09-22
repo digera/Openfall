@@ -1,4 +1,4 @@
-# Nexus Arena
+# Openfall
 
 Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
 
