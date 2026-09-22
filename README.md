@@ -1,6 +1,8 @@
-# Nexus Arena
+# Openfall
 
 Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
+
+MIT-licensed — see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The round ends when the golden centre is fully rebuilt; whoever laid the most of it wins. Rounds auto-reset. By default each team has 1 bot. Humans can join up to `TEAM_SIZE` per team (currently 6), and bots stay in the match alongside them.
 
@@ -10,7 +12,7 @@ Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane m
 - Visual Studio 2022/2026 x64 toolchain (sokol C libs)
 - `sokol-shdc`
 
-This machine:
+Example tool layout (adjust paths for your installation):
 
 | Tool | Path |
 |---|---|

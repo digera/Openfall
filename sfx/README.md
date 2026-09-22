@@ -1,6 +1,6 @@
 # SFX
 
-1999-era one-shot synths for Nexus Arena. Graphs are authored in the Wirebang dialect and **shipped as Live-export Odin scripts**. At engine init the client runs each script once and caches the PCM; playing a cue is a buffer copy, not a resynthesis.
+1999-era one-shot synths for Openfall. Graphs are authored in the Wirebang dialect and **shipped as Live-export Odin scripts**. At engine init the client runs each script once and caches the PCM; playing a cue is a buffer copy, not a resynthesis.
 
 ## Layout
 
