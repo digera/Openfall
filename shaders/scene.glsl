@@ -1011,6 +1011,9 @@ bool minion_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int
 // cloth is never still. The analytic frustum hit is bent onto the pleats with
 // two Newton steps. The hem edge is cut by a travelling wave so it flutters.
 // Two quadratics and a handful of refinements per wisp: no marching.
+//
+// Weave, stitches, the lapel and the hood's gathers are shading on the hit.
+// They drop out with distance, and a ray that misses the robe never evaluates them.
 
 const float ROBE_SHOULDER_Z = 0.45;   // shoulder ring above the wisp centre, x scale
 const float ROBE_R_SHOULDER = 0.24;   // side-to-side radii; front-to-back is x ROBE_DEPTH
@@ -1074,15 +1077,40 @@ vec2 ellipsoid_roots(vec3 o, vec3 d, vec3 rad) {
 // The face as light on a forward-facing disc: two eyes and a smile, 0..1.
 // uv is sideways, up from the face centre, in metres at full size.
 float robe_face(vec2 uv) {
-    // Happy eyes: narrow ellipses set a little apart, tilted up at the outer corners
-    vec2 e = vec2(abs(uv.x) - 0.075, uv.y - 0.035 - abs(uv.x) * 0.25);
-    float eye = 1.0 - smoothstep(0.80, 1.0, length(e / vec2(0.048, 0.030)));
-    // Smile: an arc below, thicker at the middle
-    vec2 m = uv - vec2(0.0, 0.02);
+    // Happy eyes: crescents tilted up at the outer corners. A lid scoops the
+    // top, and a point in each burns hotter, so they read as gathered light.
+    vec2 e = vec2(abs(uv.x) - 0.075, uv.y - 0.036 - abs(uv.x) * 0.28);
+    float outer = 1.0 - smoothstep(0.78, 1.0, length(e / vec2(0.050, 0.032)));
+    float lid = smoothstep(0.02, 0.62, length((e - vec2(0.0, 0.016)) / vec2(0.044, 0.026)));
+    float eye = outer * (0.30 + 0.70 * lid);
+    float glint = (1.0 - smoothstep(0.15, 1.0, length((e - vec2(0.012, 0.004)) / vec2(0.012, 0.009)))) * outer;
+    // Smile: an arc below, thickest in the middle and thinning at the corners
+    vec2 m = uv - vec2(0.0, 0.016);
     float r = length(m);
-    float below = smoothstep(0.30, 0.55, -m.y / max(r, 1e-4));
-    float arc = 1.0 - smoothstep(0.012, 0.026, abs(r - 0.105));
-    return max(eye, arc * below);
+    float below = smoothstep(0.26, 0.60, -m.y / max(r, 1e-4));
+    float taper = smoothstep(0.155, 0.035, abs(m.x));
+    float width = 0.010 + 0.014 * taper;
+    float arc = 1.0 - smoothstep(width * 0.45, width, abs(r - 0.102));
+    return max(eye + glint * 0.85, arc * below);
+}
+
+// How much of the close-up cloth may show. Near: weave and stitches. Far: flat
+// dye and a solid hem, so the threads never sparkle and the team's colour still
+// reads across a lane. Distance, rather than pixel derivatives — a ray's
+// material is not the same in every pixel of a quad.
+float robe_detail(vec3 p) {
+    return smoothstep(15.0, 5.5, length(p - cam_data.xyz));
+}
+
+// Weave brightness around 1. `u` and `v` are the thread phases. Shade-time only.
+float robe_weave(float u, float v, float detail) {
+    return 1.0 + 0.16 * sin(u) * sin(v) * detail;
+}
+
+// Beads of a stitched trim, 0..1. Callers fade them out with distance; the solid
+// band under them is what still reads from across a lane.
+float robe_stitches(float u) {
+    return smoothstep(0.15, 0.82, 0.5 + 0.5 * sin(u));
 }
 
 // Pleat depth as a fraction of radius: shallow at the shoulder where the cloth
@@ -2019,51 +2047,111 @@ void main() {
         vec3 tint = team_tint(team);
         vec3 core = team_core(team);
         float pulse = 0.62 + 0.38 * sin(WORLD_T * (3.1 + 6.0 * (1.0 - whp)));
-        // Heavy matte cloth in the team's hue
-        vec3 cloth = mix(tint, vec3(0.40, 0.38, 0.50), 0.45) * 0.28;
+        // Heavy matte cloth, dyed in the team's hue. Folds and thread are
+        // painted on after the hit.
+        vec3 dye = mix(tint, vec3(0.26, 0.24, 0.34), 0.50);
+        vec3 cloth = dye * 0.32;
+        float detail = robe_detail(hp);
+        float trim = 0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx));
 
         if (robe_part > 1.5) {
             // The face: light in the dark, a little brighter as it pulses
             emissive = (core * (2.0 + 0.5 * pulse) + tint * 0.6) * robe_aux * (0.6 + 0.4 * whp);
             albedo = vec3(0.0);
         } else if (robe_part > 0.5) {
-            // The hood: smooth cloth outside, and inside a lining lit only by
-            // the face, with the team's trim stitched around the opening.
+            // The hood: the same cloth, gathered off the peak. The gathers tilt
+            // the normal only — the ellipsoid is still the surface the ray hit.
+            // Inside, the lining is lit by the face and brightens toward it,
+            // with the team's trim stitched around the opening.
+            float yaw = robes[robe_idx].w;
+            vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
+            vec3 local = to_body(hp - w.xyz, fwd);
+            float ang = atan(local.y, local.x);
+            float gather = cos(ang * 5.0 - local.z * 3.0);
+            vec3 crease = cross(hit_n, local);
+            hit_n = normalize(hit_n + crease * (gather * 0.22 * inversesqrt(max(dot(crease, crease), 1e-8))));
             float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
             float fres = pow(1.0 - ndv, 3.0);
-            albedo = cloth * (1.0 - 0.6 * backface);
-            emissive = mix(tint, core, 0.3) * (0.025 * fres + backface * 0.10);
-            float rim = smoothstep(HOOD_OPEN_COS - 0.10, HOOD_OPEN_COS - 0.03, robe_aux);
-            emissive += tint * rim * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
-            spec_pow = 3.0;
-            spec_amt = 0.012;
+            float crest = gather * 0.5 + 0.5;
+            vec3 outer = cloth * robe_weave(ang * 16.0, local.z * 48.0 + ang, detail);
+            outer *= mix(0.62, 1.0, smoothstep(0.0, 0.85, crest));
+            // The cowl's back sits in its own shadow.
+            outer *= 1.0 - smoothstep(0.15, -0.40, local.x) * 0.16;
+            float scale = 0.82 + 0.18 * whp;
+            float near_face = smoothstep(0.50, 0.06, length(local.yz - FACE_CENTER.yz * scale));
+            vec3 lining = mix(cloth * 0.40, tint * 0.16, 0.70);
+            albedo = mix(outer, lining, backface);
+            albedo += dye * pow(1.0 - ndv, 2.4) * 0.05 * (1.0 - backface);
+            emissive = mix(tint, core, 0.45) * (0.025 * fres + backface * (0.06 + 0.16 * near_face));
+            float rim = smoothstep(HOOD_OPEN_COS - 0.12, HOOD_OPEN_COS - 0.02, robe_aux);
+            emissive += tint * rim * trim;
+            emissive += core * rim * robe_stitches(ang * 11.0) * detail * 0.50;
+            albedo *= 1.0 - rim * 0.28 * (1.0 - backface);
+            spec_pow = 6.0;
+            spec_amt = 0.02 * (1.0 - backface);
         } else {
             // Pleats: the surface was displaced by amp * sin(phase) radially, so
             // the normal tilts around the body by the derivative, -amp * N *
-            // cos(phase). Measured in robe space so the lighting lines up with
-            // the silhouette.
+            // cos(phase). The tilt is steeper than the cloth actually moved, the
+            // way a normal map is, and a finer crease joins it up close. The
+            // shadow sits in the valleys of that tilt — with the ridges, not
+            // shifted off them.
             float f = robe_aux;
             float yaw = robes[robe_idx].w;
+            float hem_yaw = robe_waists[robe_idx].w;
             vec3 fwd = vec3(cos(yaw), sin(yaw), 0.0);
-            float phase = robe_pleat_phase(robe_space(hp, w.xyz, fwd), w.xyz, f, yaw, robe_waists[robe_idx].w);
+            vec3 sp = robe_space(hp, w.xyz, fwd);
+            float around = atan(sp.y - w.y, sp.x - w.x);
+            float phase = (around - mix(yaw, hem_yaw, f)) * ROBE_PLEATS;
             float ridge = cos(phase);
+            float crest = ridge * 0.5 + 0.5;
             vec3 tangent = cross(vec3(0.0, 0.0, 1.0), hit_n);
             tangent *= inversesqrt(max(dot(tangent, tangent), 1e-6));
-            hit_n = normalize(hit_n - tangent * ridge * robe_pleat_amp(f, robe_fx[robe_idx].x) * ROBE_PLEATS);
+            float micro = cos(phase * 2.0 + f * 8.0);
+            float tilt = ridge * robe_pleat_amp(f, robe_fx[robe_idx].x) * ROBE_PLEATS * 1.55;
+            tilt = (tilt + micro * 0.055 * detail) * mix(1.0, 0.35, backface);
+            hit_n = normalize(hit_n - tangent * tilt);
             float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
             float fres = pow(1.0 - ndv, 3.0);
-            // The folds between ridges sit deeper in shadow than the lighting
-            // alone would put them.
-            albedo = cloth * (0.80 + 0.20 * sin(phase));
+
+            vec3 outer = mix(cloth, tint * 0.40, crest * crest * 0.40);
+            outer *= mix(vec3(0.78, 0.82, 0.96), vec3(1.04, 1.01, 0.98), smoothstep(0.10, 0.85, crest));
+            outer *= mix(0.52, 1.0, smoothstep(0.0, 0.80, crest));
+            outer *= robe_weave(around * 22.0, f * 52.0 + around, detail);
+            // The front overlaps itself: a tuck of shadow, and one thread of
+            // the team's light in the seam. The hood lays a soft dark on the chest.
+            float from_front = abs(mod(around - yaw + 3.14159265, 6.28318530) - 3.14159265);
+            float tuck = smoothstep(0.22, 0.02, from_front);
+            float chest = smoothstep(0.30, 0.0, f) * smoothstep(1.0, 0.25, from_front);
+            outer *= 1.0 - tuck * 0.30;
+            outer *= 1.0 - chest * 0.20;
+            // A bound hem under the embroidery, so the glow sits on an edge.
+            outer *= 1.0 - smoothstep(0.84, 0.98, f) * 0.22;
+            vec3 lining = mix(cloth * 0.38, tint * 0.15, 0.65);
+            albedo = mix(outer, lining, backface);
+            // Velvet: the nap brightens as the cloth turns away, broad and soft.
+            albedo += dye * pow(1.0 - ndv, 2.4) * 0.05 * (1.0 - backface);
+
             // The light inside reaches the lining, brightest up near the face;
             // the outside only catches the faintest rim of it.
-            emissive = mix(tint, core, 0.3) * (0.025 * fres + backface * (0.35 - 0.25 * f));
-            // An embroidered seam follows the fluttering hem edge and reads as
-            // the team's colour from across a lane.
+            emissive = mix(tint, core, 0.45) * (0.028 * fres + backface * (0.38 - 0.26 * f));
+            // Silk along the pleats, and only where the moon rakes a ridge.
+            vec3 thread = cross(hit_n, tangent);
+            float th = dot(thread, normalize(-rd + MOON_DIR));
+            float sheen = pow(max(1.0 - th * th, 0.0), 8.0);
+            emissive += vec3(0.58, 0.60, 0.72) * sheen * crest * 0.08 * (1.0 - backface);
+            // An embroidered seam follows the fluttering hem and reads as the
+            // team's colour from across a lane. Up close it breaks into stitches.
             float seam = smoothstep(0.90, 0.975, f);
-            emissive += tint * seam * (0.9 + 0.3 * sin(WORLD_T * 2.6 + float(robe_idx)));
-            spec_pow = 3.0;
-            spec_amt = 0.012;
+            emissive += tint * seam * trim;
+            emissive += core * seam * robe_stitches(around * 16.0 - hem_yaw) * detail * 0.55;
+            // The lapel thread, and the yoke where the hood is sewn on.
+            float lapel = smoothstep(0.05, 0.012, abs(from_front - 0.10));
+            emissive += tint * lapel * detail * 0.70;
+            float yoke = smoothstep(0.025, 0.0, abs(f - 0.07));
+            emissive += tint * yoke * detail * 0.55;
+            spec_pow = 6.0;
+            spec_amt = (0.014 + 0.022 * crest) * (1.0 - backface);
         }
         // Cloth, hood and face all glow harder as a dying wisp fills, so what
         // bursts reads as the light that was inside it all along.
