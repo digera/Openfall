@@ -12,7 +12,7 @@ The vision evolves toward a larger open world. Spitball ideas.
 
 - **Embrace zero-assets / assets-as-code.** Shaders, SDFs, raymarched visuals, procedural generation, synthesized audio — not binary art packs as the source of truth. We want assets that can be versioned, reviewed, and rebuilt from code.
 
-- **Build tooling for assets-as-code.** Exporters, generators, and pipelines that author visuals or audio through code. See [wirebang-odin](https://github.com/digera/wirebang-odin) for node-graph sound thinking, and `tools/gen_sfx` for in-repo sfx generation.
+- **Build tooling for assets-as-code.** Exporters, generators, and pipelines that author visuals or audio through code. See [wirebang-odin](https://github.com/digera/wirebang-odin) for node-graph sound thinking, and `tools/gen_sfx` for in-repo sfx generation. `tools/workbench` will eventually provide scene/asset parameter authoring (not yet implemented).
 
 - **Harden the foundation.** Protocol hygiene, disconnect/reconnect handling, soak-test fixes, edge cases in the wire format. Stability work that makes the arena production-ready.
 
