@@ -440,7 +440,10 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		jump = true
 	}
 
-	sprint := (b.mode == .Travel || b.mode == .Dump) && !have_target && char.stamina > 30
+	// Hold sprint through a bar that is already running. A fresh one waits
+	// for the same reserve the sim demands, or the bot walks in place at 0.
+	sprint := (b.mode == .Travel || b.mode == .Dump) && !have_target &&
+		char.stamina > 0 && (char.sprint_active || char.stamina >= STAMINA_SPRINT_MIN)
 
 	input := Input_State{
 		move_fwd = fwd,
@@ -482,7 +485,7 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		// backing out of a fight can still finish the heal it started. A bolt
 		// is the opposite: it waits until the release ray is on the body, and
 		// gives up if that never happens.
-		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal
+		self_cast := SPELL_DEFS[b.charge_spell].payload == .Heal || SPELL_DEFS[b.charge_spell].payload == .Transfer
 		hitscan := SPELL_DEFS[b.charge_spell].payload == .Strike
 		if !have_target && !self_cast {
 			b.charge_spell = .None
@@ -530,29 +533,34 @@ bot_update :: proc(server: ^Server, b: ^Bot, char: Character_State, dt: f32) {
 		// than out of one more missile.
 		b.charge_spell = .Friendly_Heal
 		b.charge_time = 0
-	} else if have_target && b.cast_timer <= 0 && abs(yaw_diff) < 0.12 {
-		spell := b.next_spell
-		if spell == .None {
-			spell = bot_pick_spell(server, b, char, len_vec3(b.target_pos - char.pos))
-		}
-		b.next_spell = .None
-		if spell != .None {
+	} else if b.cast_timer <= 0 {
+		if spell := bot_pick_transfer(server, b, char); spell != .None {
 			b.charge_spell = spell
 			b.charge_time = 0
-			b.beam_hold = rand.float32_range(1.2, 2.4)
-		} else {
-			b.cast_timer = 0.3
-		}
-	} else if b.mining && b.cast_timer <= 0 && abs(yaw_diff) < 0.25 {
-		// The beam is the mining tool. Nothing else in the hotbar works rock at
-		// a useful rate, so there is no choice to make here.
-		char_now := server.world.characters[b.id]
-		if spell_castable(.Thunderbolt, char_now, server.world.spell_states[b.id].cooldowns[.Thunderbolt]) {
-			b.charge_spell = .Thunderbolt
-			b.charge_time = 0
-			b.beam_hold = rand.float32_range(3.5, 6.0)
-		} else {
-			b.cast_timer = 0.6
+		} else if have_target && abs(yaw_diff) < 0.12 {
+			spell := b.next_spell
+			if spell == .None {
+				spell = bot_pick_spell(server, b, char, len_vec3(b.target_pos - char.pos))
+			}
+			b.next_spell = .None
+			if spell != .None {
+				b.charge_spell = spell
+				b.charge_time = 0
+				b.beam_hold = rand.float32_range(1.2, 2.4)
+			} else {
+				b.cast_timer = 0.3
+			}
+		} else if b.mining && abs(yaw_diff) < 0.25 {
+			// The beam is the mining tool. Nothing else in the hotbar works rock at
+			// a useful rate, so there is no choice to make here.
+			char_now := server.world.characters[b.id]
+			if spell_castable(.Thunderbolt, char_now, server.world.spell_states[b.id].cooldowns[.Thunderbolt]) {
+				b.charge_spell = .Thunderbolt
+				b.charge_time = 0
+				b.beam_hold = rand.float32_range(3.5, 6.0)
+			} else {
+				b.cast_timer = 0.6
+			}
 		}
 	}
 
@@ -660,7 +668,7 @@ bot_find_target :: proc(server: ^Server, b: ^Bot, eye: vec3) -> Entity_ID {
 	return best
 }
 
-// Hurt enough that a full heal is nearly all value, and only while the heal
+// Hurt enough that the mend is worth the wind-up, and only while the heal
 // would really land -- spell_castable keeps bots off a heal they cannot pay for.
 @(private = "file")
 bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool {
@@ -668,6 +676,22 @@ bot_wants_heal :: proc(server: ^Server, b: ^Bot, char: Character_State) -> bool 
 		return false
 	}
 	return spell_castable(.Friendly_Heal, char, server.world.spell_states[b.id].cooldowns[.Friendly_Heal])
+}
+
+// Stamina feeds mana when the bar is too low to keep casting. Health feeds
+// stamina only when a sprint cannot start and the bot can spare the health;
+// below the heal threshold they mend instead of spending their last bar.
+@(private = "file")
+bot_pick_transfer :: proc(server: ^Server, b: ^Bot, char: Character_State) -> Spell_ID {
+	cds := &server.world.spell_states[b.id].cooldowns
+	if char.mana < 50 && spell_castable(.Stamina_To_Mana, char, cds[.Stamina_To_Mana]) {
+		return .Stamina_To_Mana
+	}
+	if char.stamina < STAMINA_SPRINT_MIN && char.health > HEALTH_MAX * 0.45 &&
+	   spell_castable(.Health_To_Stamina, char, cds[.Health_To_Stamina]) {
+		return .Health_To_Stamina
+	}
+	return .None
 }
 
 // Offence only: the chosen spell also drives the aim lead, so a self-cast has

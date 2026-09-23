@@ -18,9 +18,11 @@ Input :: struct {
 	key_space:      bool,
 	key_shift:      bool,
 	key_tab:        bool,      // held, for the scoreboard
+	key_c:          bool,      // held: wind Friendly Heal without leaving the number row
 	jump:           bool,      // latched press
 	drop_press:     bool,      // latched G, toss the haul
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
+	transfer_press: Spell_ID,            // latched Z or X; .None if neither
 	window_focused: bool,
 
 	// Typed text for the name field, gathered from CHAR events so the layout
@@ -47,12 +49,14 @@ input_clear_held :: proc() {
 	input.key_space = false
 	input.key_shift = false
 	input.key_tab = false
+	input.key_c = false
 	input.look_dx = 0
 	input.look_dy = 0
 	input.click_left = false
 	input.jump = false
 	input.drop_press = false
 	input.slot_press = {}
+	input.transfer_press = .None
 	input.text_count = 0
 	input.enter_press = false
 	input.backspace_press = false
@@ -103,6 +107,16 @@ input_event :: proc "c" (e: ^sapp.Event) {
 			input.jump = true
 		case .G:
 			input.drop_press = true
+		case .Z:
+			if input.transfer_press == .None {
+				input.transfer_press = .Stamina_To_Mana
+			}
+		case .X:
+			if input.transfer_press == .None {
+				input.transfer_press = .Health_To_Stamina
+			}
+		case .C:
+			input.key_c = true
 		case ._1, ._2, ._3, ._4, ._5, ._6, ._7, ._8, ._9:
 			slot := int(e.key_code) - int(sapp.Keycode._1)
 			if slot < HOTBAR_SLOTS {
@@ -136,6 +150,7 @@ input_event :: proc "c" (e: ^sapp.Event) {
 		case .D: input.key_d = false
 		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = false
 		case .TAB: input.key_tab = false
+		case .C: input.key_c = false
 		case .SPACE: input.key_space = false
 		}
 	case .CHAR:
@@ -174,6 +189,12 @@ input_consume_drop :: proc() -> bool {
 		return true
 	}
 	return false
+}
+
+input_consume_transfer :: proc() -> Spell_ID {
+	spell := input.transfer_press
+	input.transfer_press = .None
+	return spell
 }
 
 // slot is 1-based

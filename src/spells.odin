@@ -2,11 +2,21 @@ package main
 
 // Spell system
 
-HEALTH_MAX  :: f32(100)
-MANA_MAX    :: f32(100)
-STAMINA_MAX :: f32(100)
-STAMINA_REGEN_PER_SEC :: f32(20)
-MANA_REGEN_PER_SEC    :: f32(12)
+HEALTH_MAX  :: f32(300)
+MANA_MAX    :: f32(300)
+STAMINA_MAX :: f32(300)
+// Stamina recovers fastest, mana in the middle, health slowest. The middle
+// rate sits near 3/s; the spread is what keeps a transfer worth pressing.
+HEALTH_REGEN_PER_SEC  :: f32(2)
+MANA_REGEN_PER_SEC    :: f32(4)
+STAMINA_REGEN_PER_SEC :: f32(8)
+
+// Every transfer is the same exchange: pay 40 up front, gain 32 across the
+// cooldown, and the drip ends when the cooldown does. A full loop returns
+// about half of what it spent.
+TRANSFER_COST        :: f32(40)
+TRANSFER_GAIN        :: f32(32)
+TRANSFER_COOLDOWN_SEC :: f32(8)
 
 Spell_ID :: enum u8 {
 	None = 0,
@@ -15,15 +25,24 @@ Spell_ID :: enum u8 {
 	Arcane_Orb     = 2,    // heavy lob, large splash on first contact
 	Blink          = 3,    // short directional teleport
 	Frost_Lance    = 4,    // straight piercing lance, heavy damage + slow
-	Friendly_Heal  = 5,    // wind-up mend: caster and a targeted ally
+	Friendly_Heal  = 5,    // wind-up: ally gets an instant mend, self gets a mana transfer
 	Call_Lightning = 6,    // hitscan bolt: the body under the crosshair at release
 	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
+	Stamina_To_Mana   = 8, // instant: stamina buys mana over the cooldown
+	Health_To_Stamina = 9, // instant: health buys stamina over the cooldown
 }
 
-// Spells bound to hotbar slots 1..HOTBAR_SLOTS. Blink keeps its definition but
-// loses the third slot: sustain buys more there than a second way to move does.
-HOTBAR_SLOTS :: 6
-HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Friendly_Heal, .Frost_Lance, .Call_Lightning, .Thunderbolt}
+// Spells bound to hotbar slots 1..HOTBAR_SLOTS. Friendly Heal lives on C, so
+// the combat row closes up: what was 4, 5 and 6 is now 3, 4 and 5.
+HOTBAR_SLOTS :: 5
+HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Frost_Lance, .Call_Lightning, .Thunderbolt}
+
+// Z X C, in that order. Heal is C, not the middle key.
+TRANSFER_BINDS := [3]struct{key: string, spell: Spell_ID}{
+	{"Z", .Stamina_To_Mana},
+	{"X", .Health_To_Stamina},
+	{"C", .Friendly_Heal},
+}
 
 Spell_Target_Filter :: enum u8 {
 	Any      = 0, // No filtering
@@ -66,6 +85,21 @@ Spell_Def :: struct {
 	beam_chain_range:  f32,   // how far an arc jumps from the last body it hit
 	beam_chain_count:  int,   // how many times
 	beam_chain_frac:   f32,   // damage each jump deals, as a fraction of the beam's
+
+	// Transfer. The cost leaves the source the moment the cast fires. The gain
+	// drips into the destination for exactly the cooldown, then stops.
+	transfer_from: Vital,
+	transfer_to:   Vital,
+	transfer_cost: f32,
+	transfer_gain: f32,
+}
+
+// Which bar a transfer reads or writes.
+Vital :: enum u8 {
+	None = 0,
+	Health,
+	Mana,
+	Stamina,
 }
 
 Spell_Payload_Type :: enum u8 {
@@ -73,8 +107,9 @@ Spell_Payload_Type :: enum u8 {
 	Projectile,
 	Teleport,
 	Strike,     // hitscan: the hostile body under the crosshair when the wind-up ends
-	Heal,       // restores health to the caster and a soft-targeted ally
+	Heal,       // instant health to a soft-targeted ally; the caster's mend is a transfer
 	Beam,       // does its work every tick it is held; the release is nothing
+	Transfer,   // spends one bar up front and drips another until the cooldown ends
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -154,23 +189,26 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		slow_ticks    = 180, // 3 s
 	},
 
-	// Sustain, not an escape: a 1s wind-up on a long rest, and 50 health is
-	// still less than one lance, so trading into a healing opponent wins.
-	// The caster is always mended; a teammate under the crosshair is too,
-	// if they are in reach when it fires. A heal with nobody missing health
-	// is refused rather than eating the mana, so it cannot be pre-charged
-	// before a fight.
+	// Sustain, not an escape. The caster pays 40 mana and receives 32 health
+	// dripped across the cooldown; that drip is the self mend, and it ends
+	// when the cooldown does. A teammate under the crosshair still gets the
+	// instant 50, if they are in reach when it fires. A heal with nobody
+	// missing health is refused rather than eating the mana.
 	.Friendly_Heal = {
 		id            = .Friendly_Heal,
 		name          = "Friendly Heal",
 		short_name    = "HEAL",
-		mana_cost     = 40,
-		cooldown_sec  = 14.0,
+		mana_cost     = TRANSFER_COST,
+		cooldown_sec  = TRANSFER_COOLDOWN_SEC,
 		cast_time     = 1.0,
 		payload       = .Heal,
 		target_filter = .Friendly,
 		range         = 18,
 		heal          = 50,
+		transfer_from = .Mana,
+		transfer_to   = .Health,
+		transfer_cost = TRANSFER_COST,
+		transfer_gain = TRANSFER_GAIN,
 	},
 
 	// Placed when the button comes up, not locked when the wind-up starts.
@@ -213,6 +251,32 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		beam_chain_range  = 6,
 		beam_chain_count  = 2,
 		beam_chain_frac   = 0.5,
+	},
+
+	// Tap. The stamina is gone immediately; the mana arrives over the cooldown.
+	.Stamina_To_Mana = {
+		id            = .Stamina_To_Mana,
+		name          = "Stamina to Mana",
+		short_name    = "STA>MP",
+		cooldown_sec  = TRANSFER_COOLDOWN_SEC,
+		payload       = .Transfer,
+		transfer_from = .Stamina,
+		transfer_to   = .Mana,
+		transfer_cost = TRANSFER_COST,
+		transfer_gain = TRANSFER_GAIN,
+	},
+
+	// Tap. Refused if the cost would leave the caster on 0 health.
+	.Health_To_Stamina = {
+		id            = .Health_To_Stamina,
+		name          = "Health to Stamina",
+		short_name    = "HP>STA",
+		cooldown_sec  = TRANSFER_COOLDOWN_SEC,
+		payload       = .Transfer,
+		transfer_from = .Health,
+		transfer_to   = .Stamina,
+		transfer_cost = TRANSFER_COST,
+		transfer_gain = TRANSFER_GAIN,
 	},
 }
 
@@ -299,15 +363,94 @@ spell_valid :: proc(id: Spell_ID) -> bool {
 // fire. The server, the client's cast decision and the HUD all read this, so
 // the bar never offers a cast the server would throw away. Death and the match
 // state are the callers' business: they drop a charge rather than gate one.
+// A transfer also needs its source pool and a destination that is not already
+// full. Heal keeps the mana check only: a full health bar can still mend an ally.
 spell_castable :: proc(id: Spell_ID, char: Character_State, cooldown: f32) -> bool {
-	if !spell_valid(id) {
+	if !spell_valid(id) || cooldown > 0 {
 		return false
 	}
 	def := &SPELL_DEFS[id]
-	if cooldown > 0 || char.mana < def.mana_cost {
-		return false
+	if def.payload == .Transfer {
+		return vital_can_spend(char, def.transfer_from, def.transfer_cost) &&
+		       !vital_full(char, def.transfer_to)
+	}
+	return char.mana >= def.mana_cost
+}
+
+// Health never spends down to 0. The other bars just have to cover the cost.
+vital_can_spend :: proc(char: Character_State, pool: Vital, amount: f32) -> bool {
+	switch pool {
+	case .Health:
+		return char.health > amount
+	case .Mana:
+		return char.mana >= amount
+	case .Stamina:
+		return char.stamina >= amount
+	case .None:
+		return amount <= 0
+	}
+	return false
+}
+
+vital_full :: proc(char: Character_State, pool: Vital) -> bool {
+	switch pool {
+	case .Health:
+		return char.health >= HEALTH_MAX
+	case .Mana:
+		return char.mana >= MANA_MAX
+	case .Stamina:
+		return char.stamina >= STAMINA_MAX
+	case .None:
+		return true
 	}
 	return true
+}
+
+vital_label :: proc(pool: Vital) -> string {
+	switch pool {
+	case .Health:
+		return "hp"
+	case .Mana:
+		return "mp"
+	case .Stamina:
+		return "sta"
+	case .None:
+		return ""
+	}
+	return ""
+}
+
+// Pay a cast that spell_castable has already allowed.
+spell_pay :: proc(char: ^Character_State, def: ^Spell_Def) {
+	if def.payload == .Transfer {
+		vital_spend(char, def.transfer_from, def.transfer_cost)
+		return
+	}
+	char.mana -= def.mana_cost
+}
+
+vital_spend :: proc(char: ^Character_State, pool: Vital, amount: f32) {
+	switch pool {
+	case .Health:
+		char.health -= amount
+	case .Mana:
+		char.mana -= amount
+	case .Stamina:
+		char.stamina -= amount
+	case .None:
+	}
+}
+
+vital_gain :: proc(char: ^Character_State, pool: Vital, amount: f32) {
+	switch pool {
+	case .Health:
+		char.health = min(char.health + amount, HEALTH_MAX)
+	case .Mana:
+		char.mana = min(char.mana + amount, MANA_MAX)
+	case .Stamina:
+		char.stamina = min(char.stamina + amount, STAMINA_MAX)
+	case .None:
+	}
 }
 
 // How much of a spell a given hold is worth. Spells with no cast time are

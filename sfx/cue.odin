@@ -17,8 +17,9 @@ Cue :: enum u8 {
 	Lance_Impact,
 	Blink_Charge,
 	Blink_Arrive,
-	Heal_Loop,
-	Heal_Tick,
+	Transfer_Mana,
+	Transfer_Stamina,
+	Transfer_Heal,
 	Lightning_Charge,
 	Lightning_Cast,
 	Lightning_Strike,
@@ -48,8 +49,9 @@ play_script :: proc(engine: ^ma.engine, cue: Cue) {
 	case .Lance_Impact:      play_lance_impact(engine)
 	case .Blink_Charge:      play_blink_charge(engine)
 	case .Blink_Arrive:      play_blink_arrive(engine)
-	case .Heal_Loop:         play_heal_loop(engine)
-	case .Heal_Tick:         play_heal_tick(engine)
+	case .Transfer_Mana:     play_transfer_mana(engine)
+	case .Transfer_Stamina:  play_transfer_stamina(engine)
+	case .Transfer_Heal:     play_transfer_heal(engine)
 	case .Lightning_Charge:  play_lightning_charge(engine)
 	case .Lightning_Cast:    play_lightning_cast(engine)
 	case .Lightning_Strike:  play_lightning_strike(engine)

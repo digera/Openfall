@@ -18,7 +18,6 @@ Audio_Loop :: enum u8 {
 	Orb_Charge,
 	Lance_Charge,
 	Blink_Charge,
-	Heal_Charge,
 	Lightning_Charge,
 	Thunder_Beam,
 }
@@ -30,6 +29,9 @@ Audio_Loop :: enum u8 {
 Remote_Loop :: struct {
 	kind:  Audio_Loop,
 	timer: f32,
+	// Last spell seen in this caster's hand, so a transfer gulp plays once
+	// when the channel appears and not again while it is held.
+	heard: Spell_ID,
 }
 
 Client_Audio :: struct {
@@ -53,7 +55,6 @@ Client_Audio :: struct {
 
 	confirm_id:     Entity_ID,
 	confirm_until:  f64,
-	last_heal_cast: f64,
 }
 
 client_audio: Client_Audio
@@ -155,8 +156,26 @@ client_sfx_note_fizzle :: proc(gc: ^Game_Client) {
 	}
 }
 
+// A transfer is one gulp at the moment it fires. The bars keep moving after
+// that with no sound of their own.
+@(private = "file")
+transfer_cue :: proc(spell: Spell_ID) -> (sfx.Cue, bool) {
+	#partial switch spell {
+	case .Stamina_To_Mana:
+		return .Transfer_Mana, true
+	case .Health_To_Stamina:
+		return .Transfer_Stamina, true
+	case .Friendly_Heal:
+		return .Transfer_Heal, true
+	}
+	return .Fizzle, false
+}
+
 @(private = "file")
 cast_cue :: proc(spell: Spell_ID) -> (sfx.Cue, bool) {
+	if cue, ok := transfer_cue(spell); ok {
+		return cue, true
+	}
 	#partial switch spell {
 	case .Arcane_Missile:
 		return .Missile_Cast, true
@@ -164,8 +183,6 @@ cast_cue :: proc(spell: Spell_ID) -> (sfx.Cue, bool) {
 		return .Orb_Cast, true
 	case .Frost_Lance:
 		return .Lance_Cast, true
-	case .Friendly_Heal:
-		return .Heal_Tick, true
 	case .Call_Lightning:
 		return .Lightning_Cast, true
 	case .Blink:
@@ -178,9 +195,6 @@ cast_cue :: proc(spell: Spell_ID) -> (sfx.Cue, bool) {
 client_sfx_play_cast :: proc(spell: Spell_ID) {
 	if cue, ok := cast_cue(spell); ok {
 		client_audio_play(cue)
-	}
-	if spell == .Friendly_Heal {
-		client_audio.last_heal_cast = game_client.client_world.local_time
 	}
 }
 
@@ -202,8 +216,6 @@ spell_audio_loop :: proc(spell: Spell_ID) -> Audio_Loop {
 		return .Lance_Charge
 	case .Blink:
 		return .Blink_Charge
-	case .Friendly_Heal:
-		return .Heal_Charge
 	case .Call_Lightning:
 		return .Lightning_Charge
 	case .Thunderbolt:
@@ -225,8 +237,6 @@ loop_cue :: proc(kind: Audio_Loop) -> (sfx.Cue, bool) {
 		return .Lance_Charge, true
 	case .Blink_Charge:
 		return .Blink_Charge, true
-	case .Heal_Charge:
-		return .Heal_Loop, true
 	case .Lightning_Charge:
 		return .Lightning_Charge, true
 	case .Thunder_Beam:
@@ -249,8 +259,6 @@ loop_interval :: proc(kind: Audio_Loop, charge: f32) -> f32 {
 		return lerpf(0.13, 0.07, t)
 	case .Blink_Charge:
 		return lerpf(0.12, 0.06, t)
-	case .Heal_Charge:
-		return lerpf(0.18, 0.10, t)
 	case .Lightning_Charge:
 		return lerpf(0.20, 0.09, t)
 	case .Thunder_Beam:
@@ -353,6 +361,15 @@ client_audio_update_remote_loops :: proc(gc: ^Game_Client, dt: f32) {
 		kind := Audio_Loop.Off
 		if remote.active && !remote.display_state.dead && Entity_ID(i) != world.local_entity_id {
 			kind = spell_audio_loop(remote.channel_spell)
+			if remote.channel_spell != slot.heard {
+				slot.heard = remote.channel_spell
+				if cue, ok := transfer_cue(remote.channel_spell); ok {
+					pos := remote.display_state.pos + vec3{0, 0, AUDIO_HAND_M}
+					client_audio_play_at(cue, .Near, pos)
+				}
+			}
+		} else {
+			slot.heard = .None
 		}
 		if kind != slot.kind {
 			slot.kind = kind
@@ -454,17 +471,12 @@ client_audio_world_events :: proc(gc: ^Game_Client, dt: f32) {
 client_audio_local_events :: proc(gc: ^Game_Client) {
 	pred := &gc.client_world.prediction
 	char := pred.predicted_char
-	now := gc.client_world.local_time
 
 	if pred.died {
 		client_audio_play(.Death)
 		pred.died = false
 	} else if pred.damage_taken > 0 {
 		client_audio_play(.Hurt)
-	}
-
-	if pred.healed > 0 && now - client_audio.last_heal_cast > 0.45 {
-		client_audio_play(.Heal_Tick)
 	}
 
 	if pred.teleported {

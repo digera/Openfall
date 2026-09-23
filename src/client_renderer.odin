@@ -901,7 +901,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	}
 
 	sdtx.color3f(0.42, 0.40, 0.38)
-	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  G drop haul  /  1-%d spells  /  LMB cast  /  Esc unlock mouse", HOTBAR_SLOTS))
+	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  G drop haul  /  1-%d spells  /  LMB cast  /  Z X C transfers  /  Esc unlock mouse", HOTBAR_SLOTS))
 }
 
 @(private = "file")
@@ -960,6 +960,64 @@ hud_in_game_menu :: proc(gc: ^Game_Client, cols, rows: f32) {
 
 	sdtx.color3f(0.50, 0.48, 0.45)
 	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2 + 3, "Choose an option or press ESC to return to the game")
+}
+
+// Z X C sit on their own row, centered above the number row. Name, then the
+// wind-up or the cooldown, same as a spell slot.
+@(private = "file")
+hud_transfer_cluster :: proc(gc: ^Game_Client, world: ^Client_World, local: Character_State, cols, rows: f32) {
+	slot_w: f32 = 14
+	origin := cols * 0.5 - slot_w * f32(len(TRANSFER_BINDS)) * 0.5
+	for i in 0..<len(TRANSFER_BINDS) {
+		bind := TRANSFER_BINDS[i]
+		spell := bind.spell
+		def := &SPELL_DEFS[spell]
+		cd := gc.cooldowns[spell]
+		col := origin + f32(i) * slot_w
+
+		sdtx.pos(col, rows - 5)
+		sdtx.color3f(0.82, 0.78, 0.62)
+		sdtx.printf("%s %-6s", bind.key, def.short_name)
+
+		sdtx.pos(col, rows - 4)
+		ready := spell_castable(spell, local, cd)
+		if spell == gc.charging_spell {
+			charge := spell_charge_frac(def, gc.charge_accum)
+			if charge < SPELL_MIN_CHARGE {
+				sdtx.color3f(0.45, 0.5, 0.6)
+			} else {
+				sdtx.color3f(0.3, 0.85, 1.0)
+			}
+			filled := int(charge * 8)
+			for k in 0..<8 {
+				sdtx.putc(k < filled ? '#' : '.')
+			}
+		} else if cd > 0 {
+			sdtx.color3f(0.45, 0.45, 0.5)
+			frac := 1.0 - cd / def.cooldown_sec
+			filled := int(frac * 6)
+			for k in 0..<6 {
+				sdtx.putc(k < filled ? '=' : '.')
+			}
+			sdtx.printf(" %.0f", cd)
+		} else if def.payload == .Heal && !client_heal_has_work(world, local) {
+			sdtx.color3f(0.5, 0.7, 0.55)
+			sdtx.puts("full hp")
+		} else if def.payload == .Transfer && vital_can_spend(local, def.transfer_from, def.transfer_cost) && vital_full(local, def.transfer_to) {
+			sdtx.color3f(0.5, 0.7, 0.55)
+			sdtx.puts("full")
+		} else if !ready {
+			sdtx.color3f(0.45, 0.55, 0.85)
+			if def.payload == .Transfer {
+				sdtx.printf("%.0f %s", def.transfer_cost, vital_label(def.transfer_from))
+			} else {
+				sdtx.printf("%.0f mp", def.mana_cost)
+			}
+		} else {
+			sdtx.color3f(0.5, 0.75, 0.55)
+			sdtx.puts("========")
+		}
+	}
 }
 
 @(private = "file")
@@ -1164,11 +1222,11 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 	start := cols * 0.5 - slot_w * f32(HOTBAR_SLOTS) * 0.5
 	for i in 0..<HOTBAR_SLOTS {
 		spell := HOTBAR[i]
+		col := start + f32(i) * slot_w
 		def := &SPELL_DEFS[spell]
 		cd := gc.cooldowns[spell]
 		selected := i == gc.selected_slot
 		ready := spell_castable(spell, local, cd)
-		col := start + f32(i) * slot_w
 
 		sdtx.pos(col, rows - 3)
 		if selected {
@@ -1229,6 +1287,8 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			sdtx.puts("==========")
 		}
 	}
+
+	hud_transfer_cluster(gc, world, local, cols, rows)
 
 	// --- Center ----------------------------------------------------------------
 	cx := cols * 0.5

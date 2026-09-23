@@ -759,6 +759,7 @@ server_send_snapshots :: proc(server: ^Server) {
 				health        = char.health,
 				mana          = char.mana,
 				stamina       = char.stamina,
+				sprint_active = char.sprint_active,
 				team          = server.world.teams[id],
 				slow_ticks    = char.slow_ticks,
 				channel_spell = spell_state.channel_spell,
@@ -1102,17 +1103,35 @@ server_update_resources :: proc(server: ^Server, dt: f32) {
 		if !server.world.characters[i].active {
 			continue
 		}
-		char := &server.world.characters[i]
+		// A copy, not the SOA pointer: the transfer helper takes a real
+		// ^Character_State, and an element of the SOA array is not one.
+		char := server.world.characters[i]
 		spell_state := &server.world.spell_states[i]
 
 		if !char.dead {
+			// A body already at 0 is waiting on the death check. Regen or a
+			// health transfer must not put it back above the line.
+			if char.health > 0 {
+				char.health = min(char.health + HEALTH_REGEN_PER_SEC * dt, HEALTH_MAX)
+			}
 			char.mana = min(char.mana + MANA_REGEN_PER_SEC * dt, MANA_MAX)
+			for spell_id in Spell_ID {
+				def := &SPELL_DEFS[spell_id]
+				if spell_state.cooldowns[spell_id] <= 0 || def.transfer_gain <= 0 {
+					continue
+				}
+				if def.transfer_to == .Health && char.health <= 0 {
+					continue
+				}
+				vital_gain(&char, def.transfer_to, def.transfer_gain / def.cooldown_sec * dt)
+			}
 		}
 		for spell_id in Spell_ID {
 			if spell_state.cooldowns[spell_id] > 0 {
 				spell_state.cooldowns[spell_id] = max(spell_state.cooldowns[spell_id] - dt, 0)
 			}
 		}
+		server.world.characters[i] = char
 	}
 }
 
@@ -1175,7 +1194,7 @@ server_handle_spell_cast :: proc(
 
 	charge := clampf(charge_frac, SPELL_MIN_CHARGE, 1)
 
-	char.mana -= def.mana_cost
+	spell_pay(&char, def)
 	spell_state.cooldowns[spell_id] = def.cooldown_sec
 
 	switch def.payload {
@@ -1217,8 +1236,9 @@ server_handle_spell_cast :: proc(
 		server_strike(server, caster_id, strike_id, def, charge)
 
 	case .Heal:
+		// The caster's share is the transfer tick, already paid for above.
+		// Only the ally is mended on the spot.
 		amount := spell_heal_amount(def, charge)
-		self_got := character_mend(&char, amount)
 		ally_got: f32 = 0
 		if server_heal_ally_ok(server, caster_id, target_id, def, origin, direction) {
 			ally := server.world.characters[target_id]
@@ -1227,13 +1247,17 @@ server_handle_spell_cast :: proc(
 		}
 		if SERVER_VERBOSE {
 			if ally_got > 0 {
-				server_log("[Combat] %s mended %d for %.0f and %d for %.0f (%.0f HP)",
-					def.short_name, caster_id, self_got, target_id, ally_got, char.health)
+				server_log("[Combat] %s mended %d for %.0f; %d's transfer is ticking (%.0f HP)",
+					def.short_name, target_id, ally_got, caster_id, char.health)
 			} else {
-				server_log("[Combat] %s mended %d for %.0f (%.0f HP)",
-					def.short_name, caster_id, self_got, char.health)
+				server_log("[Combat] %s transfer on %d ticking (%.0f HP)",
+					def.short_name, caster_id, char.health)
 			}
 		}
+
+	case .Transfer:
+		// Paid up front. The gain drips in server_update_resources until the
+		// cooldown reaches zero.
 
 	case .Beam: // refused above
 	case .None:

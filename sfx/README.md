@@ -18,7 +18,7 @@
 | `Orb_*` | Arcane Orb rumble, whoomp, explosion |
 | `Lance_*` | Frost Lance crystal scrape, shard throw, shatter |
 | `Blink_*` | Blink wind-up and arrival |
-| `Heal_Loop` / `Heal_Tick` | Friendly Heal charge grain / burst |
+| `Transfer_Mana` / `Transfer_Stamina` / `Transfer_Heal` | One gulp when a transfer fires. No charge loop, no drip |
 | `Lightning_*` | Call Lightning telegraph, release call, sky bolt |
 | `Thunder_Loop` / `Thunder_Hit` | Thunderbolt beam grain / body contact |
 | `Hit_Confirm` | You connected |

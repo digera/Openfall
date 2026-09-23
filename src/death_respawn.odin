@@ -98,6 +98,7 @@ entity_respawn :: proc(char: ^Character_State, team: Team_ID, slot: int) {
 	char.health = HEALTH_MAX
 	char.mana = MANA_MAX
 	char.stamina = STAMINA_MAX
+	char.sprint_active = false
 	char.slow_ticks = 0
 	char.dead = false
 	char.respawn_timer = 0

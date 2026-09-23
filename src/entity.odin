@@ -22,6 +22,12 @@ Character_State :: struct {
 	mana:       f32,
 	stamina:    f32,
 
+	// Sprint may drain the bar to empty, but it will not start again until
+	// stamina has climbed back to STAMINA_SPRINT_MIN. Releasing Shift clears
+	// it. Replicated in the snapshot flags so a correction does not restart
+	// a sprint the server has already refused.
+	sprint_active: bool,
+
 	slow_ticks: int,  // remaining ticks of Frost slow (0 = not slowed)
 
 	dead:           bool,

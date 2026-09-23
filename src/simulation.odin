@@ -25,7 +25,7 @@ CHARACTER_GRAVITY      :: f32(22.0)
 CHARACTER_JUMP_VELOCITY :: f32(6.6)
 
 STAMINA_SPRINT_DRAIN   :: f32(24.0)   // per second while sprinting
-STAMINA_SPRINT_MIN     :: f32(5.0)    // need at least this much to start sprinting
+STAMINA_SPRINT_MIN     :: f32(40.0)   // empty bar must climb back to here before sprint will start
 
 // Aim lock burns the bar faster than a sprint, so tracking is bought with the
 // legs: about three and a half seconds of help on a full bar, and none of it
@@ -47,6 +47,7 @@ simulate_character_step :: proc(char: ^Character_State, input: Input_State, dt: 
 
 	if char.dead {
 		char.vel = {}
+		char.sprint_active = false
 		return
 	}
 
@@ -64,7 +65,19 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	// Aim lock and sprint draw on the same bar and cannot be held together:
 	// tracking costs you the ability to close or break away while it runs.
 	aim_locking := input.aim_lock && char.stamina > 0
-	sprinting := input.sprint && moving && char.on_ground && char.stamina > 0 && !aim_locking
+	// A sprint already running may drain the bar to empty. Starting one takes
+	// a real reserve: one tick of regen at 0 is enough to satisfy `> 0`, and
+	// holding Shift would otherwise sprint forever on an empty bar.
+	wants_sprint := input.sprint && moving && char.on_ground && !aim_locking
+	sprinting := false
+	if wants_sprint {
+		if char.sprint_active {
+			sprinting = char.stamina > 0
+		} else {
+			sprinting = char.stamina >= STAMINA_SPRINT_MIN
+		}
+	}
+	char.sprint_active = sprinting
 
 	if aim_locking {
 		char.stamina = max(char.stamina - STAMINA_AIM_LOCK_DRAIN * dt, 0)

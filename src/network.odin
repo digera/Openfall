@@ -34,7 +34,7 @@ import "core:strconv"
 // two towers that changed this tick so cover you are standing in does not
 // wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(17)  // G drops haul; ground ore consolidates into piles
+PROTOCOL_VERSION :: u8(18)  // vitals are u16; sprint latch rides in the entity flags
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -114,6 +114,7 @@ Snapshot_Entity :: struct {
 	health:        f32,
 	mana:          f32,
 	stamina:       f32,
+	sprint_active: bool,
 	team:          Team_ID,
 	slow_ticks:    int,
 
@@ -431,6 +432,14 @@ quant_u8 :: proc(v: f32, scale: f32) -> u8 {
 	return u8(clampf(math.round(v * scale), 0, 255))
 }
 
+quant_u16 :: proc(v: f32, scale: f32) -> u16 {
+	return u16(clampf(math.round(v * scale), 0, 65535))
+}
+
+// Tenths of a point. Health and mana are whole points; stamina is predicted
+// every tick, so a coarser step shows up as a hitch when a sprint ends.
+STAMINA_WIRE_SCALE :: f32(10)
+
 // A whole turn in one byte: 1.4 degrees a step. Far too coarse for a player's
 // crosshair, exactly right for which way a minion is facing while it walks.
 quant_turns_u8 :: proc(a: f32) -> u8 {
@@ -731,8 +740,8 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
 SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 8   // version+type, tick, ack, eight counts
-SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 1 + 1 + 4 + 1 + 1 + 2 + 4
-                                          // id, pos, vel, yaw, pitch, flags, hp, mana, stamina, team, slow, cast, carry[4] u8
+SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 2 + 2 + 2 + 1 + 1 + 2 + 4
+                                          // id, pos, vel, yaw, pitch, flags, hp u16, mana u16, stam u16, team, slow, cast, carry[4] u8
 // Projectiles used to carry full f32 position and velocity, which they never
 // needed: the server owns them outright and nobody reconciles a prediction
 // against one. Centimetres and cm/s inside the arena are visually identical and
@@ -802,13 +811,14 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		bw_i16(&w, quant_angle(e.yaw))
 		bw_i16(&w, quant_angle(e.pitch))
 		flags: u8 = 0
-		if e.on_ground { flags |= 1 }
-		if e.dead      { flags |= 2 }
-		if e.is_bot    { flags |= 4 }
+		if e.on_ground     { flags |= 1 }
+		if e.dead          { flags |= 2 }
+		if e.is_bot        { flags |= 4 }
+		if e.sprint_active { flags |= 8 }
 		bw_u8(&w, flags)
-		bw_u8(&w, quant_u8(e.health, 1))
-		bw_u8(&w, quant_u8(e.mana, 1))
-		bw_f32(&w, e.stamina)
+		bw_u16(&w, quant_u16(e.health, 1))
+		bw_u16(&w, quant_u16(e.mana, 1))
+		bw_u16(&w, quant_u16(e.stamina, STAMINA_WIRE_SCALE))
 		bw_u8(&w, u8(e.team))
 		bw_u8(&w, u8(clamp(e.slow_ticks, 0, 255)))
 		bw_u8(&w, u8(e.channel_spell))
@@ -935,9 +945,10 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		e.on_ground = flags & 1 != 0
 		e.dead = flags & 2 != 0
 		e.is_bot = flags & 4 != 0
-		e.health = f32(br_u8(&r))
-		e.mana = f32(br_u8(&r))
-		e.stamina = br_f32(&r)
+		e.sprint_active = flags & 8 != 0
+		e.health = f32(br_u16(&r))
+		e.mana = f32(br_u16(&r))
+		e.stamina = f32(br_u16(&r)) / STAMINA_WIRE_SCALE
 		e.team = Team_ID(br_u8(&r))
 		e.slow_ticks = int(br_u8(&r))
 		e.channel_spell = spell_id_from_wire(br_u8(&r))

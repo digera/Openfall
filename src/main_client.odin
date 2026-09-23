@@ -70,6 +70,11 @@ Game_Client :: struct {
 	// healthy bar to engage but runs until the bar is dry, so a lock does not
 	// chatter on and off while stamina hovers around the threshold.
 	aim_locked:     bool,
+
+	// Z/X take the channel for two ticks: the first winds an instant transfer,
+	// the second releases it. C is a hold and does not live here.
+	transfer_tap:       Spell_ID,
+	transfer_tap_armed: bool,
 }
 
 game_client: Game_Client
@@ -113,6 +118,14 @@ client_frame :: proc "c" () {
 	gc.client_world.local_time += f64(dt)
 
 	client_poll_network(gc)
+
+	// Z/X latches must not survive the lobby or the pause menu and fire on
+	// the first tick back in the match.
+	if gc.phase != .Playing {
+		input.transfer_press = .None
+		gc.transfer_tap = .None
+		gc.transfer_tap_armed = false
+	}
 
 	switch gc.phase {
 	case .Connecting:
@@ -431,6 +444,14 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 			gc.selected_slot = slot - 1
 		}
 	}
+
+	// A tap already in flight keeps the channel. The next press waits.
+	if gc.transfer_tap == .None {
+		if spell := input_consume_transfer(); spell != .None {
+			gc.transfer_tap = spell
+			gc.transfer_tap_armed = false
+		}
+	}
 }
 
 // Aiming is the only thing that picks a target, so anything that stops the
@@ -511,6 +532,41 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }
 
+// Z and X own the channel for two ticks. The first starts the wind-up; the
+// second releases it. An instant transfer is already a full charge, so the
+// release fires on that second tick.
+@(private)
+client_advance_transfer :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_spell: Spell_ID, handled: bool) {
+	if gc.transfer_tap == .None {
+		return .None, .None, false
+	}
+	pred := &gc.client_world.prediction
+	spell := gc.transfer_tap
+	def := &SPELL_DEFS[spell]
+	client_drop_charge(gc)
+	if gc.transfer_tap_armed {
+		gc.transfer_tap = .None
+		gc.transfer_tap_armed = false
+		if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
+			client_audio_play(.Fizzle)
+			return .None, .None, true
+		}
+		gc.cooldowns[spell] = def.cooldown_sec
+		gc.cast_pulse = 1
+		gc.last_cast = spell
+		camera_fx_on_cast(&gc.fx, spell)
+		client_sfx_play_cast(spell)
+		return spell, .None, true
+	}
+	if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
+		gc.transfer_tap = .None
+		client_audio_play(.Fizzle)
+		return .None, .None, true
+	}
+	gc.transfer_tap_armed = true
+	return .None, spell, true
+}
+
 // Hold LMB to wind the selected spell up. Letting go before the bar is full
 // commits the cast: it keeps charging and fires at full power once it is.
 // Holding through the full wind-up still waits for the release, so a shot can
@@ -525,20 +581,39 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	// Dying, unlocking the mouse or the match ending drop the wind-up on the
 	// floor, committed or not.
 	if !alive || match_over || !sapp.mouse_locked() {
+		gc.transfer_tap = .None
+		gc.transfer_tap_armed = false
 		client_sfx_note_fizzle(gc)
 		client_drop_charge(gc)
 		return .None, .None
 	}
 
+	tap_cast, tap_charge, tap_handled := client_advance_transfer(gc)
+	if tap_handled {
+		return tap_cast, tap_charge
+	}
+
 	// The cast origin and look the server will judge a targeted spell by.
 	eye := pred.predicted_char.pos + vec3{0, 0, PLAYER_EYE_M}
 	look := camera_forward(gc.view_yaw, gc.view_pitch)
+	// C winds Friendly Heal and leaves the number row alone. LMB winds the
+	// selected slot.
+	c_held := input.key_c
+	hotbar_spell := HOTBAR[gc.selected_slot]
+	chosen := hotbar_spell
 	holding := input.held_left
-	selected := HOTBAR[gc.selected_slot]
+	if c_held {
+		chosen = .Friendly_Heal
+		holding = true
+	}
 	winding := gc.charging_spell != .None && SPELL_DEFS[gc.charging_spell].payload != .Beam
 
 	if holding {
-		spell := selected
+		spell := chosen
+		if !spell_valid(spell) {
+			client_drop_charge(gc)
+			return .None, .None
+		}
 		def := &SPELL_DEFS[spell]
 		if gc.charging_spell != spell {
 			// A fresh hold, or the player swapped slots mid-charge. Picking the
@@ -566,8 +641,9 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 		}
 	} else if winding {
 		// Button up on a charge-cast: swapping off it cancels, otherwise an
-		// early release commits the remaining wind-up.
-		if selected != gc.charging_spell {
+		// early release commits the remaining wind-up. Heal is not on the
+		// number row, so releasing C must not look like a slot change.
+		if gc.charging_spell != .Friendly_Heal && hotbar_spell != gc.charging_spell {
 			client_sfx_note_fizzle(gc)
 			client_drop_charge(gc)
 			return .None, .None

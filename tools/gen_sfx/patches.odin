@@ -20,8 +20,9 @@ LIBRARY := [?]Library_Entry {
 	{"lance_impact", make_lance_impact},
 	{"blink_charge", make_blink_charge},
 	{"blink_arrive", make_blink_arrive},
-	{"heal_loop", make_heal_loop},
-	{"heal_tick", make_heal_tick},
+	{"transfer_mana", make_transfer_mana},
+	{"transfer_stamina", make_transfer_stamina},
+	{"transfer_heal", make_transfer_heal},
 	{"lightning_charge", make_lightning_charge},
 	{"lightning_cast", make_lightning_cast},
 	{"lightning_strike", make_lightning_strike},
@@ -323,38 +324,52 @@ make_blink_arrive :: proc() -> wb.Patch {
 	}))
 }
 
-// Friendly Heal: EQ holy-light drone. Soft fifth, a chime when health actually lands.
+// Transfers are a lesser-magic gulp: one short siphon when the cast fires,
+// then silence while the bar drips. Pitch rises into mana, falls into stamina,
+// and the heal is the same gulp with a brighter tail. Nothing here loops.
 
-make_heal_loop :: proc() -> wb.Patch {
+make_transfer_mana :: proc() -> wb.Patch {
 	nodes := [?]wb.Graph_Node {
 		out_node(),
-		osc("osc_1", 40, "root", .Sine, 523, 0, 0.20, 0, 0.02, .Exp),
-		gain("gain_1", 40, "rootAmp", 0.09, 0.20, 0, 0.03),
-		osc("osc_2", 220, "fifth", .Sine, 784, 0, 0.18, 0.03, 0.03, .Exp),
-		gain("gain_2", 220, "fifthAmp", 0.07, 0.18, 0.03, 0.04),
-		noise("noise_1", 400, "dust", 0.08, 0.04),
-		filter("filter_1", 400, "dustBp", .Bandpass, 4800, 6200, 3.2, 0.06, 0.05),
-		gain("gain_3", 400, "dustAmp", 0.035, 0.08, 0.04, 0.08),
+		osc("osc_1", 40, "rise", .Sine, 180, 620, 0.28, 0, 0.04, .Exp),
+		gain("gain_1", 40, "riseAmp", 0.14, 0.28, 0, 0.04),
+		noise("noise_1", 240, "breath", 0.10, 0),
+		filter("filter_1", 240, "breathBp", .Bandpass, 900, 2800, 1.6, 0.18, 0.05),
+		gain("gain_2", 240, "breathAmp", 0.06, 0.10, 0, 0.06),
 	}
-	return patch("Heal Loop", "play_heal_loop", nodes[:], link([][2]string{
+	return patch("Transfer Mana", "play_transfer_mana", nodes[:], link([][2]string{
 		{"osc_1", "gain_1"}, {"gain_1", "out"},
-		{"osc_2", "gain_2"}, {"gain_2", "out"},
-		{"noise_1", "filter_1"}, {"filter_1", "gain_3"}, {"gain_3", "out"},
+		{"noise_1", "filter_1"}, {"filter_1", "gain_2"}, {"gain_2", "out"},
 	}))
 }
 
-make_heal_tick :: proc() -> wb.Patch {
+make_transfer_stamina :: proc() -> wb.Patch {
 	nodes := [?]wb.Graph_Node {
 		out_node(),
-		osc("osc_1", 40, "pluck", .Triangle, 660, 990, 0.07, 0, 0.04, .Lin),
-		gain("gain_1", 40, "pluckAmp", 0.16, 0.07, 0, 0.04),
-		osc("osc_2", 220, "chime", .Sine, 1320, 1760, 0.12, 0.04, 0.03, .Lin),
-		gain("gain_2", 220, "chimeAmp", 0.12, 0.12, 0.04, 0.04),
-		noise("noise_1", 400, "sparkle", 0.035, 0.04),
-		filter("filter_1", 400, "sparkleBp", .Bandpass, 5600, 7800, 3.6, 0.03, 0.05),
-		gain("gain_3", 400, "sparkleAmp", 0.04, 0.035, 0.04, 0.08),
+		osc("osc_1", 40, "fall", .Sine, 540, 140, 0.28, 0, 0.04, .Exp),
+		gain("gain_1", 40, "fallAmp", 0.13, 0.28, 0, 0.04),
+		noise("noise_1", 240, "breath", 0.12, 0),
+		filter("filter_1", 240, "breathBp", .Bandpass, 2200, 500, 1.4, 0.16, 0.05),
+		gain("gain_2", 240, "breathAmp", 0.055, 0.12, 0, 0.06),
 	}
-	return patch("Heal Tick", "play_heal_tick", nodes[:], link([][2]string{
+	return patch("Transfer Stamina", "play_transfer_stamina", nodes[:], link([][2]string{
+		{"osc_1", "gain_1"}, {"gain_1", "out"},
+		{"noise_1", "filter_1"}, {"filter_1", "gain_2"}, {"gain_2", "out"},
+	}))
+}
+
+make_transfer_heal :: proc() -> wb.Patch {
+	nodes := [?]wb.Graph_Node {
+		out_node(),
+		osc("osc_1", 40, "gulp", .Sine, 392, 784, 0.22, 0, 0.04, .Lin),
+		gain("gain_1", 40, "gulpAmp", 0.12, 0.22, 0, 0.04),
+		osc("osc_2", 220, "tail", .Sine, 588, 1176, 0.16, 0.06, 0.03, .Lin),
+		gain("gain_2", 220, "tailAmp", 0.08, 0.16, 0.06, 0.04),
+		noise("noise_1", 400, "breath", 0.05, 0),
+		filter("filter_1", 400, "breathBp", .Bandpass, 3000, 5200, 2.2, 0.05, 0.05),
+		gain("gain_3", 400, "breathAmp", 0.03, 0.05, 0, 0.06),
+	}
+	return patch("Transfer Heal", "play_transfer_heal", nodes[:], link([][2]string{
 		{"osc_1", "gain_1"}, {"gain_1", "out"},
 		{"osc_2", "gain_2"}, {"gain_2", "out"},
 		{"noise_1", "filter_1"}, {"filter_1", "gain_3"}, {"gain_3", "out"},
