@@ -1,0 +1,199 @@
+# Graphical client and headless server for Windows and Linux x64.
+#
+# From the Actions tab: Run workflow, version 0.0.1.0.
+# Or push a tag: git tag v0.0.1.0 && git push origin v0.0.1.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.0.1.0"
+        required: true
+        default: "0.0.1.0"
+        type: string
+
+concurrency:
+  group: openfall-release
+  cancel-in-progress: false
+
+env:
+  ODIN_RELEASE: dev-2026-07
+  SOKOL_ODIN_SHA: 132fa9d26acf98cf6358a61e8baadf985196ab42
+  SOKOL_SHDC_SHA: 11d0cf678105d614d675e6d9bd2aaf3eeff12f8c
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Resolve version
+        id: ver
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ver="${INPUT_VERSION#v}"
+          else
+            ver="${GITHUB_REF_NAME#v}"
+          fi
+          if ! [[ "$ver" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+            echo "Version must look like 0.0.1.0 (got: $ver)" >&2
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          echo "Release v$ver"
+
+  linux:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang \
+            libgl1-mesa-dev libglu1-mesa-dev mesa-common-dev \
+            xorg-dev libasound2-dev
+
+      - name: Build Linux client and server
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source .github/scripts/ci-toolchain.sh
+          ROOT=$(ci_root)
+          export ROOT
+          install_odin
+          install_shdc
+          clone_sokol
+          chmod +x "$SOKOL/build_clibs_linux.sh"
+          ( cd "$SOKOL" && ./build_clibs_linux.sh )
+          bash .github/scripts/release-build.sh both
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux-release
+          path: bin/release/*
+          if-no-files-found: error
+
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Odin, sokol-shdc, and sokol-odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source .github/scripts/ci-toolchain.sh
+          ROOT=$(ci_root)
+          export ROOT
+          install_odin
+          install_shdc
+          clone_sokol
+          {
+            echo "ODIN_BIN<<EOF"
+            echo "$ODIN_BIN"
+            echo "EOF"
+            echo "SHDC<<EOF"
+            echo "$SHDC"
+            echo "EOF"
+            echo "SOKOL<<EOF"
+            echo "$SOKOL"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Sokol D3D11 libraries
+        shell: cmd
+        run: .github\scripts\build_sokol_d3d11_release.cmd
+
+      - name: Build Windows client and server
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/release-build.sh both
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-release
+          path: bin/release/*
+          if-no-files-found: error
+
+  release:
+    needs: [meta, linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          if [ "${#files[@]}" -ne 4 ]; then
+            echo "expected 4 archives, found ${#files[@]}" >&2
+            find dist -type f -print >&2
+            exit 1
+          fi
+          ls -lh "${files[@]}"
+          cat > notes.md <<EOF
+          Openfall ${VERSION}
+
+          Windows x64
+          - openfall-${VERSION}-windows-amd64-client.zip — nexus_client.exe
+          - openfall-${VERSION}-windows-amd64-server.zip — nexus_server.exe
+
+          Linux x64
+          - openfall-${VERSION}-linux-amd64-client.tar.gz — nexus_client
+          - openfall-${VERSION}-linux-amd64-server.tar.gz — nexus_server
+
+          The client connects to primord.io:27015. Point it at another host with SERVER_IP. NEXUS_PORT changes the port on both (default 27015).
+
+          The Linux client needs a desktop session with OpenGL, X11, and ALSA. If Windows reports a missing VCRUNTIME140.dll, install the Microsoft Visual C++ 2015-2022 redistributable.
+
+          Each archive includes the MIT license.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Openfall $VERSION" --notes-file notes.md
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Openfall $VERSION" \
+              --notes-file notes.md \
+              "${files[@]}"
+          fi
