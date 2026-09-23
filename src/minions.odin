@@ -5,12 +5,12 @@ import "core:math"
 
 // Lane minions: the layer that spends the four wallets.
 //
-// Every WAVE_PERIOD_SEC each team gets a wave out of its base. The wave reads
-// the team's wallets and dumps them: own ore makes the fodder thicker and their
-// rebuild donation bigger, each rival ore buys an extra pusher aimed at the
-// *other* rival's lane, and gold buys one heavy that stays home. Nothing is
-// saved for later and there is no shop -- what you banked in the last thirty
-// seconds is what walks out.
+// Every WAVE_PERIOD_SEC each team gets a wave out of its base. The base wave
+// is free. Each coloured ore then buys at most one extra body, and only while
+// the wallet still holds WAVE_ORE_COST: own ore is one more fodder, a rival's
+// ore is one pusher aimed at the *other* rival's lane. Leftover ore waits for
+// the next wave, so a stack of 100 is ten waves of one extra, not a flood.
+// Gold is the exception: the whole stack still buys one heavy that stays home.
 //
 // Minions are deliberately not entities. A Character_State carries mana, a
 // spell bar, a name and a roster slot, and there are only MAX_ENTITIES of them
@@ -52,17 +52,9 @@ Minion_Mode :: enum u8 {
 WAVE_PERIOD_SEC  :: f32(30.0)
 WAVE_FODDER_BASE :: 3        // what a team that banked nothing still gets
 
-// Own ore is dumped whole into the wave's *quality*, never its headcount:
-// bolster saturates, so one enormous haul cannot put a tower back in a single
-// wave the way a steady three-wave habit does.
-OWN_ORE_SOFT_CAP   :: f32(160.0)
-OWN_ORE_HP_GAIN    :: f32(1.20)  // extra health at a full bolster, as a fraction
-OWN_ORE_BUILD_GAIN :: f32(1.30)  // extra metres of rebuild radius at a full bolster
-
-// A rival's ore buys bodies, capped so that stripping one team cannot flood a
-// lane past what the entity budget and a 9 m corridor can hold.
-PUSHER_ORE_COST :: f32(60.0)
-WAVE_PUSHER_CAP :: 3
+// One extra body per coloured ore per wave, paid up front. 100 ore is ten
+// waves of one extra, then the wallet is empty. Gold does not use this.
+WAVE_ORE_COST :: f32(10.0)
 
 // Gold buys one heavy, and only while the last one is dead. The whole stack
 // is dumped into that one body: HEAVY_GOLD_COST is the 1.0x HP mark.
@@ -89,8 +81,8 @@ MINION_CONTACT_R  :: f32(1.35)
 MINION_RETARGET_S :: f32(0.25)
 
 // The suicide. Fodder go off hard enough that a choke held alone is a real
-// risk; a pusher's burst is smaller because there can be three of them, and
-// the heavy has none at all -- 420 health dying in your face would be a wipe
+// risk; a pusher's burst is smaller because a wave can bring one per rival,
+// and the heavy has none at all -- 420 health dying in your face would be a wipe
 // nobody could read coming.
 MINION_BURST_DAMAGE_FODDER :: f32(26.0)
 MINION_BURST_RADIUS_FODDER :: f32(3.0)
@@ -105,8 +97,8 @@ HEAVY_SWIPE_RADIUS :: f32(2.8)
 HEAVY_SWIPE_CD     :: f32(1.4)
 
 // A fodder that reaches a damaged friendly tower becomes part of it: one
-// donation, then it is gone. Three thin waves put a flattened lane tower back;
-// a team that has been farming its own dead does it in one or two.
+// donation, then it is gone. Three waves of the free fodder put half a lane
+// tower back. An extra fodder bought with own ore is another body that can hop.
 MINION_BUILD_RADIUS :: f32(3.4)
 MINION_BUILD_REACH  :: f32(2.6)  // how close to the rock a hop has to get
 
@@ -158,7 +150,7 @@ Minion :: struct {
 	health:     f32,
 	health_max: f32,
 	speed:      f32,
-	build_r:    f32,  // rebuild radius this one carries, from its wave's own ore
+	build_r:    f32,  // rebuild radius; fodder carry MINION_BUILD_RADIUS
 
 	mode:        Minion_Mode,
 	objective:   Pylon_ID,
@@ -312,10 +304,11 @@ minion_spawn :: proc(
 	return m
 }
 
-// One team's wave. Reads the wallets, spends them, and puts the result on the
-// floor. All-or-nothing spends only: `match_spend_ore` refuses a partial, which
-// is the difference between a wave that is short a pusher and a half-summoned
-// one.
+// One team's wave. The free fodder always walk. Each coloured ore then pays
+// WAVE_ORE_COST for one extra body, at most one per colour, and the rest of
+// the stack stays in the wallet. Gold is still dumped whole into one heavy.
+//
+// Spend only after the body exists. A failed claim must not eat the ore.
 minion_wave_spawn :: proc(world: ^Minion_World, match: ^Match, team: Team_ID) {
 	ti := team_index(team)
 	if ti < 0 {
@@ -328,27 +321,30 @@ minion_wave_spawn :: proc(world: ^Minion_World, match: ^Match, team: Team_ID) {
 	}
 	slot := 0
 
-	// --- Own ore: bolster, never headcount ----------------------------------
-	own := team_ore(team)
-	banked := match.wallets[ti][ore_index_of(own)]
-	if banked > 0 {
-		match_spend_ore(match, team, own, banked)
-	}
-	// Saturating, so the first hundred ore is worth far more than the fifth.
-	bolster := 1 - math.exp(-banked / OWN_ORE_SOFT_CAP)
-	hp_mult := 1 + OWN_ORE_HP_GAIN * bolster
-	build_r := MINION_BUILD_RADIUS + OWN_ORE_BUILD_GAIN * bolster
-
 	fodder := min(WAVE_FODDER_BASE, room)
 	for _ in 0 ..< fodder {
-		if minion_spawn(world, .Fodder, team, team, slot, hp_mult, build_r) == nil {
+		if minion_spawn(world, .Fodder, team, team, slot, 1, MINION_BUILD_RADIUS) == nil {
 			break
 		}
 		slot += 1
 	}
 	room -= fodder
 
-	// --- Rival ore: extra pushers, aimed around the triangle ----------------
+	// --- Own ore: one extra fodder on your own lane -------------------------
+	own := team_ore(team)
+	if room > 0 && match.wallets[ti][ore_index_of(own)] >= WAVE_ORE_COST {
+		if minion_spawn(world, .Fodder, team, team, slot, 1, MINION_BUILD_RADIUS) != nil {
+			match_spend_ore(match, team, own, WAVE_ORE_COST)
+			slot += 1
+			room -= 1
+			fodder += 1
+		}
+	}
+
+	// --- Rival ore: one pusher per colour, aimed around the triangle --------
+	// Ember in the wallet sends a body at Tide, Tide sends one at Ember, and
+	// the same rotation for the third colour. Steal from one neighbour, hit
+	// the other.
 	pushers := 0
 	for rival in TEAMS {
 		if rival == team || room <= 0 {
@@ -359,20 +355,16 @@ minion_wave_spawn :: proc(world: ^Minion_World, match: ^Match, team: Team_ID) {
 		if target_lane == .None {
 			continue
 		}
-		held := match.wallets[ti][ore_index_of(kind)]
-		want := clamp_int(int(held / PUSHER_ORE_COST), 0, WAVE_PUSHER_CAP)
-		want = min(want, room)
-		for _ in 0 ..< want {
-			if !match_spend_ore(match, team, kind, PUSHER_ORE_COST) {
-				break
-			}
-			if minion_spawn(world, .Pusher, team, target_lane, slot, 1, 0) == nil {
-				break
-			}
-			slot += 1
-			room -= 1
-			pushers += 1
+		if match.wallets[ti][ore_index_of(kind)] < WAVE_ORE_COST {
+			continue
 		}
+		if minion_spawn(world, .Pusher, team, target_lane, slot, 1, 0) == nil {
+			break
+		}
+		match_spend_ore(match, team, kind, WAVE_ORE_COST)
+		slot += 1
+		room -= 1
+		pushers += 1
 	}
 
 	// --- Gold: one heavy, dump the whole stack, scale the body --------------
@@ -391,8 +383,8 @@ minion_wave_spawn :: proc(world: ^Minion_World, match: ^Match, team: Team_ID) {
 	}
 
 	if SERVER_VERBOSE {
-		server_log("[Wave] %s: %d fodder (x%.2f hp, %.1f m build), %d pushers, %d heavy",
-			team_name(team), fodder, hp_mult, build_r, pushers, heavy)
+		server_log("[Wave] %s: %d fodder, %d pushers, %d heavy",
+			team_name(team), fodder, pushers, heavy)
 	}
 }
 
@@ -983,7 +975,7 @@ minion_donate :: proc(world: ^Minion_World, towers: ^Tower_World, match: ^Match,
 		minion_remove(world, slot)
 		return
 	}
-	gained, ok := tower_build(towers, m.objective, tower_donate_count(m.build_r))
+	gained, ok := tower_build(towers, m.objective, tower_donate_count(m.build_r), m.team)
 	if ok && gained > 0 && t.owner == .None {
 		match_credit_centre(match, m.team, gained)
 	}

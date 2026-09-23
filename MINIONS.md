@@ -16,26 +16,22 @@ Minions deliberately do not count as entities, so **targeted spells** (Call Ligh
 
 | Ore | Whose rock | What a wave spends it on |
 |---|---|---|
-| Ember | Ember pylons | extra pushers, or Ember's own buff |
-| Tide | Tide pylons | extra pushers, or Tide's own buff |
-| Verdant | Verdant pylons | extra pushers, or Verdant's own buff |
-| Gold | centre pylon | one lane-holding heavy |
+| Ember | Ember pylons | one extra body per wave, while the stack holds 10 |
+| Tide | Tide pylons | one extra body per wave, while the stack holds 10 |
+| Verdant | Verdant pylons | one extra body per wave, while the stack holds 10 |
+| Gold | centre pylon | one lane-holding heavy, whole stack |
 
-Own ore and enemy ore are different spends. Gold is a third spend. Nothing converts between them. Every wave dumps what it can; nothing is saved for a shop.
+Own ore and enemy ore buy different bodies. Gold is a third spend. Nothing converts between them. Coloured ore is not dumped: each wave takes `WAVE_ORE_COST` (10) of a colour and adds one body, and the rest waits. 100 ore is ten waves of one extra, then nothing.
 
-## Own ore: bolster the fodder
+## Own ore: one extra fodder
 
-Bank **your** ore and the next wave's lane fodder come out thicker: extra HP, and a larger donation when they jump into a tower. That is the whole point of retrieving your own rock after your mobs die or after someone mines your pylons. You are not buying extra bodies. You are making the bodies you already get better at living and at putting the tower back.
+Bank **your** ore and the next wave includes one more lane fodder, on your own lane. That is the whole point of retrieving your own rock. You are buying one extra body, not a thicker one. The free three (`WAVE_FODDER_BASE`) still walk if the wallet is empty. Below 10, that colour adds nothing this wave.
 
-The whole stack is spent. Bolster saturates (`OWN_ORE_SOFT_CAP`), so a jackpot cannot put a tower back in a single wave the way a steady three-wave habit does.
+## Enemy ore: one pusher, triangle aim
 
-A team that never banks its own ore still gets a wave. It is just the thin default one (`WAVE_FODDER_BASE` bodies).
+Each wave, 10 of a rival's ore summons **one** lane-offensive minion that walks the remaining rival's lane — not the team you just robbed. One per colour. A strip cannot flood a corridor; it feeds one pusher a wave until the stack drops under 10.
 
-## Enemy ore: extra pushers, triangle aim
-
-Each `PUSHER_ORE_COST` of a rival's ore summons **one extra lane-offensive minion** that walks the remaining rival's lane — not the team you just robbed. Capped at `WAVE_PUSHER_CAP` per rival colour, so a strip cannot flood a 9 m corridor.
-
-From Verdant (green): spend Ember (red) → the extra bodies attack Tide (blue). Same rotation for the other two. Steal from one neighbour, hit the other. You do not pile onto a lane you already stripped.
+From Verdant (green): spend Ember (red) → the extra body attacks Tide (blue). Tide ore sends one at Ember. Same rotation for the other seat. Steal from one neighbour, hit the other.
 
 ## Gold: a heavy that holds your lane
 
@@ -53,7 +49,7 @@ Players mining pylons still knock chunks out of the tower itself. That is not mi
 
 Fodder (and only fodder) jump into a damaged friendly tower and call `tower_build`. When two friendly towers are hurt, they take the **nearest** one: chip on the far pylon must not vacuum the wave that should be saving the inner one. A tower is "hurt" below `PYLON_REBUILD_FRAC` (not a 2% graze).
 
-An unbuffed hop restores two shield nodes. Own-ore buffs add up to two more, so a team that has been farming its own dead is the team that puts a tower back in one or two waves instead of three.
+A hop restores two shield nodes. Own ore does not enlarge the hop; it adds a fourth fodder that can hop as well.
 
 Flattening a lane tower does **not** open a super-minion push. It turns that team's next waves into a repair crew for about ninety seconds. The siege is camping the stump.
 

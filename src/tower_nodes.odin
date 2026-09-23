@@ -16,7 +16,8 @@ import "core:slice"
 // Holes stay until the column is unsound: a run of three or more empty slots
 // with live rock still above them. Every few seconds that tower then has a
 // chance to collapse — live nodes pack into the lowest slots, the shaft
-// shortens to the new cap, and identity (id, HP) rides with the node. Minion
+// shortens to the new cap, and identity (id, HP, who laid it) rides with the
+// node. Minion
 // hops still fill the first dead slot, which after a collapse is the new top.
 //
 // Collision stays on the node spheres. The client welds those same live slots
@@ -68,21 +69,28 @@ TOWER_CROWN_START  :: f32(0.82)
 TOWER_WELD_K     :: f32(0.40)
 TOWER_GRAIN_AMP  :: f32(0.12)
 
-// Same budget as an unbolstered fodder. Mining applies combat damage (beam
+// Same budget as a fodder. Mining applies combat damage (beam
 // DPS on the bite cadence, projectile damage on a blast) so a slot dies like
 // a wave body; gold still divides that incoming amount by toughness.
 NODE_HP :: MINION_FODDER_HP
+
+// Wire byte for one node. 0 is dead. Otherwise the low 6 bits are hp in
+// 1..63 and the high 2 bits are the team that laid the node (0 means the
+// tower's own ore — gold, until a wave spends a body on the centre).
+// Sixty-three steps still cross the chip threshold; the two spare bits are
+// how a rebuilt centre shows whose rock is whose without growing the packet.
+NODE_HP_WIRE_LEVELS :: 63
+NODE_LAID_SHIFT     :: 6
 
 // Ore from a fully mined node. Paid once, when the node dies: one chunk on
 // the ground maps to one dead slot. Chips scar the face but do not shed ore.
 NODE_ORE_TEAM :: f32(8.0)
 NODE_ORE_GOLD :: f32(18.0)
 
-// Unbolstered hop restores two nodes: three fodder over three waves put back
-// 6, which is half of a 12-node lane tower. Own-ore extra lets a farming team
-// do it in one or two waves without a single hop rebuilding the whole thing.
-TOWER_DONATE_BASE      :: 2
-TOWER_DONATE_OWN_EXTRA :: 2
+// One hop restores two nodes. Three free fodder over three waves put back 6,
+// which is half of a 12-node lane tower. Own ore buys another fodder, not a
+// bigger hop.
+TOWER_DONATE_BASE :: 2
 
 // Shader scars, not occupancy. Four is enough for a focused beam plus a
 // couple of splash nicks; the shader reads this many per tower.
@@ -105,10 +113,14 @@ TOWER_COLLAPSE_ANIM             :: f32(0.90)
 Node_ID :: u16
 
 Tower_Node :: struct {
-	id:     Node_ID,
-	hp:     f32,
-	max_hp: f32,
-	alive:  bool,
+	id:      Node_ID,
+	hp:      f32,
+	max_hp:  f32,
+	alive:   bool,
+	// .None means "this tower's own ore". On the centre, a team id is the
+	// wave that spent the body: the shell draws in that colour so a fight
+	// at the stump can see who is building it.
+	laid_by: Team_ID,
 }
 
 // Client-visual bite mark, tower-local. Collision ignores this; the shader
@@ -291,6 +303,7 @@ tower_build_full :: proc(t: ^Tower) {
 		node.hp = hp
 		node.max_hp = hp
 		node.alive = true
+		node.laid_by = .None
 		t.live_count += 1
 	}
 	for i in t.max_count ..< MAX_NODES_PER_TOWER {
@@ -536,7 +549,8 @@ tower_clear_wounds :: proc(t: ^Tower) {
 // Two quant steps of the 8-bit wire. Pack/unpack of the same HP must not look
 // like a chip, or every snapshot would stamp a scar.
 tower_hp_wire_eps :: proc(max_hp: f32) -> f32 {
-	return max(max_hp, 0.01) * (2.0 / 255.0)
+	// Half a wire step. An identical unpack does not scar; crossing a bucket does.
+	return max(max_hp, 0.01) * (0.5 / f32(NODE_HP_WIRE_LEVELS))
 }
 
 // Outer skin of a node, away from the core. Mining from a lane hits this
@@ -580,12 +594,8 @@ tower_stamp_wound :: proc(t: ^Tower, pos: vec3, radius: f32) {
 }
 
 tower_donate_count :: proc(build_r: f32) -> int {
-	extra := clampf((build_r - MINION_BUILD_RADIUS) / max(OWN_ORE_BUILD_GAIN, 0.01), 0, 1)
-	n := TOWER_DONATE_BASE + int(math.round(extra * f32(TOWER_DONATE_OWN_EXTRA)))
-	if n < 1 {
-		return 1
-	}
-	return n
+	_ = build_r
+	return TOWER_DONATE_BASE
 }
 
 tower_node_at_point :: proc(t: ^Tower, wp: vec3, pad: f32) -> (node_id: Node_ID, array_index: int, ok: bool) {
@@ -907,6 +917,7 @@ tower_mine :: proc(
 		removed += lost
 		if node.hp <= 0 {
 			node.alive = false
+			node.laid_by = .None
 			killed += 1
 			ore += tower_node_ore(t)
 		}
@@ -934,7 +945,10 @@ tower_mine :: proc(
 	return ore, true
 }
 
-tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int) -> (gained: int, ok: bool) {
+// `by` is the wave that spent the bodies. Lane towers already draw as their
+// owner; on the centre it is the only thing that makes a new course readable
+// as Ember, Tide, or Verdant instead of gold.
+tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int, by: Team_ID = .None) -> (gained: int, ok: bool) {
 	t := tower_get(world, id)
 	if t == nil || count <= 0 {
 		return 0, false
@@ -958,6 +972,7 @@ tower_build :: proc(world: ^Tower_World, id: Pylon_ID, count: int) -> (gained: i
 			node.hp = hp
 			node.max_hp = hp
 			node.alive = true
+			node.laid_by = by
 			gained += 1
 			placed = true
 			break
@@ -1186,10 +1201,110 @@ tower_pack_nodes :: proc(t: ^Tower, dst: []u8) -> int {
 		if !node.alive || node.hp <= 0 {
 			continue
 		}
-		q := u8(clampf(node.hp / max(node.max_hp, 0.01) * 255, 1, 255))
-		dst[i] = q
+		dst[i] = tower_pack_node_byte(node^)
 	}
 	return MAX_NODES_PER_TOWER
+}
+
+// Low 6 bits: hp 1..63. High 2 bits: Team_ID 0..3. A zero byte is dead,
+// so a live node never stores a zero hp field.
+tower_pack_node_byte :: proc(node: Tower_Node) -> u8 {
+	if !node.alive || node.hp <= 0 {
+		return 0
+	}
+	q := u8(clampf(node.hp / max(node.max_hp, 0.01) * f32(NODE_HP_WIRE_LEVELS), 1, f32(NODE_HP_WIRE_LEVELS)))
+	team := u8(node.laid_by)
+	if team > 3 {
+		team = 0
+	}
+	return q | (team << NODE_LAID_SHIFT)
+}
+
+tower_unpack_node_byte :: proc(q: u8) -> (hp_frac: f32, laid: Team_ID, alive: bool) {
+	if q == 0 {
+		return 0, .None, false
+	}
+	laid = Team_ID((q >> NODE_LAID_SHIFT) & 3)
+	hp_q := int(q) & NODE_HP_WIRE_LEVELS
+	if hp_q < 1 {
+		hp_q = 1
+	}
+	return f32(hp_q) / f32(NODE_HP_WIRE_LEVELS), laid, true
+}
+
+// Twelve nodes, two bits each, packed into a float the shader can recover.
+// 2^24-1 is the largest integer a float32 holds exactly, and 12*2 bits is
+// exactly that wide, so a round trip does not swap two teams.
+tower_laid_chunk :: proc(t: ^Tower, start: int) -> f32 {
+	v: u32 = 0
+	for i in 0 ..< 12 {
+		idx := start + i
+		if idx < 0 || idx >= t.max_count || idx >= MAX_NODES_PER_TOWER {
+			continue
+		}
+		node := &t.nodes[idx]
+		if !node.alive {
+			continue
+		}
+		team := u32(node.laid_by)
+		if team > 3 {
+			team = 0
+		}
+		v |= team << u32(i * 2)
+	}
+	return f32(v)
+}
+
+// What the centre should glow as from a lane away.
+//
+// Lane towers are their owner's ore. The centre stays gold until a wave
+// lays rock, then the glow follows whichever team currently holds the most
+// live courses. A tie reads as the top course, which is the rock you are
+// about to mine or defend. Per-node colour is separate: a minority course
+// still draws as the team that placed it.
+tower_display_ore :: proc(t: ^Tower) -> Ore_Kind {
+	if t == nil || t.owner != .None {
+		if t == nil {
+			return .None
+		}
+		return t.ore
+	}
+	counts: [TEAM_COUNT]int
+	top := Team_ID.None
+	for i in 0 ..< t.max_count {
+		node := &t.nodes[i]
+		if !node.alive {
+			continue
+		}
+		ti := team_index(node.laid_by)
+		if ti < 0 {
+			continue
+		}
+		counts[ti] += 1
+		top = node.laid_by
+	}
+	best_n := 0
+	best_teams := 0
+	best := Team_ID.None
+	for i in 0 ..< TEAM_COUNT {
+		if counts[i] > best_n {
+			best_n = counts[i]
+			best = team_from_index(i)
+			best_teams = 1
+		} else if best_n > 0 && counts[i] == best_n {
+			best_teams += 1
+		}
+	}
+	if best_n == 0 {
+		return t.ore
+	}
+	if best_teams > 1 {
+		ti := team_index(top)
+		if ti >= 0 && counts[ti] == best_n {
+			return team_ore(top)
+		}
+	}
+	return team_ore(best)
 }
 
 tower_stamp_unpack_chips :: proc(t: ^Tower, had: [MAX_NODES_PER_TOWER]bool, old_hp: [MAX_NODES_PER_TOWER]f32, old_pos: [MAX_NODES_PER_TOWER]vec3) {
@@ -1246,20 +1361,23 @@ tower_unpack_nodes :: proc(t: ^Tower, src: []u8) {
 			node.id = Node_ID(i + 1)
 		}
 		q := src[i]
-		if q == 0 {
-			if node.alive || node.hp != 0 {
+		frac, laid, alive := tower_unpack_node_byte(q)
+		if !alive {
+			if node.alive || node.hp != 0 || node.laid_by != .None {
 				changed = true
 			}
 			node.alive = false
 			node.hp = 0
+			node.laid_by = .None
 			continue
 		}
-		hp := f32(q) / 255.0 * node.max_hp
-		if !node.alive || abs(node.hp - hp) > 0.02 {
+		hp := frac * node.max_hp
+		if !node.alive || node.laid_by != laid || abs(node.hp - hp) > 0.02 {
 			changed = true
 		}
 		node.alive = true
 		node.hp = hp
+		node.laid_by = laid
 	}
 	for i in t.max_count ..< MAX_NODES_PER_TOWER {
 		if t.nodes[i].alive {
@@ -1632,4 +1750,53 @@ tower_selftest :: proc() {
 	tower_recompute(t)
 	assert(t.live_count == 2, "two nodes left")
 	assert(tower_core_exposed(t), "stripped tower shows the last-stand core")
+
+	// A rebuilt centre is the team's rock, not leftover gold. The wire and
+	// the float the shader samples have to carry the same team bits.
+	{
+		cw: Tower_World
+		cw.count = 1
+		ct := &cw.towers[0]
+		ct.pylon_id = 0
+		ct.owner = .None
+		ct.ore = .Gold
+		ct.max_count = 8
+		ct.design_height = 4
+		tower_layout(ct)
+		tower_build_full(ct)
+		assert(tower_display_ore(ct) == .Gold, "an untouched centre is still gold")
+		for i in 0 ..< ct.max_count {
+			ct.nodes[i].alive = false
+			ct.nodes[i].hp = 0
+			ct.nodes[i].laid_by = .None
+		}
+		ct.live_count = 0
+		tower_recompute(ct)
+		g0, ok0 := tower_build(&cw, 0, 3, .Alpha)
+		g1, ok1 := tower_build(&cw, 0, 1, .Beta)
+		assert(ok0 && ok1 && g0 == 3 && g1 == 1, "centre donations land")
+		assert(ct.nodes[0].laid_by == .Alpha && ct.nodes[2].laid_by == .Alpha, "early courses are the first team")
+		assert(ct.nodes[3].laid_by == .Beta, "the next course is the second team")
+		assert(tower_display_ore(ct) == .Ember, "the glow follows whoever holds the most courses")
+		g2, ok2 := tower_build(&cw, 0, 2, .Beta)
+		assert(ok2 && g2 == 2, "the second team can catch up")
+		assert(tower_display_ore(ct) == .Tide, "a tie reads as the top course")
+		wire: [MAX_NODES_PER_TOWER]u8
+		tower_pack_nodes(ct, wire[:])
+		assert(wire[0] == u8(NODE_HP_WIRE_LEVELS | (1 << NODE_LAID_SHIFT)), "full ember course packs team into the high bits")
+		for i in 0 ..< ct.max_count {
+			ct.nodes[i].laid_by = .None
+		}
+		tower_unpack_nodes(ct, wire[:])
+		assert(ct.nodes[0].laid_by == .Alpha && ct.nodes[3].laid_by == .Beta && ct.nodes[5].laid_by == .Beta, "unpack restores who laid each course")
+		assert(tower_display_ore(ct) == .Tide, "display ore survives the wire")
+		chunk := tower_laid_chunk(ct, 0)
+		back := u32(chunk + 0.5)
+		expect: u32 = 0
+		teams := [6]u32{1, 1, 1, 2, 2, 2}
+		for i in 0 ..< 6 {
+			expect |= teams[i] << u32(i * 2)
+		}
+		assert(back == expect, "laid bits survive a float uniform")
+	}
 }

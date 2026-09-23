@@ -490,6 +490,7 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 			fs_params.pylon_bound[i] = {0, 0, 0, 0}
 			fs_params.pylon_node_meta[i] = {}
 			fs_params.pylon_collapse[i] = {}
+			fs_params.pylon_laid[i] = {}
 		} else {
 			mask := tower_alive_mask(t)
 			fs_params.pylon_bound[i] = {f32(t.max_count), t.node_radius, tower_outer_radius(t), tower_mass_frac(t)}
@@ -509,6 +510,12 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 				}
 			} else {
 				fs_params.pylon_collapse[i] = {}
+			}
+			fs_params.pylon_laid[i] = {
+				tower_laid_chunk(t, 0),
+				tower_laid_chunk(t, 12),
+				tower_laid_chunk(t, 24),
+				f32(u8(tower_display_ore(t))),
 			}
 		}
 		for k in 0 ..< TOWER_WOUND_MAX {
@@ -1142,7 +1149,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 			sdtx.pos(cols * 0.5 - f32(MAX_PYLONS) * 4.0, 3)
 			for i in 0..<MAX_PYLONS {
 				t := &world.towers.towers[i]
-				sdtx_color(ore_color(t.ore))
+				sdtx_color(ore_color(tower_display_ore(t)))
 				label := i == 0 ? "G" : fmt.tprintf("%d", i)
 				sdtx.printf("[%s %3d]", label, int(tower_mass_frac(t) * 100 + 0.5))
 				sdtx.puts(" ")

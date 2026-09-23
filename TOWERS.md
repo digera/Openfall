@@ -37,7 +37,7 @@ the same node, or a hole if it died.
 
 Beams and blasts raycast analytically (sphere per live node, cylinder for the
 core). Splash collects overlapping nodes first, then applies damage by array
-index, then re-sorts. Each node has the same HP as an unbolstered fodder
+index, then re-sorts. Each node has the same HP as a fodder
 (`NODE_HP` = `MINION_FODDER_HP`). Thunderbolt bites at combat DPS on the
 mining cadence; projectiles stamp their combat damage. Fractional HP counts:
 a chip must dirty the wire and stamp a scar, not truncate to zero.
@@ -110,11 +110,9 @@ entity) so remotes and spectators see who is hauling what. Respawn clears carry.
 
 ## Minion rebuild
 
-One hop restores `TOWER_DONATE_BASE` (2) nodes, plus up to
-`TOWER_DONATE_OWN_EXTRA` (2) from the wave's own-ore bolster. Three unbuffed
-fodder over three waves put back 6, which is half of a 12-node lane tower.
-A team that has been banking its own ore can do it in one or two waves; a
-jackpot still cannot rebuild the whole tower in a single hop.
+One hop restores `TOWER_DONATE_BASE` (2) nodes. Three free fodder over three
+waves put back 6, which is half of a 12-node lane tower. Own ore buys one
+extra fodder per wave (10 ore), another body that can hop, not a bigger hop.
 
 Centre scoring still counts donated nodes. First team to have laid most of
 the gold tower when it is fully rebuilt (every original node live,

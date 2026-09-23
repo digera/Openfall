@@ -43,6 +43,7 @@ layout(binding=1) uniform fs_params {
     vec4 pylon_bound[7];    // x max node count, y node radius, z outer radius, w remaining mass 0..1
     vec4 pylon_node_meta[7]; // x spiral radius, y stack step, z alive bits 0..15, w alive bits 16..31
     vec4 pylon_collapse[7]; // x settle 1->0, y from core height, z from-mask 0..15, w from-mask 16..31
+    vec4 pylon_laid[7];     // xyz: 2-bit team per node, 12 nodes each (0 none, 1 ember, 2 tide, 3 verdant). w: glow ore kind
     vec4 pylon_wounds[28];  // 4 per tower: xyz local scar centre, w radius (0 = none)
     vec4 chunks[8];         // xyz pos, w radius (0 = none)
     vec4 chunk_fx[8];       // x ore, y seed, z settled, w land [0,1) / pickup [1,2)
@@ -583,6 +584,77 @@ int pylon_nth_set(uint mask, int n) {
     return n;
 }
 
+// Live-node centre, including the collapse corkscrew. `rank` is how many
+// live slots were seen before this one. Team colour samples the same point
+// the marcher welds, so a settling course keeps the colour of the team that laid it.
+vec3 pylon_node_center(int array_index, int max_count, float spiral_r, float step, float node_r,
+                       vec4 collapse, int rank) {
+    vec3 c = pylon_node_local(array_index, max_count, spiral_r, step, node_r);
+    if (collapse.x > 0.001) {
+        uint from_mask = uint(collapse.z + 0.5) | (uint(collapse.w + 0.5) << 16u);
+        int from = pylon_nth_set(from_mask, rank);
+        vec3 c0 = pylon_node_local(from, max_count, spiral_r, step, node_r);
+        float u = 1.0 - clamp(collapse.x, 0.0, 1.0);
+        u = u * u * (3.0 - 2.0 * u);
+        c = mix(c0, c, u);
+        float sag = sin(u * 3.14159265);
+        c.xy *= 1.0 - 0.16 * sag;
+        c.z -= node_r * 0.10 * sag;
+    }
+    return c;
+}
+
+// Team id packed two bits per node, twelve nodes per float. Must match
+// tower_laid_chunk: values up to 2^24-1 are exact in a float32.
+int pylon_laid_team(int py, int node) {
+    vec4 L = pylon_laid[py];
+    float chunk = L.z;
+    int local = node - 24;
+    if (node < 12) {
+        chunk = L.x;
+        local = node;
+    } else if (node < 24) {
+        chunk = L.y;
+        local = node - 12;
+    }
+    int bits = int(floor(chunk + 0.5));
+    return (bits >> (local * 2)) & 3;
+}
+
+// Glow for the whole stump: whoever currently holds the most courses.
+// Per-node colour is resolved separately so a minority course stays visible.
+float pylon_glow_ore(int i) {
+    return pylon_laid[i].w;
+}
+
+// Ore of the course under this hit. A node laid by a team draws as that
+// team's rock; a node nobody has claimed keeps the tower's own ore (gold,
+// on the centre, until the first wave spends a body).
+float pylon_hit_ore(int py, vec3 lp) {
+    float native = pylon_shape[py].w;
+    vec4 b = pylon_bound[py];
+    vec4 meta = pylon_node_meta[py];
+    int nmax = int(b.x + 0.5);
+    if (nmax > PYLON_NODE_MAX) nmax = PYLON_NODE_MAX;
+    uint alive_mask = uint(meta.z + 0.5) | (uint(meta.w + 0.5) << 16u);
+    float best = 1e5;
+    float ore = native;
+    int rank = 0;
+    for (int k = 0; k < PYLON_NODE_MAX; k++) {
+        if (k < nmax && ((alive_mask & (1u << uint(k))) != 0u)) {
+            vec3 c = pylon_node_center(k, nmax, meta.x, meta.y, max(b.y, 0.5), pylon_collapse[py], rank);
+            float d = length(lp - c);
+            if (d < best) {
+                best = d;
+                int team = pylon_laid_team(py, k);
+                ore = team < 1 ? native : float(team);
+            }
+            rank += 1;
+        }
+    }
+    return ore;
+}
+
 // Bite scars in tower-local space. Collision stays on the node sphere; this
 // only powders and lights the face you are mining.
 float pylon_scar(int i, vec3 lp) {
@@ -689,7 +761,6 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
 
     int nmax = max_count;
     if (nmax > PYLON_NODE_MAX) nmax = PYLON_NODE_MAX;
-    uint from_mask = uint(collapse.z + 0.5) | (uint(collapse.w + 0.5) << 16u);
 
     vec3 centers[PYLON_NODE_MAX];
     int live = 0;
@@ -697,18 +768,7 @@ bool pylon_trace_local(vec3 ro, vec3 rd, float core_h,
     for (int k = 0; k < PYLON_NODE_MAX; k++) {
         centers[k] = vec3(0.0);
         if (k < nmax && ((alive_mask & (1u << uint(k))) != 0u)) {
-            vec3 c = pylon_node_local(k, max_count, spiral_r, step, node_r);
-            if (collapse.x > 0.001) {
-                int from = pylon_nth_set(from_mask, rank);
-                vec3 c0 = pylon_node_local(from, max_count, spiral_r, step, node_r);
-                float u = 1.0 - clamp(collapse.x, 0.0, 1.0);
-                u = u * u * (3.0 - 2.0 * u);
-                c = mix(c0, c, u);
-                float sag = sin(u * 3.14159265);
-                c.xy *= 1.0 - 0.16 * sag;
-                c.z -= node_r * 0.10 * sag;
-            }
-            centers[k] = c;
+            centers[k] = pylon_node_center(k, max_count, spiral_r, step, node_r, collapse, rank);
             rank += 1;
             live += 1;
         }
@@ -1757,7 +1817,7 @@ void main() {
     for (int i = 0; i < NPYLON; i++) {
         float standing = pylon_bound[i].w;
         if (standing <= 0.002) continue;
-        vec3 tint = ore_tint(pylon_shape[i].w);
+        vec3 tint = ore_tint(pylon_glow_ore(i));
         float h = pylon_shape[i].x;
         vec3 c = pylons[i].xyz + vec3(0.0, 0.0, h * 0.55);
         float pulse = 0.80 + 0.20 * sin(WORLD_T * 1.7 + float(i));
@@ -1879,7 +1939,7 @@ void main() {
             float od = length(d);
             float radius = pylon_bound[i].z * 1.35;
             if (od < radius + 0.4) {
-                vec3 otint = ore_tint(pylon_shape[i].w);
+                vec3 otint = ore_tint(pylon_glow_ore(i));
                 float standing = pylon_bound[i].w;
                 float disc = 1.0 - smoothstep(radius - 0.5, radius, od);
                 // Dust from what has come off: heavier the more has been mined.
@@ -1931,7 +1991,10 @@ void main() {
         spec_amt = 0.08;
     } else if (mat == MAT_PYLON) {
         vec4 sh = pylon_shape[py_idx];
-        float ore = sh.w;
+        // The last-stand stick glows as whoever holds the stump. The shell
+        // is per course, so a rival's rock stays their colour even when
+        // they are not the ones ahead.
+        float ore = py_part < 0.5 ? pylon_glow_ore(py_idx) : pylon_hit_ore(py_idx, py_local);
         vec3 tint = ore_tint(ore);
         vec3 stone = ore_stone(ore);
         float ndv = clamp(dot(hit_n, -rd), 0.0, 1.0);
@@ -1941,7 +2004,7 @@ void main() {
         float scar = pylon_scar(py_idx, py_local);
 
         if (py_part < 0.5) {
-            // Last-stand stick: darker, stripped, still the team's ore.
+            // Last-stand stick: darker, stripped, still the ore of whoever holds it.
             albedo = stone * (0.42 + 0.22 * grain);
             albedo = mix(albedo, tint * 0.35, 0.20);
             emissive += tint * (0.04 + 0.20 * vein);
@@ -2200,7 +2263,7 @@ void main() {
             float standing = pylon_bound[i].w;
             if (standing <= 0.002) continue;
             vec3 c = pylons[i].xyz + vec3(0.0, 0.0, pylon_shape[i].x * 0.5);
-            color += albedo * point_light(hp, hit_n, c, ore_tint(pylon_shape[i].w), 9.0 * standing, 22.0);
+            color += albedo * point_light(hp, hit_n, c, ore_tint(pylon_glow_ore(i)), 9.0 * standing, 22.0);
         }
         for (int i = 0; i < NCHUNK; i++) {
             if (chunks[i].w < 0.01) continue;
