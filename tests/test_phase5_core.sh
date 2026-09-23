@@ -3,7 +3,8 @@
 
 set -e
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
 GREEN='\033[0;32m'
@@ -23,7 +24,7 @@ fi
 
 echo ""
 echo -e "${YELLOW}[Test 2]${NC} Arena still works (no regression)..."
-if ./test_dominion_match.sh 2>&1 | tail -5 | grep -q "Test PASSED"; then
+if ./tests/test_dominion_match.sh 2>&1 | tail -5 | grep -q "Test PASSED"; then
     echo -e "${GREEN}✓${NC} Dominion match still works"
 else
     echo "✗ Dominion match regressed"

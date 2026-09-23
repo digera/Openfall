@@ -2,7 +2,8 @@
 # and the roster/combat-log output they print. Builds into %TEMP% so it does
 # not fight whatever is holding bin\.
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent $ScriptDir
 $Odin = if ($env:ODIN_ROOT) { Join-Path $env:ODIN_ROOT "odin.exe" } else { "C:\Users\lusr\tools\odin\odin.exe" }
 $SrcDir = Join-Path $Root "src"
 $Stage = Join-Path $env:TEMP "nexus_wire"
