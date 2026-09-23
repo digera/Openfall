@@ -41,7 +41,10 @@ install_odin() {
 		"https://github.com/odin-lang/Odin/releases/download/${ODIN_RELEASE}/${asset}" \
 		-o "$tools/odin-pkg"
 	if [ "$os" = windows ]; then
-		powershell.exe -NoProfile -Command "Expand-Archive -Force -LiteralPath '$(cygpath -w "$tools/odin-pkg")' -DestinationPath '$(cygpath -w "$tools/unpack")'"
+		# Expand-Archive refuses anything whose name does not end in .zip.
+		local win_tar
+		win_tar="$(cygpath -u "${SYSTEMROOT:-C:/Windows}")/System32/tar.exe"
+		"$win_tar" -xf "$(cygpath -w "$tools/odin-pkg")" -C "$(cygpath -w "$tools/unpack")"
 	else
 		tar -xzf "$tools/odin-pkg" -C "$tools/unpack"
 	fi
@@ -54,6 +57,10 @@ install_odin() {
 	export ODIN_BIN
 	export ODIN_ROOT
 	ODIN_ROOT=$(dirname "$ODIN_BIN")
+	if [ "$os" = linux ] && [ ! -f "$ODIN_ROOT/vendor/miniaudio/lib/miniaudio.a" ]; then
+		echo ">> Building miniaudio"
+		make -C "$ODIN_ROOT/vendor/miniaudio/src"
+	fi
 	"$ODIN_BIN" version
 }
 
