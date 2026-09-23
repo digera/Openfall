@@ -177,7 +177,7 @@ DISPLAY=:99 ./bin/nexus_client
   - Projectile sync in snapshots
   - Resource deduction
   - Server-side hit registration
-- See `test_combat_hardened.sh` for automated tests
+- See `tests/test_combat_hardened.sh` for automated tests
 
 ## Code References
 

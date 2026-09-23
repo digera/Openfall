@@ -25,7 +25,7 @@ import "core:slice"
 // rather than a grape cluster. The thin core is last-stand only: it is absent
 // while the shell is up, and only drawn / raycast once few nodes remain.
 // Collapse is a helix settle driven by collapse_t; the shader smears along
-// that same from-to path. Chip scars live in the shader. See TOWERS.md.
+// that same from-to path. Chip scars live in the shader. See docs/TOWERS.md.
 
 // ---------------------------------------------------------------------------
 // Tuning

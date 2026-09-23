@@ -2,7 +2,7 @@
 
 Competitive first-person spell-slinger arena (Odin). Headless 60Hz server + Sokol client with prediction, Dominion capture, and projectile combat.
 
-MIT-licensed — see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+MIT-licensed — see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines. Design docs (minions, towers, HUD) are in `docs/`; test harnesses are in `tests/`.
 
 Three teams (Ember / Tide / Verdant) fight over seven obelisks on a three-lane map: each lane runs from a team base through a far and near objective to an open central plaza. The round ends when the golden centre is fully rebuilt; whoever laid the most of it wins. Rounds auto-reset. By default each team has 1 bot. Humans can join up to `TEAM_SIZE` per team (currently 6), and bots stay in the match alongside them.
 
@@ -63,7 +63,7 @@ Headless prediction/network test (joins the least-populated team, walks around f
 .\bin\nexus_client_test.exe
 ```
 
-`check.ps1` type-checks the server, client and test client without linking, which `build.ps1` cannot do while a server is holding `bin\`. `run_wire_test.ps1` builds all three into `%TEMP%` and runs a server plus two named clients against each other end to end.
+`check.ps1` type-checks the server, client and test client without linking, which `build.ps1` cannot do while a server is holding `bin\`. `tests\run_wire_test.ps1` builds all three into `%TEMP%` and runs a server plus two named clients against each other end to end.
 
 ## Configuration
 
@@ -197,6 +197,20 @@ A wisp that is killed swells where it fell, as though the light inside were fill
 ./build_graphical_client.sh
 ./bin/nexus_server
 ./bin/nexus_client
+```
+
+## Testing
+
+Test harnesses are in `tests/`. Run them from the repo root:
+
+```bash
+./tests/verify_phase1.sh           # Phase 1 verification (build + 3-bot smoke test)
+./tests/test_dominion_match.sh     # Full dominion match end-to-end
+./tests/test_combat_hardened.sh    # Combat system with lag simulation
+```
+
+```powershell
+.\tests\run_wire_test.ps1          # Full protocol test (server + 2 clients)
 ```
 
 ## Deploy (primord.io)

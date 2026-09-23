@@ -36,7 +36,7 @@ The vision evolves toward a larger open world. Spitball ideas.
 
 - **Small PRs, one concern per PR.** A spell tuning change is one PR. A new bot behavior is another. A rendering optimization is a third. Mixing unrelated changes makes review slow and risky.
 
-- **No root junk markdown playtest notes.** Fold notes into existing docs like `TOWERS.md` or `MINIONS.md`, or put them in the PR body. Don't leave loose `playtest-notes-2026-09.md` files in the root.
+- **No root junk markdown playtest notes.** Fold notes into existing docs like `docs/TOWERS.md` or `docs/MINIONS.md`, or put them in the PR body. Don't leave loose `playtest-notes-2026-09.md` files in the root.
 
 - **Utmost quality.** Correctness, merge risk, and polish matter. Expect review pushback on changes that introduce bugs, break existing behavior, or leave rough edges. High standards keep the codebase maintainable.
 

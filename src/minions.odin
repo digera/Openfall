@@ -22,7 +22,7 @@ import "core:math"
 // they pass a pylon by, and only positional damage -- projectiles, splash and
 // beams -- finds them.
 //
-// See MINIONS.md for the design this implements.
+// See docs/MINIONS.md for the design this implements.
 
 MAX_MINIONS          :: 48
 MAX_MINIONS_PER_TEAM :: 16
