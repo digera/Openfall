@@ -282,6 +282,10 @@ camera_fx_update :: proc(fx: ^Camera_FX, gc: ^Game_Client, dt: f32) {
 		fx.fov_kick = 1.0
 		pred.teleported = false
 	}
+	if pred.launched {
+		fx.fov_kick = max(fx.fov_kick, 0.6)
+		pred.launched = false
+	}
 	if pred.respawned {
 		fx.flash = 0.7
 		pred.respawned = false
@@ -675,6 +679,17 @@ client_renderer_draw :: proc(r: ^Client_Renderer, gc: ^Game_Client) {
 		fs_params.proj_vel[i] = {cp.snap.vel.x, cp.snap.vel.y, cp.snap.vel.z, 0}
 	}
 
+	// Gust runes. Every player is on a team, so the team code keeps w off
+	// zero; the fraction is how much of the rune's life is left.
+	for i in 0..<min(world.prediction.pad_count, len(fs_params.pads)) {
+		pad := &world.prediction.pads[i]
+		if pad.life <= 0 || pad.team == .None {
+			continue
+		}
+		life := clampf(pad.life / GUST_PAD_LIFETIME, 0.01, 0.99)
+		fs_params.pads[i] = {pad.pos.x, pad.pos.y, pad.pos.z, f32(u8(pad.team)) + life}
+	}
+
 	for i in 0..<MAX_CLIENT_IMPACTS {
 		im := &world.impacts[i]
 		if !im.live {
@@ -908,7 +923,7 @@ hud_lobby_frame :: proc(gc: ^Game_Client, cols, rows: f32, title: string) {
 	}
 
 	sdtx.color3f(0.42, 0.40, 0.38)
-	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump  /  G drop haul  /  1-%d spells  /  LMB cast  /  Z X C transfers  /  Esc unlock mouse", HOTBAR_SLOTS))
+	hud_center_text(cols, rows - 1, fmt.tprintf("WASD move  /  Shift sprint  /  Space jump, on landing hop  /  E gust  /  G drop haul  /  1-%d spells  /  LMB cast  /  Z X C transfers  /  Esc unlock mouse", HOTBAR_SLOTS))
 }
 
 @(private = "file")
@@ -969,14 +984,14 @@ hud_in_game_menu :: proc(gc: ^Game_Client, cols, rows: f32) {
 	hud_center_text(cols, base_row + f32(TEAM_COUNT) * 2 + 3, "Choose an option or press ESC to return to the game")
 }
 
-// Z X C sit on their own row, centered above the number row. Name, then the
+// E Z X C sit on their own row, centered above the number row. Name, then the
 // wind-up or the cooldown, same as a spell slot.
 @(private = "file")
-hud_transfer_cluster :: proc(gc: ^Game_Client, world: ^Client_World, local: Character_State, cols, rows: f32) {
+hud_key_cluster :: proc(gc: ^Game_Client, world: ^Client_World, local: Character_State, cols, rows: f32) {
 	slot_w: f32 = 14
-	origin := cols * 0.5 - slot_w * f32(len(TRANSFER_BINDS)) * 0.5
-	for i in 0..<len(TRANSFER_BINDS) {
-		bind := TRANSFER_BINDS[i]
+	origin := cols * 0.5 - slot_w * f32(len(KEY_BINDS)) * 0.5
+	for i in 0..<len(KEY_BINDS) {
+		bind := KEY_BINDS[i]
 		spell := bind.spell
 		def := &SPELL_DEFS[spell]
 		cd := gc.cooldowns[spell]
@@ -1295,7 +1310,7 @@ hud_playing :: proc(gc: ^Game_Client, cols, rows: f32) {
 		}
 	}
 
-	hud_transfer_cluster(gc, world, local, cols, rows)
+	hud_key_cluster(gc, world, local, cols, rows)
 
 	// --- Center ----------------------------------------------------------------
 	cx := cols * 0.5
@@ -1388,7 +1403,12 @@ hud_combat_log :: proc(world: ^Client_World, cols, rows: f32) {
 			text = fmt.tprintf("you hit %s for %d (%s)", other, line.damage, spell)
 			col = {1.0, 0.82, 0.35}
 		case .Damage_Taken:
-			text = fmt.tprintf("%s hit you for %d (%s)", other, line.damage, spell)
+			if line.other_id == world.local_entity_id {
+				// Self-inflicted: a hard landing carries no spell.
+				text = line.spell_id == .None ? fmt.tprintf("the landing cost you %d", line.damage) : fmt.tprintf("your own %s hit you for %d", spell, line.damage)
+			} else {
+				text = fmt.tprintf("%s hit you for %d (%s)", other, line.damage, spell)
+			}
 			col = {1.0, 0.45, 0.35}
 		case .Kill:
 			text = fmt.tprintf("you unmade %s", other)

@@ -90,8 +90,10 @@ $env:BOTS_PER_TEAM = "3"
 | Mouse | Look |
 | WASD | Walk |
 | Shift | Sprint (drains stamina) |
-| Space | Jump |
-| 1–6 | Select spell (Missile / Orb / Heal / Lance / Bolt / Thunder) |
+| Space | Jump. Press it again as your feet touch down to bunny-hop and keep your speed (see Movement) |
+| E | Gust: drop a wind rune a stride ahead that throws whoever steps on it |
+| 1–5 | Select spell (Missile / Orb / Lance / Bolt / Thunder) |
+| Z / X / C | Stamina to mana / health to stamina / hold to wind Friendly Heal |
 | Hold LMB | Charge the selected spell (Thunderbolt runs for as long as it is held) |
 | Release LMB | Commit the cast — it finishes charging to full power, then fires. Holding through the full wind-up still waits for the release. |
 | Hold RMB | Aim lock: draw the view onto the hostile sticky target (drains stamina faster than sprinting) |
@@ -107,6 +109,22 @@ Pressing Esc while playing opens the game menu and releases the mouse. From the 
 
 Opening the menu does not drop your current charge or target unless the existing unlock path already did so.
 
+## Movement
+
+Speed is something you pick up and then fight to keep. Nothing on the ground makes you faster than a sprint (7.8 m/s). A Gust rune, an Arcane Orb blast or a knockback throws you faster, and the rules below decide how much of that you keep. The cap is 30 m/s.
+
+**Bunny hopping.** There is no bunny-hop rule; the hop falls out of when your feet grip. You count as landed the moment you touch down: you can jump, and the landing is charged. But friction only takes hold after 50 ms (three ticks) of contact. Jump inside that gap and friction never runs, so all of your speed carries into the next jump. Jump after it and you keep whatever the grip has not taken yet: one tick of grip keeps about three quarters of your speed above a walk, three ticks keeps under half, and much later you are at a walk. Jumping takes a fresh press, so holding Space jumps once and then lands and grips like anyone else. On top of that sits one piece of grace: a press up to 50 ms *before* touchdown waits and fires the moment your feet arrive, so an early press is not a lost one. The two windows are `HOP_SETTLE_TICKS` and `HOP_GRACE_TICKS` in `src/simulation.odin`.
+
+**Air control.** Below run speed the air works as it always did. Above it, strafing bends your heading without bleeding speed, so a hop chain can be steered round a corner. Pulling straight back against your momentum is the only way to shed it in the air.
+
+**Landings cost health.** Every landing is charged for what you hit the ground with. Coming down faster than 11 m/s costs 6 HP per m/s past that; a normal jump and a drop off a crate are free, and a rocket jump is not. Hitting the ground faster than a sprint costs 1.2 HP per m/s past 8 m/s: a hop at 20 m/s costs about 14 HP and one at 30 m/s about 26. A chain of hops is health traded for distance. A perfect chain at 25 m/s crosses a lane (86 m) in under three and a half seconds for about 120 HP, which is how you escape a fight or catch someone leaving one. Landing damage goes through the same damage path as everything else, so it shows in your combat log. A landing that kills you is credited to whoever last hit you, if that hit was within 8 seconds: throwing someone off a pillar is a kill.
+
+**Gust (E).** Darkfall's Begone, by another name. It is instant (30 mana, 2 s cooldown) and drops a wind rune 1.5 m ahead of you on whatever is below: the floor, or the top of a crate. The first time anyone steps on it (you, an ally or an enemy), it throws them 8 m/s up and adds 9 m/s along the way they were already moving; someone standing still goes the way they face. From a sprint that is 16.8 m/s, and the arc lands just short of fall damage. Runes stack: hop off one, land on the next, and the speed adds. A rune lasts 5 seconds and throws each body once, so a rune left on your escape route will also throw the person chasing you. Your own client predicts the throw the tick your feet reach the rune, so it happens with no round trip. The server still decides, and tells each client which runes it has already ridden.
+
+**Rocket jumping.** An Arcane Orb blast throws everyone it reaches in three dimensions, you included. Enemies take the full blast and the throw: 20 m/s at the centre, falling off with distance, so an orb at someone's feet puts them several metres away and airborne. You take 30% of the splash damage and 75% of the throw. An orb aimed at your own feet costs about 12 HP, lifts you about 4.6 m (onto a crate, or with a jump first, onto a pillar at 7.4 m), and lands hard enough to cost another 20 HP or so. Allies are never touched.
+
+The hop timing is simulated identically on both ends. Your own hop state rides the snapshot back to you as one byte, so a correction replays your hops exactly as the server ran them.
+
 ## Combat
 
 Most spells are charge-cast: holding LMB winds them up over their cast time. Releasing early commits the remaining wind-up — the spell still charges to full power, then fires. Holding through the full bar still waits for the release, so a shot can be timed. You can move and look freely while charging, but dying, unlocking the mouse, swapping slots or the match ending all drop the charge.
@@ -118,11 +136,12 @@ Thunderbolt is the exception: it is a held beam with no wind-up, and nothing hap
 | Spell | Cast | Cooldown | Mana | Effect |
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 0.2s | 12 | 18 + splash |
-| Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash |
+| Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash; throws everyone in it, you too (30% damage, 75% throw) |
 | Friendly Heal | 1.0s | 14.0s | 40 | 50 to you and a targeted ally |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
+| Gust (E) | instant | 2.0s | 30 | A wind rune 1.5 m ahead: throws whoever steps on it 8 m/s up and 9 m/s on |
 
 Arcane Missile is the cheap dart you bank down a lane. The first flight is still a skill shot; a ricochet off a wall or the floor then leans 60% of the way toward the nearest living enemy within 12 m who is on the outgoing side of that surface and in the open. A wild bank still misses, and a bounce into a crate does not seek through it. It pops after three ricochets. Friendly fire is off, so it will never lean toward a teammate or the caster.
 

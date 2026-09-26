@@ -71,10 +71,11 @@ Game_Client :: struct {
 	// chatter on and off while stamina hovers around the threshold.
 	aim_locked:     bool,
 
-	// Z/X take the channel for two ticks: the first winds an instant transfer,
-	// the second releases it. C is a hold and does not live here.
-	transfer_tap:       Spell_ID,
-	transfer_tap_armed: bool,
+	// E, Z and X take the channel for two ticks: the first winds an instant
+	// spell (Gust or a transfer), the second releases it. C is a hold and
+	// does not live here.
+	tap_spell: Spell_ID,
+	tap_armed: bool,
 }
 
 game_client: Game_Client
@@ -122,9 +123,9 @@ client_frame :: proc "c" () {
 	// Z/X latches must not survive the lobby or the pause menu and fire on
 	// the first tick back in the match.
 	if gc.phase != .Playing {
-		input.transfer_press = .None
-		gc.transfer_tap = .None
-		gc.transfer_tap_armed = false
+		input.tap_press = .None
+		gc.tap_spell = .None
+		gc.tap_armed = false
 	}
 
 	switch gc.phase {
@@ -446,10 +447,10 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	}
 
 	// A tap already in flight keeps the channel. The next press waits.
-	if gc.transfer_tap == .None {
-		if spell := input_consume_transfer(); spell != .None {
-			gc.transfer_tap = spell
-			gc.transfer_tap_armed = false
+	if gc.tap_spell == .None {
+		if spell := input_consume_tap(); spell != .None {
+			gc.tap_spell = spell
+			gc.tap_armed = false
 		}
 	}
 }
@@ -532,21 +533,22 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 	gc.render_alpha = gc.sim_accum / FIXED_DT
 }
 
-// Z and X own the channel for two ticks. The first starts the wind-up; the
-// second releases it. An instant transfer is already a full charge, so the
-// release fires on that second tick.
+// E, Z and X own the channel for two ticks. The first starts the wind-up; the
+// second releases it. An instant spell is already a full charge, so the
+// release fires on that second tick. Tapping one drops whatever LMB was
+// winding: a rune mid-cast costs the cast.
 @(private)
-client_advance_transfer :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_spell: Spell_ID, handled: bool) {
-	if gc.transfer_tap == .None {
+client_advance_tap :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_spell: Spell_ID, handled: bool) {
+	if gc.tap_spell == .None {
 		return .None, .None, false
 	}
 	pred := &gc.client_world.prediction
-	spell := gc.transfer_tap
+	spell := gc.tap_spell
 	def := &SPELL_DEFS[spell]
 	client_drop_charge(gc)
-	if gc.transfer_tap_armed {
-		gc.transfer_tap = .None
-		gc.transfer_tap_armed = false
+	if gc.tap_armed {
+		gc.tap_spell = .None
+		gc.tap_armed = false
 		if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
 			client_audio_play(.Fizzle)
 			return .None, .None, true
@@ -559,11 +561,11 @@ client_advance_transfer :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, char
 		return spell, .None, true
 	}
 	if !spell_castable(spell, pred.predicted_char, gc.cooldowns[spell]) {
-		gc.transfer_tap = .None
+		gc.tap_spell = .None
 		client_audio_play(.Fizzle)
 		return .None, .None, true
 	}
-	gc.transfer_tap_armed = true
+	gc.tap_armed = true
 	return .None, spell, true
 }
 
@@ -581,14 +583,14 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 	// Dying, unlocking the mouse or the match ending drop the wind-up on the
 	// floor, committed or not.
 	if !alive || match_over || !sapp.mouse_locked() {
-		gc.transfer_tap = .None
-		gc.transfer_tap_armed = false
+		gc.tap_spell = .None
+		gc.tap_armed = false
 		client_sfx_note_fizzle(gc)
 		client_drop_charge(gc)
 		return .None, .None
 	}
 
-	tap_cast, tap_charge, tap_handled := client_advance_transfer(gc)
+	tap_cast, tap_charge, tap_handled := client_advance_tap(gc)
 	if tap_handled {
 		return tap_cast, tap_charge
 	}

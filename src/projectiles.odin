@@ -385,7 +385,7 @@ projectile_apply_direct :: proc(world: ^Projectile_World, entity_world: ^Entity_
 		target.slow_ticks = max(target.slow_ticks, proj.slow_ticks)
 	}
 	if proj.knockback > 0 {
-		character_apply_impulse(&target, proj.vel, proj.knockback)
+		character_apply_blast(&target, proj.vel, proj.knockback)
 	}
 	entity_world.characters[target_id] = target
 	if SERVER_VERBOSE {
@@ -413,7 +413,9 @@ projectile_impact :: proc(world: ^Projectile_World, entity_world: ^Entity_World,
 
 // A blast at `at`: everyone hostile within `radius` who is not `direct` (they
 // already took the hit itself) loses up to `damage`, falling off to half at
-// the edge. Shared by projectile detonations and strikes.
+// the edge. Shared by projectile detonations and strikes. A spell with a self
+// share (the orb) also catches its own caster for that share of the damage and
+// the throw; allies are never touched.
 splash_damage :: proc(
 	entity_world: ^Entity_World,
 	at: vec3,
@@ -430,12 +432,20 @@ splash_damage :: proc(
 	// the same call is what keeps a grenade from being good against players and
 	// useless against a wave standing in the same crater.
 	minion_splash(g_minions, at, owner_team, damage, radius)
+	def := &SPELL_DEFS[spell_id]
 	for entity_idx in 1..<MAX_ENTITIES {
 		id := Entity_ID(entity_idx)
-		if !entity_alive(entity_world, id) || id == owner_id || id == direct {
+		if !entity_alive(entity_world, id) || id == direct {
 			continue
 		}
-		if !teams_are_enemies(owner_team, entity_world.teams[entity_idx]) {
+		damage_share, throw_share: f32 = 1, 1
+		if id == owner_id {
+			if def.self_damage_frac <= 0 && def.self_knockback_frac <= 0 {
+				continue
+			}
+			damage_share = def.self_damage_frac
+			throw_share = def.self_knockback_frac
+		} else if !teams_are_enemies(owner_team, entity_world.teams[entity_idx]) {
 			continue
 		}
 		target := entity_world.characters[entity_idx]
@@ -450,11 +460,11 @@ splash_damage :: proc(
 			continue
 		}
 		falloff := 1.0 - 0.5 * (dist / radius)
-		combat_apply_damage(entity_world, owner_id, id, spell_id, damage * falloff)
-		if knockback > 0 {
+		combat_apply_damage(entity_world, owner_id, id, spell_id, damage * falloff * damage_share)
+		if knockback > 0 && throw_share > 0 {
 			// Re-read: the damage above went through the array, not this copy.
 			target = entity_world.characters[entity_idx]
-			character_apply_impulse(&target, d, knockback * falloff)
+			character_apply_blast(&target, d, knockback * falloff * throw_share)
 			entity_world.characters[entity_idx] = target
 		}
 	}

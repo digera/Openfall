@@ -137,6 +137,13 @@ combat_log_record_damage :: proc(log: ^Combat_Log, attacker, victim: Entity_ID, 
 	combat_log_push(log, victim, .Damage_Taken, attacker, spell, damage, seq)
 }
 
+// Damage a body did to itself: a hard landing (no spell) or its own blast.
+// Only the victim hears about it, named as both parties, so the client can
+// tell it apart from someone else's hit.
+combat_log_record_self :: proc(log: ^Combat_Log, victim: Entity_ID, spell: Spell_ID, damage: f32) {
+	combat_log_push(log, victim, .Damage_Taken, victim, spell, damage, combat_log_next_seq(log))
+}
+
 combat_log_record_kill :: proc(log: ^Combat_Log, attacker, victim: Entity_ID, spell: Spell_ID) {
 	seq := combat_log_next_seq(log)
 	combat_log_push(log, attacker, .Kill, victim, spell, 0, seq)
@@ -190,8 +197,14 @@ combat_apply_damage :: proc(world: ^Entity_World, attacker, victim: Entity_ID, s
 	world.characters[victim].health -= damage
 	world.stats[victim].damage_taken += damage
 
-	// Self-damage costs health but is nobody's work and nobody's kill.
-	if attacker == INVALID_ENTITY || attacker >= MAX_ENTITIES || attacker == victim {
+	// Self-damage costs health but is nobody's work and nobody's kill. It is
+	// still worth a line in the victim's log: a hard landing or your own orb
+	// should never be a mystery drop in the health bar.
+	if attacker == victim {
+		combat_log_record_self(&world.combat_log, victim, spell, damage)
+		return
+	}
+	if attacker == INVALID_ENTITY || attacker >= MAX_ENTITIES {
 		return
 	}
 	if world.characters[attacker].active {
@@ -199,8 +212,15 @@ combat_apply_damage :: proc(world: ^Entity_World, attacker, victim: Entity_ID, s
 	}
 	world.last_attacker[victim] = attacker
 	world.last_attack_spell[victim] = spell
+	world.last_attack_age[victim] = 0
 	combat_log_record_damage(&world.combat_log, attacker, victim, spell, damage)
 }
+
+// How long a hit keeps its claim on the kill. Every hit kills on the tick it
+// lands, so this only matters for a death the victim finishes themselves: an
+// orb that throws someone off a pillar earns the landing that kills them, a
+// hit from a minute ago does not earn the hop chain they later misjudged.
+KILL_CREDIT_SEC :: f32(8.0)
 
 // Called from the death transition. Credits the kill if someone earned it.
 combat_record_death :: proc(world: ^Entity_World, victim: Entity_ID) {
@@ -213,10 +233,30 @@ combat_record_death :: proc(world: ^Entity_World, victim: Entity_ID) {
 	if killer == INVALID_ENTITY || killer >= MAX_ENTITIES || killer == victim {
 		return
 	}
+	if world.last_attack_age[victim] > KILL_CREDIT_SEC {
+		return
+	}
 	if world.characters[killer].active {
 		world.stats[killer].kills += 1
 	}
 	combat_log_record_kill(&world.combat_log, killer, victim, world.last_attack_spell[victim])
+}
+
+// Hard landings. The kernel notes what each body hit the ground with this
+// tick; health is the server's to take, and it goes through the one damage
+// path like any hit, charged to the body itself so the scoreline and the kill
+// credit treat it the way they treat every other self-inflicted wound.
+combat_apply_landings :: proc(world: ^Entity_World) {
+	for i in 1..<MAX_ENTITIES {
+		if !world.characters[i].active || world.characters[i].dead {
+			continue
+		}
+		damage := landing_damage(world.characters[i].landing)
+		if damage > 0 {
+			id := Entity_ID(i)
+			combat_apply_damage(world, id, id, .None, damage)
+		}
+	}
 }
 
 // Match restart: the scoreline goes back to zero, names stay.

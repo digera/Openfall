@@ -33,6 +33,7 @@ Cue :: enum u8 {
 	Fizzle,
 	Land,
 	Jump,
+	Gust_Launch,
 }
 
 @(private)
@@ -65,5 +66,6 @@ play_script :: proc(engine: ^ma.engine, cue: Cue) {
 	case .Fizzle:            play_fizzle(engine)
 	case .Land:              play_land(engine)
 	case .Jump:              play_jump(engine)
+	case .Gust_Launch:       play_gust_launch(engine)
 	}
 }

@@ -30,6 +30,14 @@ Character_State :: struct {
 
 	slow_ticks: int,  // remaining ticks of Frost slow (0 = not slowed)
 
+	// Bunny-hop timing. Stepped by the kernel and sent to the owning client, so
+	// a reconcile replays a hop exactly the way the server ran it.
+	hop: Hop_State,
+
+	// What this tick's touchdown hit the ground with; zero on every other tick.
+	// Only the server reads it, to turn a hard landing into fall damage.
+	landing: Landing,
+
 	dead:           bool,
 	respawn_timer:  f32,
 
@@ -92,6 +100,7 @@ Entity_World :: struct {
 	// transition reads it and then it is cleared on respawn.
 	last_attacker:     [MAX_ENTITIES]Entity_ID,
 	last_attack_spell: [MAX_ENTITIES]Spell_ID,
+	last_attack_age:   [MAX_ENTITIES]f32, // seconds since that blood was drawn
 
 	// Recent damage and kills, per entity, waiting to be carried to that
 	// entity's own client. Lives here rather than being threaded through every
