@@ -6,7 +6,7 @@ package main
 // route is a rune the chaser can ride too.
 //
 // It adds speed; it does not set it. A second rune stacks on the first, and a
-// timed hop off the landing keeps all of it (simulation.odin), so a chain of
+// hop before the feet grip keeps all of it (simulation.odin), so a chain of
 // runes and hops is how anyone goes fast -- paid for in mana for the runes and
 // in health for every landing faster than a sprint.
 //

@@ -31,18 +31,22 @@ CHARACTER_JUMP_VELOCITY :: f32(6.6)
 // pace; pulling back against it still brakes. Below run speed the air behaves
 // as it always did.
 //
-// A jump pressed within HOP_EARLY_TICKS before touchdown, or HOP_LATE_TICKS
-// after it, is a hop: the feet never grip and the whole speed carries into the
-// next jump. The feet coast through that late window, so a landing is not
-// already a skid before the player has had a chance to hop. Any other jump --
-// Space held down through the landing, or pressed after the window -- leaves
-// at run speed. Holding Space bounces; timing it is what keeps the speed.
+// Bunny hopping is not a rule; it falls out of when the feet grip. Touchdown
+// makes a body grounded at once -- it can jump, and the landing is charged --
+// but friction only takes hold after HOP_SETTLE_TICKS of contact. A jump in
+// that gap leaves before friction has run once, so the whole speed carries.
+// A jump after it has already lost whatever those ticks of grip took: a little
+// late costs a little, a lot late costs most of it.
+//
+// Jumping takes a press, not a held key, so holding Space jumps once and then
+// lands and grips like anyone else. Layered on top is one piece of grace: a
+// press up to HOP_GRACE_TICKS before touchdown is held over and fires the
+// moment the feet arrive, so an early press is not a lost one.
 //
 // Every landing faster than HOP_SAFE_SPEED costs health (landing_damage), so a
 // chain of hops is health traded for ground covered.
-HOP_EARLY_TICKS   :: 3        // 50 ms
-HOP_LATE_TICKS    :: 3        // 50 ms
-HOP_RUN_SPEED     :: CHARACTER_WALK_SPEED * CHARACTER_SPRINT_MULT
+HOP_SETTLE_TICKS  :: 3        // 50 ms of contact before the feet grip
+HOP_GRACE_TICKS   :: 3        // 50 ms: an early press waits this long for the ground
 CHARACTER_AIR_TURN :: f32(2.5) // 1/s: how fast air steering bends momentum above run speed
 CHARACTER_MAX_SPEED :: f32(30.0)  // horizontal, m/s
 CHARACTER_MAX_RISE  :: f32(20.0)  // upward, m/s: the most any blast can throw a body skyward
@@ -68,14 +72,14 @@ HOP_DAMAGE_PER_MPS  :: f32(1.2)   // health per m/s past it
 // as one byte.
 Hop_State :: struct {
 	jump_held:    bool, // jump was down last tick, so a press is the edge
-	buffer_ticks: u8,   // counts down from HOP_EARLY_TICKS + 1 after a press
+	buffer_ticks: u8,   // counts down from HOP_GRACE_TICKS + 1 after a press
 	ground_ticks: u8,   // ticks since touchdown, saturating; 0 while airborne
 }
 
 HOP_GROUND_TICKS_MAX :: 15
 
-#assert(HOP_EARLY_TICKS + 1 <= 7)            // buffer_ticks has three bits on the wire
-#assert(HOP_LATE_TICKS < HOP_GROUND_TICKS_MAX) // ground_ticks has four
+#assert(HOP_GRACE_TICKS + 1 <= 7)               // buffer_ticks has three bits on the wire
+#assert(HOP_SETTLE_TICKS < HOP_GROUND_TICKS_MAX) // ground_ticks has four
 
 // What the feet hit the ground with on the tick they touched down.
 Landing :: struct {
@@ -112,12 +116,12 @@ simulate_character_step :: proc(char: ^Character_State, input: Input_State, dt: 
 	}
 	char.landing = {}
 
-	// A press is the edge, not the key being down. The buffer lets a press a
-	// few ticks before touchdown still count once the feet arrive.
+	// A press is the edge, not the key being down. It waits in the buffer
+	// for up to HOP_GRACE_TICKS for feet to jump from.
 	pressed := input.jump && !char.hop.jump_held
 	char.hop.jump_held = input.jump
 	if pressed {
-		char.hop.buffer_ticks = HOP_EARLY_TICKS + 1
+		char.hop.buffer_ticks = HOP_GRACE_TICKS + 1
 	} else if char.hop.buffer_ticks > 0 {
 		char.hop.buffer_ticks -= 1
 	}
@@ -196,10 +200,9 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	vel_xy := vec3{char.vel.x, char.vel.y, 0}
 	pace := len_vec3(vel_xy)
 	if char.on_ground {
-		// Just landed and still flying: coast through the hop window rather
-		// than skid, so a late hop has something left to carry.
-		coasting := char.hop.ground_ticks <= HOP_LATE_TICKS && pace > HOP_RUN_SPEED
-		if !coasting {
+		// The feet only grip once they have settled. Until then the body
+		// slides on whatever it landed with, and that gap is the hop.
+		if char.hop.ground_ticks >= HOP_SETTLE_TICKS {
 			k := min(CHARACTER_GROUND_ACCEL * dt, 1.0)
 			vel_xy += (wish - vel_xy) * k
 			if !moving && len2_vec3(vel_xy) < 0.02 * 0.02 {
@@ -315,16 +318,10 @@ simulate_character_move_z :: proc(char: ^Character_State, input: Input_State, dt
 		}
 	}
 
-	// Jump after the fall has been resolved, so a hop leaves on the very tick
-	// the feet arrive and never grips. A buffered press jumps then even if the
-	// key has already come up.
-	if char.on_ground && (input.jump || char.hop.buffer_ticks > 0) {
-		timed := char.hop.buffer_ticks > 0 && char.hop.ground_ticks <= HOP_LATE_TICKS
-		if !timed {
-			vel_xy := clamp_horizontal(vec3{char.vel.x, char.vel.y, 0}, HOP_RUN_SPEED)
-			char.vel.x = vel_xy.x
-			char.vel.y = vel_xy.y
-		}
+	// Jump after the fall has been resolved, so a press waiting in the buffer
+	// leaves on the very tick the feet arrive. Nothing here touches the
+	// horizontal speed: what carries is whatever the grip has not taken yet.
+	if char.on_ground && char.hop.buffer_ticks > 0 {
 		char.on_ground = false
 		char.vel.z = CHARACTER_JUMP_VELOCITY
 		char.hop.buffer_ticks = 0
