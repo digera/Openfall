@@ -30,6 +30,7 @@ Spell_ID :: enum u8 {
 	Thunderbolt    = 7,    // held beam that arcs between nearby enemies
 	Stamina_To_Mana   = 8, // instant: stamina buys mana over the cooldown
 	Health_To_Stamina = 9, // instant: health buys stamina over the cooldown
+	Gust              = 10, // instant: a wind rune on the floor ahead that throws whoever steps on it
 }
 
 // Spells bound to hotbar slots 1..HOTBAR_SLOTS. Friendly Heal lives on C, so
@@ -37,8 +38,11 @@ Spell_ID :: enum u8 {
 HOTBAR_SLOTS :: 5
 HOTBAR := [HOTBAR_SLOTS]Spell_ID{.Arcane_Missile, .Arcane_Orb, .Frost_Lance, .Call_Lightning, .Thunderbolt}
 
-// Z X C, in that order. Heal is C, not the middle key.
-TRANSFER_BINDS := [3]struct{key: string, spell: Spell_ID}{
+// The keys beside the number row: E drops a Gust rune, Z and X are the
+// transfers, C winds Friendly Heal. Gust sits on a key of its own because it is
+// cast mid-hop, where swapping slots and back would cost the timing.
+KEY_BINDS := [4]struct{key: string, spell: Spell_ID}{
+	{"E", .Gust},
 	{"Z", .Stamina_To_Mana},
 	{"X", .Health_To_Stamina},
 	{"C", .Friendly_Heal},
@@ -75,6 +79,12 @@ Spell_Def :: struct {
 	knockback:       f32,
 	slow_ticks:      int,
 
+	// A blast that reaches its own caster. Zero for everything but the orb:
+	// the share of the splash damage and of the knockback the caster takes
+	// from their own detonation, so an orb at your feet is a jump you pay for.
+	self_damage_frac:    f32,
+	self_knockback_frac: f32,
+
 	heal:          f32,   // health restored to each recipient at full charge
 	range:         f32,   // blink distance, strike reach, heal reach, or beam length
 
@@ -110,6 +120,7 @@ Spell_Payload_Type :: enum u8 {
 	Heal,       // instant health to a soft-targeted ally; the caster's mend is a transfer
 	Beam,       // does its work every tick it is held; the release is nothing
 	Transfer,   // spends one bar up front and drips another until the cooldown ends
+	Pad,        // lays a Gust rune `range` ahead of the caster (gust_pads.odin)
 }
 
 SPELL_DEFS := [Spell_ID]Spell_Def{
@@ -137,7 +148,10 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		aoe_damage_frac  = 0.5,
 	},
 
-	// Lobbed: detonates on the first thing it touches, wide splash.
+	// Lobbed: detonates on the first thing it touches, wide splash, and throws
+	// everything in it -- its caster included. Aimed at your own feet it is a
+	// rocket jump: a little of your own health and a hard landing for a lot of
+	// height and speed.
 	.Arcane_Orb = {
 		id              = .Arcane_Orb,
 		name            = "Arcane Orb",
@@ -154,7 +168,9 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		damage          = 55,
 		aoe_radius      = 6.5,
 		aoe_damage_frac = 0.75,
-		knockback       = 12.0,
+		knockback       = 20.0,
+		self_damage_frac    = 0.3,
+		self_knockback_frac = 0.75,
 	},
 
 	.Blink = {
@@ -251,6 +267,20 @@ SPELL_DEFS := [Spell_ID]Spell_Def{
 		beam_chain_range  = 6,
 		beam_chain_count  = 2,
 		beam_chain_frac   = 0.5,
+	},
+
+	// Tap. No wind-up, because it is cast on the move: the rune lands `range`
+	// ahead, where the next stride or the next hop's landing will meet it.
+	// Darkfall's Begone, by another name.
+	.Gust = {
+		id            = .Gust,
+		name          = "Gust",
+		short_name    = "GUST",
+		mana_cost     = 30,
+		cooldown_sec  = 2.0,
+		payload       = .Pad,
+		target_filter = .Any,
+		range         = 1.5,
 	},
 
 	// Tap. The stamina is gone immediately; the mana arrives over the cooldown.

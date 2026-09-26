@@ -34,7 +34,7 @@ import "core:strconv"
 // two towers that changed this tick so cover you are standing in does not
 // wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(18)  // vitals are u16; sprint latch rides in the entity flags
+PROTOCOL_VERSION :: u8(19)  // hop state for the owner; Gust runes
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -63,6 +63,7 @@ MAX_SNAPSHOT_BEAMS         :: 4
 MAX_SNAPSHOT_COMBAT_EVENTS :: 8
 MAX_SNAPSHOT_CHUNKS        :: 8
 MAX_SNAPSHOT_TOWERS        :: 2
+MAX_SNAPSHOT_PADS          :: 4
 
 // Everyone who can be in a match at once. Checked against MAX_CLIENTS +
 // MAX_BOTS where those are in scope; the client build has neither, so the
@@ -191,6 +192,18 @@ Snapshot_Chunk :: struct {
 	rest:   bool,   // settled and ready to pick up
 }
 
+// A Gust rune on the floor. Unlike a projectile the client does more than draw
+// it: the owner's prediction launches off it, so the position is kept to the
+// centimetre and `ridden` says whether the server has already thrown this
+// client off it -- a rune only throws each body once.
+Snapshot_Pad :: struct {
+	id:     u8,
+	team:   Team_ID,
+	pos:    vec3,
+	life:   f32,   // seconds left
+	ridden: bool,  // by the client this snapshot is addressed to
+}
+
 // One lane minion. Everything a client needs to draw a body it can neither
 // predict nor name: where it is, whose it is, what kind, and how hurt. No
 // velocity -- at 3.6 m/s a snapshot is twelve centimetres, which the client
@@ -208,6 +221,10 @@ Snapshot_Minion :: struct {
 Server_Snapshot_Packet :: struct {
 	tick_id:          u32,
 	ack_input_tick:   u32,   // newest client input tick the server has applied
+	// The receiving client's own hop timing, as of ack_input_tick. Nobody
+	// else's: only the owner replays its inputs, and one byte here is fifteen
+	// cheaper than one on every body.
+	local_hop:        Hop_State,
 	entity_count:     u8,
 	entities:         [MAX_SNAPSHOT_ENTITIES]Snapshot_Entity,
 	minion_count:     u8,
@@ -224,6 +241,8 @@ Server_Snapshot_Packet :: struct {
 	towers:           [MAX_SNAPSHOT_TOWERS]Snapshot_Tower_Nodes,
 	chunk_count:      u8,
 	chunks:           [MAX_SNAPSHOT_CHUNKS]Snapshot_Chunk,
+	pad_count:        u8,
+	pads:             [MAX_SNAPSHOT_PADS]Snapshot_Pad,
 }
 
 // Everyone in the match, whether or not they are in view. The same packet
@@ -739,7 +758,7 @@ deserialize_server_welcome :: proc(buffer: []u8) -> (packet: Server_Welcome_Pack
 // crowded fight where it matters most. Spelling the budget out as constants
 // rather than a comment means adding a field to a snapshot record breaks the
 // build here instead of breaking the game at sixteen players.
-SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 8   // version+type, tick, ack, eight counts
+SNAPSHOT_HEADER_BYTES :: 2 + 4 + 4 + 1 + 9   // version+type, tick, ack, local hop, nine counts
 SNAPSHOT_ENTITY_BYTES :: 1 + 12 + 12 + 2 + 2 + 1 + 2 + 2 + 2 + 1 + 1 + 2 + 4
                                           // id, pos, vel, yaw, pitch, flags, hp u16, mana u16, stam u16, team, slow, cast, carry[4] u8
 // Projectiles used to carry full f32 position and velocity, which they never
@@ -758,6 +777,8 @@ SNAPSHOT_TOWER_NODE_BYTES :: 1 + MAX_NODES_PER_TOWER  // 1 + 32 = 33 bytes
 SNAPSHOT_CHUNK_BYTES  :: 2 + 1 + 6 + 3 + 1
 // id, kind+team, pos, yaw, health
 SNAPSHOT_MINION_BYTES :: 2 + 1 + 6 + 1 + 1
+// id, team+ridden, pos, life
+SNAPSHOT_PAD_BYTES    :: 1 + 1 + 6 + 1
 
 SNAPSHOT_WORST_BYTES ::
 	SNAPSHOT_HEADER_BYTES +
@@ -768,7 +789,8 @@ SNAPSHOT_WORST_BYTES ::
 	MAX_SNAPSHOT_BEAMS * SNAPSHOT_BEAM_BYTES +
 	MAX_SNAPSHOT_COMBAT_EVENTS * SNAPSHOT_EVENT_BYTES +
 	MAX_SNAPSHOT_TOWERS * SNAPSHOT_TOWER_NODE_BYTES +
-	MAX_SNAPSHOT_CHUNKS * SNAPSHOT_CHUNK_BYTES
+	MAX_SNAPSHOT_CHUNKS * SNAPSHOT_CHUNK_BYTES +
+	MAX_SNAPSHOT_PADS * SNAPSHOT_PAD_BYTES
 
 #assert(SNAPSHOT_WORST_BYTES <= MAX_PACKET_SIZE)
 
@@ -800,6 +822,7 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 	write_header(&w, .Server_Snapshot)
 	bw_u32(&w, packet.tick_id)
 	bw_u32(&w, packet.ack_input_tick)
+	bw_u8(&w, hop_pack(packet.local_hop))
 
 	ecount := min(int(packet.entity_count), MAX_SNAPSHOT_ENTITIES)
 	bw_u8(&w, u8(ecount))
@@ -922,6 +945,18 @@ serialize_server_snapshot :: proc(packet: ^Server_Snapshot_Packet, buffer: []u8)
 		}
 		bw_u8(&w, quant_u8(k.radius, 100))
 	}
+
+	gcount := min(int(packet.pad_count), MAX_SNAPSHOT_PADS)
+	bw_u8(&w, u8(gcount))
+	for i in 0..<gcount {
+		g := &packet.pads[i]
+		bw_u8(&w, g.id)
+		tag := u8(g.team) & 0x7F
+		if g.ridden { tag |= 0x80 }
+		bw_u8(&w, tag)
+		bw_pos_cm(&w, g.pos)
+		bw_u8(&w, quant_u8(g.life, 20))   // 0.05 s resolution
+	}
 	return w.ok ? w.pos : 0
 }
 
@@ -932,6 +967,7 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 	}
 	packet.tick_id = br_u32(&r)
 	packet.ack_input_tick = br_u32(&r)
+	packet.local_hop = hop_unpack(br_u8(&r))
 
 	ecount := min(int(br_u8(&r)), MAX_SNAPSHOT_ENTITIES)
 	for i in 0..<ecount {
@@ -1079,7 +1115,41 @@ deserialize_server_snapshot :: proc(buffer: []u8) -> (packet: Server_Snapshot_Pa
 		}
 	}
 	packet.chunk_count = u8(kcount)
+
+	gcount := min(int(br_u8(&r)), MAX_SNAPSHOT_PADS)
+	for i in 0..<gcount {
+		g := &packet.pads[i]
+		g.id = br_u8(&r)
+		tag := br_u8(&r)
+		g.ridden = tag & 0x80 != 0
+		g.team = team_from_wire(tag & 0x7F)
+		g.pos = br_pos_cm(&r)
+		g.life = f32(br_u8(&r)) / 20.0
+		if !r.ok {
+			return {}, false
+		}
+	}
+	packet.pad_count = u8(gcount)
 	return packet, r.ok
+}
+
+// Hop state in one byte: ground ticks in the low four bits, the press buffer
+// in the next three, the held key on top. The kernel's asserts keep both
+// counters inside their fields.
+hop_pack :: proc(h: Hop_State) -> u8 {
+	b := min(h.ground_ticks, 15) | (min(h.buffer_ticks, 7) << 4)
+	if h.jump_held {
+		b |= 0x80
+	}
+	return b
+}
+
+hop_unpack :: proc(b: u8) -> Hop_State {
+	return Hop_State{
+		jump_held    = b & 0x80 != 0,
+		buffer_ticks = (b >> 4) & 0x07,
+		ground_ticks = b & 0x0F,
+	}
 }
 
 serialize_server_roster :: proc(packet: ^Server_Roster_Packet, buffer: []u8) -> int {

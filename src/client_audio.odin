@@ -479,7 +479,9 @@ client_audio_local_events :: proc(gc: ^Game_Client) {
 		client_audio_play(.Hurt)
 	}
 
-	if pred.teleported {
+	// A rune throw borrows Blink's arrival rush until Gust has a patch of its
+	// own in tools/gen_sfx.
+	if pred.teleported || pred.launched {
 		client_audio_play(.Blink_Arrive)
 	}
 	if pred.respawned {

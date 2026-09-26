@@ -22,7 +22,7 @@ Input :: struct {
 	jump:           bool,      // latched press
 	drop_press:     bool,      // latched G, toss the haul
 	slot_press:     [HOTBAR_SLOTS]bool,   // latched number-key presses
-	transfer_press: Spell_ID,            // latched Z or X; .None if neither
+	tap_press:      Spell_ID,            // latched E, Z or X; .None if none
 	window_focused: bool,
 
 	// Typed text for the name field, gathered from CHAR events so the layout
@@ -56,7 +56,7 @@ input_clear_held :: proc() {
 	input.jump = false
 	input.drop_press = false
 	input.slot_press = {}
-	input.transfer_press = .None
+	input.tap_press = .None
 	input.text_count = 0
 	input.enter_press = false
 	input.backspace_press = false
@@ -107,13 +107,17 @@ input_event :: proc "c" (e: ^sapp.Event) {
 			input.jump = true
 		case .G:
 			input.drop_press = true
+		case .E:
+			if input.tap_press == .None {
+				input.tap_press = .Gust
+			}
 		case .Z:
-			if input.transfer_press == .None {
-				input.transfer_press = .Stamina_To_Mana
+			if input.tap_press == .None {
+				input.tap_press = .Stamina_To_Mana
 			}
 		case .X:
-			if input.transfer_press == .None {
-				input.transfer_press = .Health_To_Stamina
+			if input.tap_press == .None {
+				input.tap_press = .Health_To_Stamina
 			}
 		case .C:
 			input.key_c = true
@@ -191,9 +195,9 @@ input_consume_drop :: proc() -> bool {
 	return false
 }
 
-input_consume_transfer :: proc() -> Spell_ID {
-	spell := input.transfer_press
-	input.transfer_press = .None
+input_consume_tap :: proc() -> Spell_ID {
+	spell := input.tap_press
+	input.tap_press = .None
 	return spell
 }
 
