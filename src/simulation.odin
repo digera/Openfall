@@ -24,6 +24,76 @@ CHARACTER_AIR_ACCEL    :: f32(2.2)
 CHARACTER_GRAVITY      :: f32(22.0)
 CHARACTER_JUMP_VELOCITY :: f32(6.6)
 
+// Momentum. Nothing here makes anyone faster: speed comes from a Gust pad, an
+// orb blast or a knockback, and these rules decide how much of it survives.
+//
+// In the air, above run speed, steering bends the heading without bleeding the
+// pace; pulling back against it still brakes. Below run speed the air behaves
+// as it always did.
+//
+// Bunny hopping is not a rule; it falls out of when the feet grip. Touchdown
+// makes a body grounded at once -- it can jump, and the landing is charged --
+// but friction only takes hold after HOP_SETTLE_TICKS of contact. A jump in
+// that gap leaves before friction has run once, so the whole speed carries.
+// A jump after it has already lost whatever those ticks of grip took: a little
+// late costs a little, a lot late costs most of it.
+//
+// Jumping takes a press, not a held key, so holding Space jumps once and then
+// lands and grips like anyone else. Layered on top is one piece of grace: a
+// press up to HOP_GRACE_TICKS before touchdown is held over and fires the
+// moment the feet arrive, so an early press is not a lost one.
+//
+// Every landing faster than HOP_SAFE_SPEED costs health (landing_damage), so a
+// chain of hops is health traded for ground covered.
+HOP_SETTLE_TICKS  :: 3        // 50 ms of contact before the feet grip
+HOP_GRACE_TICKS   :: 3        // 50 ms: an early press waits this long for the ground
+CHARACTER_AIR_TURN :: f32(2.5) // 1/s: how fast air steering bends momentum above run speed
+CHARACTER_MAX_SPEED :: f32(30.0)  // horizontal, m/s
+CHARACTER_MAX_RISE  :: f32(20.0)  // upward, m/s: the most any blast can throw a body skyward
+
+// Collision is swept in steps no longer than this, so a body flying at the
+// speed cap still stops against a crate rather than half a tick short of it.
+CHARACTER_SWEEP_STEP_M :: f32(0.3)
+
+// How far under the feet to look for something to stand on. A body resting on
+// a crate or a tower that walks off the edge starts to fall.
+CHARACTER_GROUND_PROBE_M :: f32(0.05)
+
+// Landing damage. A normal jump lands at about 6 m/s and a walk off a crate top
+// at about 10; neither hurts. Coming down harder than FALL_SAFE_SPEED -- a rocket jump,
+// a blast off a pillar -- does. Running into the ground faster than a sprint
+// hurts too, which is what makes a long hop chain cost something.
+FALL_SAFE_SPEED     :: f32(11.0)  // m/s downward: a drop of about 2.75 m is free
+FALL_DAMAGE_PER_MPS :: f32(6.0)   // health per m/s past it
+HOP_SAFE_SPEED      :: f32(8.0)   // m/s horizontal: sprint pace lands free
+HOP_DAMAGE_PER_MPS  :: f32(1.2)   // health per m/s past it
+
+// Bunny-hop bookkeeping. Small on purpose: it rides the snapshot to its owner
+// as one byte.
+Hop_State :: struct {
+	jump_held:    bool, // jump was down last tick, so a press is the edge
+	buffer_ticks: u8,   // counts down from HOP_GRACE_TICKS + 1 after a press
+	ground_ticks: u8,   // ticks since touchdown, saturating; 0 while airborne
+}
+
+HOP_GROUND_TICKS_MAX :: 15
+
+#assert(HOP_GRACE_TICKS + 1 <= 7)               // buffer_ticks has three bits on the wire
+#assert(HOP_SETTLE_TICKS < HOP_GROUND_TICKS_MAX) // ground_ticks has four
+
+// What the feet hit the ground with on the tick they touched down.
+Landing :: struct {
+	fall_speed: f32, // m/s downward
+	run_speed:  f32, // m/s horizontal
+}
+
+// Health a landing costs. Zero for anything a normal jump or a sprint does.
+landing_damage :: proc(landing: Landing) -> f32 {
+	fall := max(landing.fall_speed - FALL_SAFE_SPEED, 0) * FALL_DAMAGE_PER_MPS
+	run := max(landing.run_speed - HOP_SAFE_SPEED, 0) * HOP_DAMAGE_PER_MPS
+	return fall + run
+}
+
 STAMINA_SPRINT_DRAIN   :: f32(24.0)   // per second while sprinting
 STAMINA_SPRINT_MIN     :: f32(40.0)   // empty bar must climb back to here before sprint will start
 
@@ -44,10 +114,23 @@ simulate_character_step :: proc(char: ^Character_State, input: Input_State, dt: 
 	if char.slow_ticks > 0 {
 		char.slow_ticks -= 1
 	}
+	char.landing = {}
+
+	// A press is the edge, not the key being down. It waits in the buffer
+	// for up to HOP_GRACE_TICKS for feet to jump from.
+	pressed := input.jump && !char.hop.jump_held
+	char.hop.jump_held = input.jump
+	if pressed {
+		char.hop.buffer_ticks = HOP_GRACE_TICKS + 1
+	} else if char.hop.buffer_ticks > 0 {
+		char.hop.buffer_ticks -= 1
+	}
 
 	if char.dead {
 		char.vel = {}
 		char.sprint_active = false
+		char.hop.buffer_ticks = 0
+		char.hop.ground_ticks = 0
 		return
 	}
 
@@ -115,36 +198,63 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 	// crisp starts and stops; in the air it gives limited steering while
 	// preserving momentum.
 	vel_xy := vec3{char.vel.x, char.vel.y, 0}
+	pace := len_vec3(vel_xy)
 	if char.on_ground {
-		k := min(CHARACTER_GROUND_ACCEL * dt, 1.0)
-		vel_xy += (wish - vel_xy) * k
-		if !moving && len2_vec3(vel_xy) < 0.02 * 0.02 {
-			vel_xy = {}
+		// The feet only grip once they have settled. Until then the body
+		// slides on whatever it landed with, and that gap is the hop.
+		if char.hop.ground_ticks >= HOP_SETTLE_TICKS {
+			k := min(CHARACTER_GROUND_ACCEL * dt, 1.0)
+			vel_xy += (wish - vel_xy) * k
+			if !moving && len2_vec3(vel_xy) < 0.02 * 0.02 {
+				vel_xy = {}
+			}
 		}
 	} else if moving {
-		k := min(CHARACTER_AIR_ACCEL * dt, 1.0)
-		vel_xy += (wish - vel_xy) * k
+		wish_pace := len_vec3(wish)
+		heading := pace > 1e-3 ? vel_xy * (1.0 / pace) : vec3{}
+		wish_dir := wish_pace > 1e-3 ? wish * (1.0 / wish_pace) : vec3{}
+		if pace > wish_pace && dot_vec3(heading, wish_dir) > -0.25 {
+			// Faster than legs could go: the air steers the heading and
+			// keeps the pace. Straight back is the only way to shed it.
+			k := min(CHARACTER_AIR_TURN * dt, 1.0)
+			bent := norm_vec3(heading + (wish_dir - heading) * k)
+			vel_xy = bent * pace
+		} else {
+			k := min(CHARACTER_AIR_ACCEL * dt, 1.0)
+			vel_xy += (wish - vel_xy) * k
+		}
 	}
+	vel_xy = clamp_horizontal(vel_xy, CHARACTER_MAX_SPEED)
 
-	// Move with axis-separated sliding against the world.
+	// Move with axis-separated sliding against the world, swept in short
+	// steps so a fast body meets a wall where the wall is.
 	step := vel_xy * dt
-	try := char.pos + step
-	if !simulate_character_blocked(try) {
-		char.pos = try
-	} else {
+	sweeps := max(int(math.ceil(len_vec3(step) / CHARACTER_SWEEP_STEP_M)), 1)
+	sub := step * (1.0 / f32(sweeps))
+	for _ in 0..<sweeps {
+		if sub.x == 0 && sub.y == 0 {
+			break
+		}
+		try := char.pos + sub
+		if !simulate_character_blocked(try) {
+			char.pos = try
+			continue
+		}
 		try = char.pos
-		try.x += step.x
+		try.x += sub.x
 		if !simulate_character_blocked(try) {
 			char.pos.x = try.x
 		} else {
 			vel_xy.x = 0
+			sub.x = 0
 		}
 		try = char.pos
-		try.y += step.y
+		try.y += sub.y
 		if !simulate_character_blocked(try) {
 			char.pos.y = try.y
 		} else {
 			vel_xy.y = 0
+			sub.y = 0
 		}
 	}
 
@@ -153,17 +263,29 @@ simulate_character_move_xy :: proc(char: ^Character_State, input: Input_State, d
 }
 
 @(private)
+clamp_horizontal :: proc(v: vec3, limit: f32) -> vec3 {
+	l2 := v.x * v.x + v.y * v.y
+	if l2 <= limit * limit {
+		return v
+	}
+	k := limit / math.sqrt(l2)
+	return {v.x * k, v.y * k, v.z}
+}
+
+@(private)
 simulate_character_move_z :: proc(char: ^Character_State, input: Input_State, dt: f32) {
-	on_floor := char.pos.z <= WORLD_FLOOR_Z + 0.001
-	if on_floor && char.vel.z <= 0 {
-		char.pos.z = WORLD_FLOOR_Z
-		char.vel.z = 0
-		char.on_ground = true
+	// Walked off a crate or a tower: nothing under the feet any more.
+	if char.on_ground && char.pos.z > WORLD_FLOOR_Z + 0.001 {
+		below := char.pos - vec3{0, 0, CHARACTER_GROUND_PROBE_M}
+		if !simulate_character_blocked(below) {
+			char.on_ground = false
+		}
 	}
 
-	if char.on_ground && input.jump {
-		char.on_ground = false
-		char.vel.z = CHARACTER_JUMP_VELOCITY
+	on_floor := char.pos.z <= WORLD_FLOOR_Z + 0.001
+	if on_floor && char.vel.z <= 0 && !char.on_ground {
+		char.pos.z = WORLD_FLOOR_Z
+		character_touchdown(char)
 	}
 
 	if !char.on_ground {
@@ -173,18 +295,53 @@ simulate_character_move_z :: proc(char: ^Character_State, input: Input_State, dt
 
 		if try.z <= WORLD_FLOOR_Z {
 			char.pos.z = WORLD_FLOOR_Z
-			char.vel.z = 0
-			char.on_ground = true
+			character_touchdown(char)
 		} else if simulate_character_blocked(try) {
-			// Hit something above or the world shape changed under us; stop vertical motion.
-			char.vel.z = 0
+			// Hit something above, or came down onto a crate or a tower. A
+			// fast fall stops a whole tick's drop short of the surface, so
+			// close the gap before standing on it; otherwise the probe above
+			// would find air under the feet and drop them again.
 			if try.z < char.pos.z {
-				char.on_ground = true
+				gap := char.pos.z - try.z
+				for _ in 0..<5 {
+					gap *= 0.5
+					down := char.pos - vec3{0, 0, gap}
+					if !simulate_character_blocked(down) {
+						char.pos = down
+					}
+				}
+				character_touchdown(char)
 			}
+			char.vel.z = 0
 		} else {
 			char.pos.z = try.z
 		}
 	}
+
+	// Jump after the fall has been resolved, so a press waiting in the buffer
+	// leaves on the very tick the feet arrive. Nothing here touches the
+	// horizontal speed: what carries is whatever the grip has not taken yet.
+	if char.on_ground && char.hop.buffer_ticks > 0 {
+		char.on_ground = false
+		char.vel.z = CHARACTER_JUMP_VELOCITY
+		char.hop.buffer_ticks = 0
+		char.hop.ground_ticks = 0
+	} else if char.on_ground && char.hop.ground_ticks < HOP_GROUND_TICKS_MAX {
+		char.hop.ground_ticks += 1
+	}
+}
+
+// Feet meet something solid. Records what they hit it with before the fall is
+// stopped, so the server can charge for a hard landing.
+@(private)
+character_touchdown :: proc(char: ^Character_State) {
+	char.landing = Landing{
+		fall_speed = max(-char.vel.z, 0),
+		run_speed  = math.sqrt(char.vel.x * char.vel.x + char.vel.y * char.vel.y),
+	}
+	char.vel.z = 0
+	char.on_ground = true
+	char.hop.ground_ticks = 0
 }
 
 // Cylinder collision against the world. Samples points on the character cylinder.
@@ -218,17 +375,33 @@ simulate_world_step :: proc(world: ^Entity_World) {
 	}
 }
 
-// Apply an impulse (knockback) to a character. Lifts slightly so friction
-// doesn't eat it immediately.
-character_apply_impulse :: proc(char: ^Character_State, dir: vec3, strength: f32) {
-	if char.dead {
+// A blast throws a body along `dir` in all three axes: one under the feet
+// throws it up, one beside it throws it sideways. However flat or downward the
+// shove, at least BLAST_MIN_LIFT of it goes upward, so the feet leave the floor
+// and ground friction cannot swallow the throw on the next tick. Lift adds to a
+// rise already under way, which is what makes jumping into your own orb go
+// higher than standing on it.
+BLAST_MIN_LIFT :: f32(0.35)
+
+character_apply_blast :: proc(char: ^Character_State, dir: vec3, strength: f32) {
+	if char.dead || strength <= 0 {
 		return
 	}
-	d := norm_vec3(vec3{dir.x, dir.y, 0})
-	char.vel.x += d.x * strength
-	char.vel.y += d.y * strength
-	char.vel.z = max(char.vel.z, strength * 0.35)
+	d := norm_vec3(dir)
+	if len2_vec3(d) < 0.5 {
+		d = {0, 0, 1}
+	}
+	vel_xy := clamp_horizontal(vec3{char.vel.x + d.x * strength, char.vel.y + d.y * strength, 0}, CHARACTER_MAX_SPEED)
+	char.vel.x = vel_xy.x
+	char.vel.y = vel_xy.y
+	char.vel.z = min(max(char.vel.z, 0) + max(d.z, BLAST_MIN_LIFT) * strength, CHARACTER_MAX_RISE)
+	character_leave_ground(char)
+}
+
+// Up off the floor now, so the next tick flies rather than grips.
+character_leave_ground :: proc(char: ^Character_State) {
 	char.on_ground = false
+	char.hop.ground_ticks = 0
 	if char.pos.z <= WORLD_FLOOR_Z {
 		char.pos.z = WORLD_FLOOR_Z + 0.01
 	}

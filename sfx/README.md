@@ -25,6 +25,7 @@
 | `Hurt` / `Death` / `Kill` / `Respawn` | Local pain, unmake, kill sting, reform |
 | `Fizzle` | Charge dropped under 20% or a strike/heal lost its target |
 | `Land` / `Jump` | Movement |
+| `Gust_Launch` | Thrown off a Gust rune: low thump, then two rising bands of air. Flat for your own launch, placed (`Mid`) for someone else's |
 
 Charge and beam "loops" are overlapping cached grains retriggered by `src/client_audio.odin`.
 

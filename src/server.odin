@@ -50,6 +50,7 @@ Server :: struct {
 	bots_per_team: int,
 
 	projectiles:   Projectile_World,
+	gust_pads:     Gust_Pad_World,
 	lag_comp:      Lag_Comp_State,
 
 	towers:        Tower_World,
@@ -164,6 +165,8 @@ server_tick :: proc(server: ^Server) {
 	}
 
 	simulate_world_step(&server.world)
+	combat_apply_landings(&server.world)
+	gust_pads_tick(&server.gust_pads, &server.world, SIMULATION_DT)
 	projectile_tick(&server.projectiles, &server.world, SIMULATION_DT)
 	beams_tick(&server.world, SIMULATION_DT, live)
 	server_age_strikes(server, SIMULATION_DT)
@@ -221,6 +224,7 @@ server_round_reset :: proc(server: ^Server) {
 	mining_reset(&server.mining)
 	minion_world_reset(&server.minions)
 	projectile_clear_all(&server.projectiles)
+	gust_pads_clear(&server.gust_pads)
 	server.strikes = {}
 	combat_reset_stats(&server.world)
 	entity_respawn_all(&server.world)
@@ -708,6 +712,9 @@ server_send_snapshots :: proc(server: ^Server) {
 			tick_id        = server.tick_id,
 			ack_input_tick = client.has_applied ? client.last_applied_tick : 0,
 		}
+		if self_id != INVALID_ENTITY {
+			snapshot.local_hop = server.world.characters[self_id].hop
+		}
 
 		// Gather (dist², id) for active entities
 		cand_ids:  [MAX_ENTITIES]Entity_ID
@@ -913,6 +920,42 @@ server_send_snapshots :: proc(server: ^Server) {
 			}
 		}
 		snapshot.beam_count = u8(btake)
+
+		// Nearest runes. Each says whether this client has ridden it, which
+		// is what lets the owner's prediction launch off the ones it has not.
+		gidx:  [MAX_GUST_PADS]int
+		gdist: [MAX_GUST_PADS]f32
+		gn := 0
+		for i in 0..<MAX_GUST_PADS {
+			if !server.gust_pads.pads[i].active {
+				continue
+			}
+			gidx[gn] = i
+			gdist[gn] = len2_vec3(server.gust_pads.pads[i].pos - self_pos)
+			gn += 1
+		}
+		gtake := min(gn, MAX_SNAPSHOT_PADS)
+		for k in 0..<gtake {
+			best := k
+			for j in k + 1..<gn {
+				if gdist[j] < gdist[best] {
+					best = j
+				}
+			}
+			if best != k {
+				gidx[k], gidx[best] = gidx[best], gidx[k]
+				gdist[k], gdist[best] = gdist[best], gdist[k]
+			}
+			pad := &server.gust_pads.pads[gidx[k]]
+			snapshot.pads[k] = Snapshot_Pad{
+				id     = pad.id,
+				team   = pad.team,
+				pos    = pad.pos,
+				life   = pad.life,
+				ridden = self_id != INVALID_ENTITY && gust_pad_ridden_by(pad, self_id),
+			}
+		}
+		snapshot.pad_count = u8(gtake)
 
 		// This client's own combat log and nobody else's.
 		snapshot.combat_event_count = u8(combat_log_gather(&server.world.combat_log, self_id, &snapshot.combat_events))
@@ -1258,6 +1301,11 @@ server_handle_spell_cast :: proc(
 	case .Transfer:
 		// Paid up front. The gain drips in server_update_resources until the
 		// cooldown reaches zero.
+
+	case .Pad:
+		// Laid, not ridden: nobody is launched until feet reach it in
+		// gust_pads_tick, the caster included.
+		gust_pad_place(&server.gust_pads, caster_id, server.world.teams[caster_id], gust_pad_spot(char, def.range))
 
 	case .Beam: // refused above
 	case .None:

@@ -353,8 +353,12 @@ test_client_print_combat_log :: proc(client: ^Test_Client) {
 		if !line.live {
 			continue
 		}
+		cause := SPELL_DEFS[line.spell_id].short_name
+		if line.other_id == world.local_entity_id && line.spell_id == .None {
+			cause = "LANDING"
+		}
 		fmt.printf("    [log] %v %s dmg %d (%s) age %.1fs\n",
 			line.event_type, client_world_name(world, line.other_id),
-			line.damage, SPELL_DEFS[line.spell_id].short_name, line.age)
+			line.damage, cause, line.age)
 	}
 }

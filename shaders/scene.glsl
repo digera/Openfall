@@ -63,6 +63,7 @@ layout(binding=1) uniform fs_params {
     vec4 beam_ends[4];      // xyz far end, w = 1 if it ends on a body
     vec4 beam_chains[8];    // xyz chain target, w = 1 valid; 2 per beam
     vec4 target_mark;       // xyz sticky target centre, w = 0 none, 1 hostile, 2 friendly
+    vec4 pads[4];           // Gust runes: xyz centre on the floor, w = team + life 0..1 (0 = none)
 };
 
 in vec3 ray_origin;
@@ -73,6 +74,7 @@ const int NFLOOR = 11;
 const int NSOLID = 15;
 const int NPYLON = 7;
 const int NCHUNK = 8;
+const int NPAD = 4;
 
 const int MAT_NONE = 0;
 const int MAT_WALL = 1;
@@ -120,6 +122,21 @@ vec3 team_core(float team) {
     if (team < 1.5) return vec3(1.00, 0.90, 0.72);
     if (team < 2.5) return vec3(0.84, 0.94, 1.00);
     return vec3(0.88, 1.00, 0.86);
+}
+
+// Must match GUST_PAD_RADIUS_M in src/gust_pads.odin.
+const float PAD_RADIUS = 0.9;
+
+// A Gust rune's wind: pale, with a breath of its caster's team in it. Wind
+// before team, because anyone can ride it.
+vec3 pad_tint(float team) {
+    return mix(vec3(0.86, 0.95, 1.00), team_tint(team), 0.30);
+}
+
+// How lit a rune is: full for most of its life, guttering out over its last
+// second (life is 0..1 of 5 s) so a rune about to vanish looks like it.
+float pad_strength(float life) {
+    return smoothstep(0.0, 0.2, life) * (0.85 + 0.15 * sin(WORLD_T * 7.0));
 }
 
 vec3 spell_tint(float type) {
@@ -1807,6 +1824,17 @@ void main() {
         aura += tint * g * 1.6;
         aura += vec3(1.0) * g * age * 0.6;
     }
+    // Gust runes: a faint updraft standing on each, so one is readable from
+    // across a lane and not just from on top of it.
+    for (int i = 0; i < NPAD; i++) {
+        vec4 pd = pads[i];
+        if (pd.w < 0.5) continue;
+        float s = pad_strength(fract(pd.w));
+        vec3 tint = pad_tint(floor(pd.w));
+        float rise = 1.3 + 0.3 * sin(WORLD_T * 3.1 + pd.x);
+        aura += tint * segment_glow(ro, rd, glow_tmax, pd.xyz, pd.xyz + vec3(0.0, 0.0, rise), 0.35) * 0.35 * s;
+        aura += tint * corona(ro, rd, glow_tmax, pd.xyz + vec3(0.0, 0.0, 0.1), PAD_RADIUS * 0.8) * 0.30 * s;
+    }
     if (hand_pos.w > 0.001) {
         vec3 ht = mix(hand_core(), hand_tint(), 0.5);
         aura += ht * corona(ro, rd, glow_tmax, hand_pos.xyz, 0.06 * hand_pos.w) * (0.35 + 0.9 * fx.w + 0.35 * hand_cast.y);
@@ -1965,6 +1993,21 @@ void main() {
             vec3 dtint = team_tint(float(t) + 1.0);
             albedo = mix(albedo, albedo * mix(0.55, 0.45, home) + dtint * mix(0.45, 0.55, home), disc * mix(0.28, 0.45, home));
             emissive += dtint * edge * pulse * mix(0.40, 0.75, home);
+        }
+        // Gust runes: a bright rim and three arms of wind turning inside it.
+        for (int i = 0; i < NPAD; i++) {
+            vec4 pd = pads[i];
+            if (pd.w < 0.5) continue;
+            vec2 d = hp.xy - pd.xy;
+            float pr = length(d);
+            if (pr > PAD_RADIUS + 0.1 || abs(hp.z - pd.z) > 0.2) continue;
+            float s = pad_strength(fract(pd.w));
+            vec3 ptint = pad_tint(floor(pd.w));
+            float rim = 1.0 - smoothstep(0.0, 0.07, abs(pr - PAD_RADIUS * 0.92));
+            float ang = atan(d.y, d.x);
+            float arms = smoothstep(0.55, 0.95, sin(3.0 * ang - pr * 7.0 + WORLD_T * 6.0));
+            arms *= smoothstep(0.1, 0.3, pr) * (1.0 - smoothstep(PAD_RADIUS * 0.75, PAD_RADIUS * 0.9, pr));
+            emissive += ptint * (rim * 1.1 + arms * 0.7) * s;
         }
         spec_pow = 24.0;
         spec_amt = 0.10;
