@@ -1,7 +1,8 @@
 package main
 
-import "base:runtime"
-import sapp "sokol:app"
+// Keyboard and mouse state for the graphical client. The platform backend
+// translates its window events into the input_on_* calls below; everything
+// else reads the state through the input_consume_* procedures.
 
 Input :: struct {
 	mouse_x:        f32,
@@ -62,107 +63,127 @@ input_clear_held :: proc() {
 	input.backspace_press = false
 }
 
-input_event :: proc "c" (e: ^sapp.Event) {
-	context = runtime.default_context()
-	#partial switch e.type {
-	case .MOUSE_MOVE:
-		input.mouse_x = e.mouse_x
-		input.mouse_y = e.mouse_y
-		if sapp.mouse_locked() {
-			input.look_dx += e.mouse_dx
-			input.look_dy += e.mouse_dy
-		}
-	case .MOUSE_DOWN:
-		input.mouse_x = e.mouse_x
-		input.mouse_y = e.mouse_y
-		if e.mouse_button == .LEFT {
+// The keys the game binds, named by the platform backend. The digits must stay
+// contiguous: a slot is its offset from Num_1.
+Key :: enum u8 {
+	W, A, S, D,
+	Shift, Tab, Enter, Backspace, Space, Escape,
+	G, Z, X, C,
+	Num_1, Num_2, Num_3, Num_4, Num_5, Num_6, Num_7, Num_8, Num_9,
+}
+
+Mouse_Button :: enum u8 {
+	Left,
+	Right,
+	Middle,
+}
+
+input_on_mouse_move :: proc(x, y, dx, dy: f32) {
+	input.mouse_x = x
+	input.mouse_y = y
+	if platform_mouse_locked() {
+		input.look_dx += dx
+		input.look_dy += dy
+	}
+}
+
+input_on_mouse_button :: proc(button: Mouse_Button, down: bool, x, y: f32) {
+	if down {
+		input.mouse_x = x
+		input.mouse_y = y
+	}
+	#partial switch button {
+	case .Left:
+		if down {
 			input.click_left = true
-			input.held_left = true
 		}
-		if e.mouse_button == .RIGHT {
-			input.held_right = true
-		}
-	case .MOUSE_UP:
-		if e.mouse_button == .LEFT {
-			input.held_left = false
-		}
-		if e.mouse_button == .RIGHT {
-			input.held_right = false
-		}
-	case .KEY_DOWN:
-		if e.key_repeat {
-			break
-		}
-		#partial switch e.key_code {
-		case .W: input.key_w = true
-		case .A: input.key_a = true
-		case .S: input.key_s = true
-		case .D: input.key_d = true
-		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = true
-		case .TAB: input.key_tab = true
-		case .ENTER, .KP_ENTER: input.enter_press = true
-		case .BACKSPACE: input.backspace_press = true
-		case .SPACE:
-			input.key_space = true
-			input.jump = true
-		case .G:
-			input.drop_press = true
-		case .Z:
-			if input.transfer_press == .None {
-				input.transfer_press = .Stamina_To_Mana
-			}
-		case .X:
-			if input.transfer_press == .None {
-				input.transfer_press = .Health_To_Stamina
-			}
-		case .C:
-			input.key_c = true
-		case ._1, ._2, ._3, ._4, ._5, ._6, ._7, ._8, ._9:
-			slot := int(e.key_code) - int(sapp.Keycode._1)
-			if slot < HOTBAR_SLOTS {
-				input.slot_press[slot] = true
-			}
-			// In menu phase, number keys select menu items
-			if game_client.phase == .In_Menu {
-				game_client.menu_selected = slot
-			}
-		case .ESCAPE:
-			// If in the Playing phase and mouse is locked, open menu instead of just unlocking
-			if game_client.phase == .Playing && sapp.mouse_locked() {
-				game_client.phase = .In_Menu
-				sapp.lock_mouse(false)
-				input_clear_held()
-			} else if game_client.phase == .In_Menu {
-				// Close menu and resume playing
-				game_client.phase = .Playing
-				input_clear_held()
-			} else {
-				// In other phases (Connecting, Team_Select, Joining), just unlock
-				sapp.lock_mouse(false)
-				input_clear_held()
-			}
-		}
-	case .KEY_UP:
-		#partial switch e.key_code {
+		input.held_left = down
+	case .Right:
+		input.held_right = down
+	}
+}
+
+// `repeat` is the OS auto-repeat of a held key; the game only wants the edge.
+input_on_key :: proc(key: Key, down, repeat: bool) {
+	if !down {
+		#partial switch key {
 		case .W: input.key_w = false
 		case .A: input.key_a = false
 		case .S: input.key_s = false
 		case .D: input.key_d = false
-		case .LEFT_SHIFT, .RIGHT_SHIFT: input.key_shift = false
-		case .TAB: input.key_tab = false
+		case .Shift: input.key_shift = false
+		case .Tab: input.key_tab = false
 		case .C: input.key_c = false
-		case .SPACE: input.key_space = false
+		case .Space: input.key_space = false
 		}
-	case .CHAR:
-		if input.text_count < len(input.text_chars) && e.char_code >= 32 && e.char_code < 127 {
-			input.text_chars[input.text_count] = u8(e.char_code)
-			input.text_count += 1
+		return
+	}
+	if repeat {
+		return
+	}
+	switch key {
+	case .W: input.key_w = true
+	case .A: input.key_a = true
+	case .S: input.key_s = true
+	case .D: input.key_d = true
+	case .Shift: input.key_shift = true
+	case .Tab: input.key_tab = true
+	case .Enter: input.enter_press = true
+	case .Backspace: input.backspace_press = true
+	case .Space:
+		input.key_space = true
+		input.jump = true
+	case .G:
+		input.drop_press = true
+	case .Z:
+		if input.transfer_press == .None {
+			input.transfer_press = .Stamina_To_Mana
 		}
-	case .FOCUSED:
-		input.window_focused = true
-	case .UNFOCUSED:
-		input.window_focused = false
-		sapp.lock_mouse(false)
+	case .X:
+		if input.transfer_press == .None {
+			input.transfer_press = .Health_To_Stamina
+		}
+	case .C:
+		input.key_c = true
+	case .Num_1, .Num_2, .Num_3, .Num_4, .Num_5, .Num_6, .Num_7, .Num_8, .Num_9:
+		slot := int(key) - int(Key.Num_1)
+		if slot < HOTBAR_SLOTS {
+			input.slot_press[slot] = true
+		}
+		// In menu phase, number keys select menu items
+		if game_client.phase == .In_Menu {
+			game_client.menu_selected = slot
+		}
+	case .Escape:
+		// If in the Playing phase and mouse is locked, open menu instead of just unlocking
+		if game_client.phase == .Playing && platform_mouse_locked() {
+			game_client.phase = .In_Menu
+			platform_lock_mouse(false)
+			input_clear_held()
+		} else if game_client.phase == .In_Menu {
+			// Close menu and resume playing
+			game_client.phase = .Playing
+			input_clear_held()
+		} else {
+			// In other phases (Connecting, Team_Select, Joining), just unlock
+			platform_lock_mouse(false)
+			input_clear_held()
+		}
+	}
+}
+
+// One typed character, after the layout has decided what the key means.
+input_on_char :: proc(char_code: u32) {
+	if input.text_count < len(input.text_chars) && char_code >= 32 && char_code < 127 {
+		input.text_chars[input.text_count] = u8(char_code)
+		input.text_count += 1
+	}
+}
+
+input_on_focus :: proc(focused: bool) {
+	input.window_focused = focused
+	if !focused {
+		platform_lock_mouse(false)
 		input_clear_held()
 	}
 }

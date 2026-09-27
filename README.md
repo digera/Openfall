@@ -35,6 +35,18 @@ Output:
 - `bin\nexus_server.exe` (Windows dedicated server)
 - `bin\nexus_client.exe`
 
+### Source layout
+
+Every target is one Odin package built from the shared game code in `src/*.odin` plus its own folders, so nothing is excluded by file name:
+
+| Target | Folders on top of `src/` |
+|---|---|
+| Server | `src/server` |
+| Graphical client | `src/client`, `src/client/sokol` |
+| Headless test client | `src/test_client` |
+
+`src/client` is the client's game side (connection, prediction hand-off, input, audio) and talks to the window only through the `platform_*` procedures; `src/client/sokol` is the Sokol backend that implements them and draws the frame. `src/persistence` is unwired scaffolding that no target builds yet.
+
 ## Playtest
 
 The graphical client defaults to `primord.io:27015`. Launch it after the dedicated server is up on that host:
@@ -184,7 +196,7 @@ The snapshot and roster byte budgets are `#assert`ed against `MAX_PACKET_SIZE` f
 
 ## Rendering
 
-The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ray-traces the whole scene analytically: boxes for the arena, quadrics for everything else. There is no mesh pipeline. `build.ps1` regenerates `src/scene.odin` from the shader whenever it is newer.
+The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ray-traces the whole scene analytically: boxes for the arena, quadrics for everything else. There is no mesh pipeline. `build.ps1` regenerates `src/client/sokol/scene.odin` from the shader whenever it is newer.
 
 Other players are wisps: a hooded robe with nothing inside it but light, and three motes orbiting it. The hood is an ellipsoid leaned back so its peak droops behind, with an opening cut toward the front; through it is the dark lining and a face - two eyes and a smile - drawn as light on a disc, which is also where the wisp's light comes from. The body is two stacked open cones, shoulder to waist to hem, with an elliptical cross-section and pleats that displace the surface so the silhouette scallops. The cloth is a two-link pendulum chain simulated on the CPU per entity in the wearer's frame (`robe_simulate`): drag from travel pushes the waist back a little and the hem more, a stop throws the body's momentum into the hem as one forward swing, ropes lift the rings as they swing out, and a swing limit stands in for the cloth meeting the body. The result does not depend on the frame rate. The shader draws the surface through those two rings with two ray-cone intersections per wisp refined onto the pleats by two Newton steps, twists the pleats between the body's yaw and a lagging hem yaw, runs ripples down them, flutters the hem edge with a travelling wave that speeds up with the wearer, and stitches team-coloured trim along the hem and the hood's rim. It is all analytic - no marching - and only evaluated for rays that pass the wisp's bounding sphere.
 
@@ -193,6 +205,8 @@ A wisp that is killed swells where it fell, as though the light inside were fill
 ## Linux
 
 ```bash
+./check.sh                           # type-check every target
+ODIN_TARGET=linux_arm64 ./check.sh   # ...for 64-bit ARM
 ./build.sh server
 ./build_graphical_client.sh
 ./bin/nexus_server
