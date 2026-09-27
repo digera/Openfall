@@ -8,30 +8,19 @@ $Odin = if ($env:ODIN_ROOT) { Join-Path $env:ODIN_ROOT "odin.exe" } else { "C:\U
 $SrcDir = Join-Path $Root "src"
 $Stage = Join-Path $env:TEMP "nexus_wire"
 
-$serverExclude = @(
-    "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_test_client.odin", "main_combat_test.odin",
-    "postgres.odin", "persistence.odin"
-)
-$testClientExclude = @(
-    "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_server.odin", "server.odin", "bots.odin",
-    "main_combat_test.odin",
-    "postgres.odin", "persistence.odin"
-)
-
 # The dev box usually has a server already on 27015.
 $env:NEXUS_PORT = "27115"
 
+# Each target is the shared game code in src\*.odin plus its own folders.
 function Stage-Sources {
-    param([string]$Dest, [string[]]$Exclude, [string]$RenameFrom, [string]$RenameTo)
+    param([string]$Dest, [string[]]$Dirs)
     if (Test-Path $Dest) { Remove-Item -Recurse -Force $Dest }
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-    Get-ChildItem -Path $SrcDir -Filter "*.odin" -File | ForEach-Object {
-        if ($Exclude -contains $_.Name) { return }
-        Copy-Item $_.FullName (Join-Path $Dest $_.Name)
+    foreach ($dir in @($SrcDir) + @($Dirs | ForEach-Object { Join-Path $SrcDir $_ })) {
+        Get-ChildItem -Path $dir -Filter "*.odin" -File | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $Dest $_.Name)
+        }
     }
-    Move-Item -Force (Join-Path $Dest $RenameFrom) (Join-Path $Dest $RenameTo)
 }
 
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
@@ -39,12 +28,12 @@ $serverBin = Join-Path $Stage "nexus_server.exe"
 $clientBin = Join-Path $Stage "nexus_client_test.exe"
 
 Write-Host ">> Building server..."
-Stage-Sources -Dest (Join-Path $Stage "server") -Exclude $serverExclude -RenameFrom "main_server.odin" -RenameTo "main.odin"
+Stage-Sources -Dest (Join-Path $Stage "server") -Dirs @("server")
 & $Odin build (Join-Path $Stage "server") "-out:$serverBin" -o:minimal
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host ">> Building test client..."
-Stage-Sources -Dest (Join-Path $Stage "testclient") -Exclude $testClientExclude -RenameFrom "main_test_client.odin" -RenameTo "main.odin"
+Stage-Sources -Dest (Join-Path $Stage "testclient") -Dirs @("test_client")
 & $Odin build (Join-Path $Stage "testclient") "-out:$clientBin" -o:minimal
 if ($LASTEXITCODE -ne 0) { exit 1 }
 

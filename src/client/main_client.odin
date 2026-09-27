@@ -2,13 +2,23 @@ package main
 
 // Graphical client: connection state machine, fixed-step prediction with
 // render interpolation, input, and hand-off to the renderer.
+//
+// The window, its event loop and the GPU belong to a platform backend (today
+// src/client/sokol). The backend calls client_init once, client_frame every
+// frame, client_cleanup on exit, and feeds window events to the input_on_*
+// procedures in input.odin. In return it provides:
+//
+//   platform_run(title, width, height)  open the window and run until closed
+//   platform_frame_duration() -> f64    seconds since the previous frame
+//   platform_mouse_locked() -> bool     whether the pointer is captured for look
+//   platform_lock_mouse(lock)           capture or release the pointer
+//
+// along with the renderer: Client_Renderer, client_renderer_init,
+// client_renderer_draw and client_renderer_shutdown.
 
 import "core:fmt"
 import "core:math"
 import "core:os"
-import "base:runtime"
-import sapp "sokol:app"
-import slog "sokol:log"
 
 HELLO_INTERVAL   :: f32(0.5)
 JOIN_INTERVAL    :: f32(0.4)
@@ -19,7 +29,9 @@ Game_Client :: struct {
 	network:        Network_Client,
 	phase:          Client_Phase,
 	client_world:   Client_World,
-	renderer:       Client_Renderer,
+	renderer:       Client_Renderer,   // the platform backend's
+	scene:          Scene_Builder,
+	frame_stats:    Frame_Stats,
 	fx:             Camera_FX,
 
 	// Look (client-authoritative, never overwritten by the server)
@@ -80,8 +92,7 @@ Game_Client :: struct {
 
 game_client: Game_Client
 
-client_init :: proc "c" () {
-	context = runtime.default_context()
+client_init :: proc() {
 	fmt.println("=== Nexus Arena Client ===")
 
 	server_host := DEFAULT_SERVER_HOST
@@ -111,11 +122,9 @@ client_init :: proc "c" () {
 	fmt.println("Client initialized, looking for server...")
 }
 
-client_frame :: proc "c" () {
-	context = runtime.default_context()
-
+client_frame :: proc() {
 	gc := &game_client
-	dt := f32(clamp(sapp.frame_duration(), 0.0, 0.1))
+	dt := f32(clamp(platform_frame_duration(), 0.0, 0.1))
 	gc.client_world.local_time += f64(dt)
 
 	client_poll_network(gc)
@@ -211,8 +220,7 @@ client_frame :: proc "c" () {
 	client_renderer_draw(&gc.renderer, gc)
 }
 
-client_cleanup :: proc "c" () {
-	context = runtime.default_context()
+client_cleanup :: proc() {
 	network_client_shutdown(&game_client.network)
 	client_renderer_shutdown(&game_client.renderer)
 	client_audio_shutdown()
@@ -227,8 +235,8 @@ client_cleanup :: proc "c" () {
 
 @(private = "file")
 client_release_mouse :: proc() {
-	if sapp.mouse_locked() {
-		sapp.lock_mouse(false)
+	if platform_mouse_locked() {
+		platform_lock_mouse(false)
 	}
 	_, _ = input_consume_look()
 }
@@ -378,9 +386,9 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 	// Spectators can still look around but don't send inputs to the server
 	if gc.is_spectating {
 		if input_consume_click() && input.window_focused {
-			sapp.lock_mouse(true)
+			platform_lock_mouse(true)
 		}
-		if sapp.mouse_locked() {
+		if platform_mouse_locked() {
 			dx, dy := input_consume_look()
 			gc.view_yaw = wrap_angle(gc.view_yaw - dx * CAM_LOOK_SENS)
 			gc.view_pitch = clampf(gc.view_pitch - dy * CAM_LOOK_SENS, -CAM_PITCH_MAX, CAM_PITCH_MAX)
@@ -398,9 +406,9 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 		return
 	}
 
-	if !sapp.mouse_locked() {
+	if !platform_mouse_locked() {
 		if input_consume_click() && input.window_focused {
-			sapp.lock_mouse(true)
+			platform_lock_mouse(true)
 		}
 		_, _ = input_consume_look()
 		gc.move_input = {}
@@ -461,7 +469,7 @@ client_handle_input :: proc(gc: ^Game_Client, dt: f32) {
 // sticky latch and retargets when the new spell's filter rejects it.
 client_update_target :: proc(gc: ^Game_Client) {
 	pred := &gc.client_world.prediction
-	if gc.phase != .Playing || gc.is_spectating || !sapp.mouse_locked() || !pred.initialized || pred.predicted_char.dead {
+	if gc.phase != .Playing || gc.is_spectating || !platform_mouse_locked() || !pred.initialized || pred.predicted_char.dead {
 		gc.client_world.target_id = INVALID_ENTITY
 		return
 	}
@@ -582,7 +590,7 @@ client_decide_cast :: proc(gc: ^Game_Client) -> (cast_spell: Spell_ID, charge_sp
 
 	// Dying, unlocking the mouse or the match ending drop the wind-up on the
 	// floor, committed or not.
-	if !alive || match_over || !sapp.mouse_locked() {
+	if !alive || match_over || !platform_mouse_locked() {
 		gc.tap_spell = .None
 		gc.tap_armed = false
 		client_sfx_note_fizzle(gc)
@@ -834,23 +842,6 @@ client_apply_aim_lock :: proc(gc: ^Game_Client, dt: f32) -> bool {
 	return true
 }
 
-main_client :: proc() {
-	sapp.run({
-		init_cb       = client_init,
-		frame_cb      = client_frame,
-		cleanup_cb    = client_cleanup,
-		event_cb      = input_event,
-		width         = WINDOW_W,
-		height        = WINDOW_H,
-		sample_count  = 1,
-		high_dpi      = false,
-		window_title  = "Nexus Arena",
-		icon          = {sokol_default = true},
-		logger        = {func = slog.func},
-		swap_interval = 1,
-	})
-}
-
 main :: proc() {
-	main_client()
+	platform_run("Nexus Arena", WINDOW_W, WINDOW_H)
 }

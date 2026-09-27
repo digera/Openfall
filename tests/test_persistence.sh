@@ -26,22 +26,9 @@ fi
 echo -e "${YELLOW}>> Building persistence test...${NC}"
 mkdir -p /tmp/nexus_persistence_test
 
-# Copy only non-graphical files
-for f in src/*.odin; do
-    base=$(basename "$f")
-    # Skip files that depend on Sokol or are main entry points
-    if [[ "$base" != "main.odin" && \
-          "$base" != "main_client.odin" && \
-          "$base" != "main_test_client.odin" && \
-          "$base" != "main_combat_test.odin" && \
-          "$base" != "server.odin" && \
-          "$base" != "client_renderer.odin" && \
-          "$base" != "scene.odin" && \
-          "$base" != "render.odin" && \
-          "$base" != "input.odin" ]]; then
-        cp "$f" /tmp/nexus_persistence_test/
-    fi
-done
+# Shared game code plus the persistence layer
+cp src/*.odin /tmp/nexus_persistence_test/
+cp src/persistence/*.odin /tmp/nexus_persistence_test/
 
 # Create test main
 cat > /tmp/nexus_persistence_test/main.odin << 'EOF'

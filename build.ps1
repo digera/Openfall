@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("server", "client", "testclient", "both")]
+    [ValidateSet("server", "client", "client_vk", "testclient", "both")]
     [string]$Target = "both",
     [switch]$Run,
     [switch]$Release,
@@ -37,12 +37,12 @@ if ($Release) {
     $modeArgs += "-debug"
 }
 
+# Each target is the shared game code in src\*.odin plus its own folders.
+# Keep in sync with .github/scripts/release-build.sh.
 function Copy-StagedSources {
     param(
         [string]$Dest,
-        [string[]]$Exclude,
-        [string]$RenameFrom,
-        [string]$RenameTo
+        [string[]]$Dirs
     )
 
     if (Test-Path $Dest) {
@@ -50,18 +50,9 @@ function Copy-StagedSources {
     }
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
-    Get-ChildItem -Path $SrcDir -Filter "*.odin" -File | ForEach-Object {
-        if ($Exclude -contains $_.Name) {
-            return
-        }
-        Copy-Item $_.FullName (Join-Path $Dest $_.Name)
-    }
-
-    if ($RenameFrom -and $RenameTo) {
-        $fromPath = Join-Path $Dest $RenameFrom
-        $toPath = Join-Path $Dest $RenameTo
-        if (Test-Path $fromPath) {
-            Move-Item -Force $fromPath $toPath
+    foreach ($dir in @($SrcDir) + @($Dirs | ForEach-Object { Join-Path $SrcDir $_ })) {
+        Get-ChildItem -Path $dir -Filter "*.odin" -File | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $Dest $_.Name)
         }
     }
 }
@@ -87,31 +78,10 @@ function Build-OdinPackage {
     }
 }
 
-# Sokol-dependent files: input.odin, scene.odin, main_client.odin, client_renderer.odin
-# Server-only files:     server.odin, bots.odin, main_server.odin, camera_minimal.odin
-$serverExclude = @(
-    "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_test_client.odin", "main_combat_test.odin",
-    "postgres.odin", "persistence.odin"
-)
-
-$clientExclude = @(
-    "main_server.odin", "server.odin", "bots.odin",
-    "main_test_client.odin", "main_combat_test.odin", "camera_minimal.odin",
-    "postgres.odin", "persistence.odin"
-)
-
-$testClientExclude = @(
-    "input.odin", "scene.odin",
-    "main_client.odin", "client_renderer.odin", "client_audio.odin", "main_server.odin", "server.odin", "bots.odin",
-    "main_combat_test.odin",
-    "postgres.odin", "persistence.odin"
-)
-
 if ($Target -eq "server" -or $Target -eq "both") {
     Write-Host ">> Staging headless server sources..."
     $tmp = Join-Path $OutDir "server_src"
-    Copy-StagedSources -Dest $tmp -Exclude $serverExclude -RenameFrom "main_server.odin" -RenameTo "main.odin"
+    Copy-StagedSources -Dest $tmp -Dirs @("server")
     if ($StageOnly) {
         Write-Host ">> Staged $tmp"
         return
@@ -125,7 +95,7 @@ if ($Target -eq "server" -or $Target -eq "both") {
 
 if ($Target -eq "client" -or $Target -eq "both") {
     $shaderSrc = Join-Path $Root "shaders\scene.glsl"
-    $shaderOut = Join-Path $SrcDir "scene.odin"
+    $shaderOut = Join-Path $SrcDir "client/sokol/scene.odin"
     $needShader = -not (Test-Path $shaderOut)
     if (-not $needShader -and (Test-Path $shaderSrc)) {
         $needShader = (Get-Item $shaderSrc).LastWriteTime -gt (Get-Item $shaderOut).LastWriteTime
@@ -147,16 +117,34 @@ if ($Target -eq "client" -or $Target -eq "both") {
 
     Write-Host ">> Building graphical client..."
     $tmp = Join-Path $OutDir "gfx_client_src"
-    Copy-StagedSources -Dest $tmp -Exclude $clientExclude
+    Copy-StagedSources -Dest $tmp -Dirs @("client", "client/sokol")
     Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client.exe") -ExtraArgs @("-collection:sokol=$Sokol", "-collection:game=$Root")
     Remove-Item -Recurse -Force $tmp
     Write-Host ">> Built $(Join-Path $OutDir 'nexus_client.exe')"
 }
 
+if ($Target -eq "client_vk") {
+    # SDL3 window + Vulkan renderer. Needs glslangValidator (Vulkan SDK) and
+    # ships SDL3.dll from Odin's vendor folder beside the exe.
+    Write-Host ">> Building Vulkan client..."
+    $tmp = Join-Path $OutDir "vk_client_src"
+    Copy-StagedSources -Dest $tmp -Dirs @("client", "client/vk")
+    & (Join-Path $Root "shaders/vk/compile.ps1") -OutDir (Join-Path $tmp "spv")
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client_vk.exe") -ExtraArgs @("-collection:game=$Root")
+    Remove-Item -Recurse -Force $tmp
+    $sdlDll = Join-Path (Split-Path -Parent $Odin) "vendor/sdl3/SDL3.dll"
+    if (Test-Path $sdlDll) {
+        Copy-Item $sdlDll (Join-Path $OutDir "SDL3.dll") -Force
+    } else {
+        Write-Warning "SDL3.dll not found at $sdlDll; copy it beside nexus_client_vk.exe"
+    }
+    Write-Host ">> Built $(Join-Path $OutDir 'nexus_client_vk.exe')"
+}
+
 if ($Target -eq "testclient") {
     Write-Host ">> Building headless test client..."
     $tmp = Join-Path $OutDir "client_src"
-    Copy-StagedSources -Dest $tmp -Exclude $testClientExclude -RenameFrom "main_test_client.odin" -RenameTo "main.odin"
+    Copy-StagedSources -Dest $tmp -Dirs @("test_client")
     Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client_test.exe")
     Remove-Item -Recurse -Force $tmp
     Write-Host ">> Built $(Join-Path $OutDir 'nexus_client_test.exe')"
@@ -171,6 +159,8 @@ Write-Host "  .\bin\nexus_server.exe"
 if ($Run) {
     if ($Target -eq "client") {
         & (Join-Path $OutDir "nexus_client.exe")
+    } elseif ($Target -eq "client_vk") {
+        & (Join-Path $OutDir "nexus_client_vk.exe")
     } elseif ($Target -eq "testclient") {
         & (Join-Path $OutDir "nexus_client_test.exe")
     } else {

@@ -33,38 +33,17 @@ else
 	SERVER_BIN="nexus_server"
 fi
 
+# Each target is the shared game code in src/*.odin plus its own folders.
 # Keep in sync with build.ps1.
-SERVER_EXCLUDE=(
-	input.odin scene.odin
-	main_client.odin client_renderer.odin client_audio.odin
-	main_test_client.odin main_combat_test.odin
-	postgres.odin persistence.odin
-)
-CLIENT_EXCLUDE=(
-	main_server.odin server.odin bots.odin
-	main_test_client.odin main_combat_test.odin camera_minimal.odin
-	postgres.odin persistence.odin
-)
-
 stage_sources() {
 	local dest=$1
 	shift
-	local exclude=("$@")
 	rm -rf "$dest"
 	mkdir -p "$dest"
-	local f base skip ex
-	for f in "$SRC"/*.odin; do
-		base=$(basename "$f")
-		skip=0
-		for ex in "${exclude[@]}"; do
-			if [ "$base" = "$ex" ]; then
-				skip=1
-				break
-			fi
-		done
-		if [ "$skip" -eq 0 ]; then
-			cp "$f" "$dest/"
-		fi
+	cp "$SRC"/*.odin "$dest/"
+	local dir
+	for dir in "$@"; do
+		cp "$SRC/$dir"/*.odin "$dest/"
 	done
 }
 
@@ -73,7 +52,7 @@ compile_shaders() {
 	echo ">> Compiling shaders"
 	"$SHDC" \
 		-i "$ROOT/shaders/scene.glsl" \
-		-o "$SRC/scene.odin" \
+		-o "$SRC/client/sokol/scene.odin" \
 		-l hlsl5:glsl430:metal_macos:wgsl \
 		-f sokol_odin
 }
@@ -82,12 +61,11 @@ build_server() {
 	local staged="$ROOT/bin/server_src"
 	local out="$ROOT/bin/$SERVER_BIN"
 	echo ">> Building headless server"
-	stage_sources "$staged" "${SERVER_EXCLUDE[@]}"
+	stage_sources "$staged" server
 	if [ ! -f "$staged/main_server.odin" ]; then
 		echo "staged server sources missing main_server.odin" >&2
 		exit 1
 	fi
-	mv -f "$staged/main_server.odin" "$staged/main.odin"
 	"$ODIN_BIN" build "$staged" -out:"$out" -o:speed
 	rm -rf "$staged"
 	pack server "$out" "$SERVER_BIN"
@@ -99,7 +77,7 @@ build_client() {
 	local out="$ROOT/bin/$CLIENT_BIN"
 	compile_shaders
 	echo ">> Building graphical client"
-	stage_sources "$staged" "${CLIENT_EXCLUDE[@]}"
+	stage_sources "$staged" client client/sokol
 	if [ ! -f "$staged/scene.odin" ]; then
 		echo "staged client sources missing scene.odin" >&2
 		exit 1

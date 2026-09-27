@@ -37,9 +37,10 @@ fi
 echo -e "${GREEN}=== Building Nexus Arena Graphical Client ===${NC}"
 
 # Compile shaders if needed
-if [ ! -f "$SRC_DIR/scene.odin" ] || [ "$SRC_DIR/../shaders/scene.glsl" -nt "$SRC_DIR/scene.odin" ]; then
+SCENE="$SRC_DIR/client/sokol/scene.odin"
+if [ ! -f "$SCENE" ] || [ "$ROOT/shaders/scene.glsl" -nt "$SCENE" ]; then
     echo -e "${YELLOW}>> Compiling shaders...${NC}"
-    sokol-shdc -i shaders/scene.glsl -o src/scene.odin -l glsl430:metal_macos:wgsl -f sokol_odin
+    sokol-shdc -i "$ROOT/shaders/scene.glsl" -o "$SCENE" -l glsl430:metal_macos:wgsl -f sokol_odin
 fi
 
 mkdir -p "$OUT_DIR"
@@ -50,17 +51,10 @@ TMP_SRC="$OUT_DIR/gfx_client_src"
 rm -rf "$TMP_SRC"
 mkdir -p "$TMP_SRC"
 
-# Copy client files (exclude server and original template files)
-for f in "$SRC_DIR"/*.odin; do
-    base=$(basename "$f")
-    # Exclude: server files, test client, conflicting template files, main.odin
-    # Keep: input.odin (needed for main_client), scene.odin (shader bindings), room.odin (for room_inside)
-    if [[ "$base" != "main.odin" && "$base" != "main_server.odin" && "$base" != "server.odin" && \
-          "$base" != "main_test_client.odin" && "$base" != "main_combat_test.odin" && "$base" != "camera_minimal.odin" && \
-          "$base" != "camera.odin" && "$base" != "player.odin" && "$base" != "render.odin" ]]; then
-        cp "$f" "$TMP_SRC/"
-    fi
-done
+# Shared game code plus the graphical client and its Sokol backend
+cp "$SRC_DIR"/*.odin "$TMP_SRC/"
+cp "$SRC_DIR"/client/*.odin "$TMP_SRC/"
+cp "$SRC_DIR"/client/sokol/*.odin "$TMP_SRC/"
 
 # Build with sokol collection
 $ODIN_BIN build "$TMP_SRC" \

@@ -28,28 +28,25 @@ mkdir -p "$OUT_DIR"
 
 BUILD_MODE="${1:-both}"
 
+# Each target is the shared game code in src/*.odin plus its own folders.
+stage() {
+    local dest=$1
+    shift
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp "$SRC_DIR"/*.odin "$dest/"
+    local dir
+    for dir in "$@"; do
+        cp "$SRC_DIR/$dir"/*.odin "$dest/"
+    done
+}
+
 # Build headless server
 if [ "$BUILD_MODE" = "server" ] || [ "$BUILD_MODE" = "both" ]; then
     echo -e "${YELLOW}>> Building headless server...${NC}"
 
     TMP_SRC="$OUT_DIR/server_src"
-    rm -rf "$TMP_SRC"
-    mkdir -p "$TMP_SRC"
-
-    # Copy server files
-    for f in "$SRC_DIR"/*.odin; do
-        base=$(basename "$f")
-        # Exclude client-only files, combat test, and persistence (unless ENABLE_PERSISTENCE=1)
-        if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
-              "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
-              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "client_audio.odin" && "$base" != "main_test_client.odin" && \
-              "$base" != "main_combat_test.odin" && \
-              "$base" != "postgres.odin" && "$base" != "persistence.odin" ]]; then
-            cp "$f" "$TMP_SRC/"
-        fi
-    done
-
-    mv "$TMP_SRC/main_server.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
+    stage "$TMP_SRC" server
 
     $ODIN_BIN build "$TMP_SRC" -out:"$OUT_DIR/nexus_server" ${BUILD_FLAGS:--debug}
     rm -rf "$TMP_SRC"
@@ -62,23 +59,7 @@ if [ "$BUILD_MODE" = "client" ] || [ "$BUILD_MODE" = "both" ]; then
     echo -e "${YELLOW}>> Building headless test client...${NC}"
 
     TMP_SRC="$OUT_DIR/client_src"
-    rm -rf "$TMP_SRC"
-    mkdir -p "$TMP_SRC"
-
-    # Copy client files
-    for f in "$SRC_DIR"/*.odin; do
-        base=$(basename "$f")
-        # Exclude server and render files and combat test
-        if [[ "$base" != "render.odin" && "$base" != "input.odin" && "$base" != "scene.odin" && \
-              "$base" != "main.odin" && "$base" != "player.odin" && "$base" != "camera.odin" && \
-              "$base" != "main_client.odin" && "$base" != "client_renderer.odin" && "$base" != "client_audio.odin" && \
-              "$base" != "main_server.odin" && "$base" != "server.odin" && "$base" != "camera_minimal.odin" && \
-              "$base" != "main_combat_test.odin" ]]; then
-            cp "$f" "$TMP_SRC/"
-        fi
-    done
-
-    mv "$TMP_SRC/main_test_client.odin" "$TMP_SRC/main.odin" 2>/dev/null || true
+    stage "$TMP_SRC" test_client
 
     $ODIN_BIN build "$TMP_SRC" -out:"$OUT_DIR/nexus_client_test" ${BUILD_FLAGS:--debug}
     rm -rf "$TMP_SRC"

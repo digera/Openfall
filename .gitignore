@@ -18,7 +18,7 @@
 /third_party/sokol-odin/
 
 # sokol-shdc output
-/src/scene.odin
+/src/client/sokol/scene.odin
 
 # Odin
 .odin-cache/

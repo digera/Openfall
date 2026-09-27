@@ -7,7 +7,7 @@ Graphical client now renders in-flight projectiles and displays a combat HUD sho
 
 ### 1. Projectile Rendering (Tracers)
 
-**Location:** `shaders/scene.glsl`, `src/client_renderer.odin`
+**Location:** `shaders/scene.glsl`, `src/client/render_scene.odin`
 
 **Shader Changes:**
 - Added `projectiles: [16]vec4` array to fragment shader uniforms
@@ -46,7 +46,7 @@ Projectiles are synced from server snapshots (Phase 3.5) and rendered every fram
 
 ### 2. Combat HUD
 
-**Location:** `src/client_renderer.odin` - `client_renderer_overlay` function
+**Location:** `src/client/hud.odin` - `client_hud_draw` function
 
 **Resource Bars:**
 - **Health (HP)**: Red bar `[====================]` with numeric readout `100/100`
@@ -81,7 +81,7 @@ draw_bar :: proc(value: f32, max_value: f32, width: int) {
 
 ### 3. Input Wiring
 
-**Location:** `src/input.odin`, `src/main_client.odin`
+**Location:** `src/client/input.odin`, `src/client/main_client.odin`
 
 **Keybinds:**
 - **1**: Select Arcane Missile
@@ -186,13 +186,13 @@ DISPLAY=:99 ./bin/nexus_client
 - `shaders/scene.glsl:285-303` - Projectile material coloring
 
 ### Renderer
-- `src/client_renderer.odin:161-187` - Projectile packing
-- `src/client_renderer.odin:182-275` - Combat HUD overlay
+- `src/client/render_scene.odin` - Projectile packing
+- `src/client/hud.odin` - Combat HUD overlay
 
 ### Input
-- `src/input.odin:13-21` - Key/cast state
-- `src/input.odin:155-179` - `input_consume_cast`
-- `src/main_client.odin:185-205` - Spell selection & cast input
+- `src/client/input.odin:13-21` - Key/cast state
+- `src/client/input.odin:155-179` - `input_consume_cast`
+- `src/client/main_client.odin:185-205` - Spell selection & cast input
 
 ## Next Steps (Phase 4, not implemented)
 
