@@ -154,8 +154,11 @@ client_frame :: proc() {
 			gc.hello_timer = LOBBY_REFRESH
 		}
 		gc.reject_timer = max(gc.reject_timer - dt, 0)
+		// Digits typed into the name also latch slot presses, so a frame that
+		// started with the field open picks no team, even if Enter closed it.
+		was_editing := gc.name_editing
 		client_edit_name(gc)
-		if !gc.name_editing {
+		if !was_editing && !gc.name_editing {
 			for slot in 1..=TEAM_COUNT {
 				if input_consume_slot(slot) {
 					team := team_from_index(slot - 1)
@@ -243,26 +246,28 @@ client_release_mouse :: proc() {
 
 // The name field on the team-select screen. Enter toggles it: on to type, off
 // to pick a team. Without that the digits in "Zog2" would join Tide halfway
-// through the word.
+// through the word. At low frame rates several keys land in one frame, so the
+// text is applied before Enter: Enter finishes the name including whatever was
+// typed ahead of it. Text typed while the field is closed is dropped.
 @(private = "file")
 client_edit_name :: proc(gc: ^Game_Client) {
 	typed := input_consume_text()
 	rubout := input_consume_backspace()
-	if input_consume_enter() {
-		gc.name_editing = !gc.name_editing
-	}
-	if !gc.name_editing {
-		return
-	}
-	for c in typed {
-		if gc.player_name.len >= MAX_PLAYER_NAME_LEN {
-			break
+	enter := input_consume_enter()
+	if gc.name_editing {
+		for c in typed {
+			if gc.player_name.len >= MAX_PLAYER_NAME_LEN {
+				break
+			}
+			gc.player_name.text[gc.player_name.len] = c
+			gc.player_name.len += 1
 		}
-		gc.player_name.text[gc.player_name.len] = c
-		gc.player_name.len += 1
+		if rubout && gc.player_name.len > 0 {
+			gc.player_name.len -= 1
+		}
 	}
-	if rubout && gc.player_name.len > 0 {
-		gc.player_name.len -= 1
+	if enter {
+		gc.name_editing = !gc.name_editing
 	}
 }
 
