@@ -2,7 +2,7 @@ package main
 
 import "core:math"
 
-// Minimal camera functions needed by server simulation
+// View-direction helpers shared by the simulation and every client
 
 camera_forward :: proc(yaw, pitch: f32) -> vec3 {
 	cp := math.cos(pitch)

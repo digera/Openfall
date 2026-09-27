@@ -13,15 +13,6 @@ import sg "sokol:gfx"
 import sglue "sokol:glue"
 import slog "sokol:log"
 
-camera_forward :: proc(yaw, pitch: f32) -> vec3 {
-	cp := math.cos(pitch)
-	return {math.cos(yaw) * cp, math.sin(yaw) * cp, math.sin(pitch)}
-}
-
-camera_right :: proc(yaw: f32) -> vec3 {
-	return {math.sin(yaw), -math.cos(yaw), 0}
-}
-
 SDTX_ORIGIN_CELLS :: f32(1)
 SDTX_CHAR_PX      :: f32(8)
 SDTX_CANVAS_SCALE :: f32(0.5)
