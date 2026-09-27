@@ -192,6 +192,13 @@ client_frame :: proc "c" () {
 		if gc.phase == .In_Menu {
 			client_release_mouse()
 			client_handle_menu_input(gc)
+			// The server drops anyone it has not had an input from in
+			// CLIENT_TIMEOUT_SEC, so the ticks keep going with the body at
+			// rest. Reading the menu must not cost the seat.
+			gc.move_input = {}
+			gc.aim_locked = false
+			client_drop_charge(gc)
+			client_step_simulation(gc, dt, idle = true)
 		} else {
 			client_handle_input(gc, dt)
 			client_step_simulation(gc, dt)
@@ -486,8 +493,9 @@ client_update_target :: proc(gc: ^Game_Client) {
 }
 
 // Run as many 60Hz ticks as the accumulator allows, predicting locally and
-// sending each input (with two previous ones) to the server.
-client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
+// sending each input (with two previous ones) to the server. `idle` sends
+// hands-down ticks: nothing winds, fires or claims a target.
+client_step_simulation :: proc(gc: ^Game_Client, dt: f32, idle := false) {
 	// Spectators don't simulate
 	if gc.is_spectating {
 		return
@@ -502,8 +510,10 @@ client_step_simulation :: proc(gc: ^Game_Client, dt: f32) {
 		input := gc.move_input
 		input.yaw = gc.view_yaw
 		input.pitch = gc.view_pitch
-		input.target_id = gc.client_world.target_id
-		input.cast_spell, input.charge_spell = client_decide_cast(gc)
+		if !idle {
+			input.target_id = gc.client_world.target_id
+			input.cast_spell, input.charge_spell = client_decide_cast(gc)
+		}
 
 		qinput := input_quantize(input)
 		gc.client_world.client_tick += 1
