@@ -29,7 +29,9 @@ Game_Client :: struct {
 	network:        Network_Client,
 	phase:          Client_Phase,
 	client_world:   Client_World,
-	renderer:       Client_Renderer,
+	renderer:       Client_Renderer,   // the platform backend's
+	scene:          Scene_Builder,
+	frame_stats:    Frame_Stats,
 	fx:             Camera_FX,
 
 	// Look (client-authoritative, never overwritten by the server)

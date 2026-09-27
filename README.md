@@ -45,7 +45,7 @@ Every target is one Odin package built from the shared game code in `src/*.odin`
 | Graphical client | `src/client`, `src/client/sokol` |
 | Headless test client | `src/test_client` |
 
-`src/client` is the client's game side (connection, prediction hand-off, input, audio) and talks to the window only through the `platform_*` procedures; `src/client/sokol` is the Sokol backend that implements them and draws the frame. `src/persistence` is unwired scaffolding that no target builds yet.
+`src/client` is the client's game side and talks to the window only through the `platform_*` procedures. It also decides everything that is drawn: `render_scene.odin` places the camera and packs every object into a `Render_Scene`, `robe_cloth.odin` and `camera_fx.odin` animate the robes and the view, and `hud.odin` lays out the HUD on a character grid. `src/client/sokol` is the Sokol backend: it implements the platform procedures, uploads the `Render_Scene` to the ray-tracing shader, and draws the HUD's text. `src/persistence` is unwired scaffolding that no target builds yet.
 
 ## Playtest
 
