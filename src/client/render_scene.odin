@@ -23,13 +23,17 @@ Render_View :: struct {
 
 RENDER_MAX_WISPS :: 16
 
-// One frame of the scene: a view and one array of vec4 records per kind of
-// thing, unused slots zero. The packing of each record is documented beside
-// the matching field of fs_params in shaders/scene.glsl, which reads them in
-// this layout.
+// One frame of the scene: the view, and the records of everything in it.
 Render_Scene :: struct {
-	view:            Render_View,
+	view:          Render_View,
+	using records: Scene_Records,
+}
 
+// One array of vec4 records per kind of thing, unused slots zero. The packing
+// of each record is documented beside the matching field of fs_params in
+// shaders/scene.glsl, which reads them in this layout: the block is all vec4s,
+// so it is the same bytes under std140 and can be uploaded as it is.
+Scene_Records :: struct {
 	cam_data:        vec4,
 	fx:              vec4,
 	fx2:             vec4,
@@ -508,6 +512,7 @@ Frame_Stats :: struct {
 	frame_ms:     f32,
 	perf_accum:   f64,
 	perf_frames:  int,
+	gpu_ms:       f32,   // GPU time of the latest finished frame; 0 if the backend cannot time it
 }
 
 // Called once per presented frame. `frame_ms` is the CPU time the backend
@@ -531,8 +536,12 @@ frame_stats_update :: proc(st: ^Frame_Stats, scene: ^Render_Scene, gc: ^Game_Cli
 				wisps += 1
 			}
 		}
-		fmt.printf("[Perf] %.0f fps avg over %.0fs (%d wisps, %d projectiles, %dx%d)\n",
+		fmt.printf("[Perf] %.0f fps avg over %.0fs (%d wisps, %d projectiles, %dx%d)",
 			f64(st.perf_frames) / st.perf_accum, st.perf_accum, wisps, gc.client_world.projectile_count, width, height)
+		if st.gpu_ms > 0 {
+			fmt.printf(" gpu %.2f ms", st.gpu_ms)
+		}
+		fmt.println()
 		st.perf_accum = 0
 		st.perf_frames = 0
 	}

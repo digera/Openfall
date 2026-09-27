@@ -10,6 +10,7 @@
 # Each target is the shared game code in src/*.odin plus its own folders:
 #   server       src/server
 #   client       src/client, src/client/sokol
+#   client_vk    src/client, src/client/vk     (needs glslangValidator)
 #   testclient   src/test_client
 set -euo pipefail
 
@@ -64,6 +65,16 @@ echo ">> Checking graphical client..."
 stage "$STAGE/client" client client/sokol
 "$ODIN_BIN" check "$STAGE/client" "${target_args[@]}" \
 	-collection:sokol="$SOKOL" -collection:game="$ROOT" || fail=1
+
+echo ">> Checking Vulkan client..."
+if command -v "${GLSLANG:-glslangValidator}" >/dev/null; then
+	stage "$STAGE/client_vk" client client/vk
+	"$ROOT/shaders/vk/compile.sh" "$STAGE/client_vk/spv"
+	"$ODIN_BIN" check "$STAGE/client_vk" "${target_args[@]}" -collection:game="$ROOT" || fail=1
+else
+	echo "   glslangValidator not found; cannot check it (apt install glslang-tools)"
+	fail=1
+fi
 
 echo ">> Checking headless test client..."
 stage "$STAGE/testclient" test_client

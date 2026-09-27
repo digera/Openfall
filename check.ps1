@@ -37,6 +37,13 @@ Stage-Sources -Dest $cli -Dirs @("client", "client/sokol")
 & $Odin check $cli "-collection:sokol=$Sokol" "-collection:game=$Root"
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
+Write-Host ">> Checking Vulkan client..."
+$vkc = Join-Path $Stage "client_vk"
+Stage-Sources -Dest $vkc -Dirs @("client", "client/vk")
+& (Join-Path $Root "shaders/vk/compile.ps1") -OutDir (Join-Path $vkc "spv")
+& $Odin check $vkc "-collection:game=$Root"
+if ($LASTEXITCODE -ne 0) { $fail = 1 }
+
 Write-Host ">> Checking headless test client..."
 $tc = Join-Path $Stage "testclient"
 Stage-Sources -Dest $tc -Dirs @("test_client")

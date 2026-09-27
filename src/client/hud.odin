@@ -38,6 +38,9 @@ client_hud_draw :: proc(gc: ^Game_Client, cols, rows: f32) {
 	// Stats line (always)
 	hud_color3f(0.78, 0.76, 0.70)
 	hud_printf("NEXUS ARENA  %.0f fps  %.1f ms", gc.frame_stats.last_fps, gc.frame_stats.frame_ms)
+	if gc.frame_stats.gpu_ms > 0 {
+		hud_printf("  gpu %.2f ms", gc.frame_stats.gpu_ms)
+	}
 	if gc.phase == .Playing || gc.phase == .In_Menu {
 		rate, total := client_prediction_stats(&world.prediction)
 		_, _, since := network_client_stats(&gc.network)

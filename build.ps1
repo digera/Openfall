@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("server", "client", "testclient", "both")]
+    [ValidateSet("server", "client", "client_vk", "testclient", "both")]
     [string]$Target = "both",
     [switch]$Run,
     [switch]$Release,
@@ -123,6 +123,24 @@ if ($Target -eq "client" -or $Target -eq "both") {
     Write-Host ">> Built $(Join-Path $OutDir 'nexus_client.exe')"
 }
 
+if ($Target -eq "client_vk") {
+    # SDL3 window + Vulkan renderer. Needs glslangValidator (Vulkan SDK) and
+    # ships SDL3.dll from Odin's vendor folder beside the exe.
+    Write-Host ">> Building Vulkan client..."
+    $tmp = Join-Path $OutDir "vk_client_src"
+    Copy-StagedSources -Dest $tmp -Dirs @("client", "client/vk")
+    & (Join-Path $Root "shaders/vk/compile.ps1") -OutDir (Join-Path $tmp "spv")
+    Build-OdinPackage -PackageDir $tmp -OutFile (Join-Path $OutDir "nexus_client_vk.exe") -ExtraArgs @("-collection:game=$Root")
+    Remove-Item -Recurse -Force $tmp
+    $sdlDll = Join-Path (Split-Path -Parent $Odin) "vendor/sdl3/SDL3.dll"
+    if (Test-Path $sdlDll) {
+        Copy-Item $sdlDll (Join-Path $OutDir "SDL3.dll") -Force
+    } else {
+        Write-Warning "SDL3.dll not found at $sdlDll; copy it beside nexus_client_vk.exe"
+    }
+    Write-Host ">> Built $(Join-Path $OutDir 'nexus_client_vk.exe')"
+}
+
 if ($Target -eq "testclient") {
     Write-Host ">> Building headless test client..."
     $tmp = Join-Path $OutDir "client_src"
@@ -141,6 +159,8 @@ Write-Host "  .\bin\nexus_server.exe"
 if ($Run) {
     if ($Target -eq "client") {
         & (Join-Path $OutDir "nexus_client.exe")
+    } elseif ($Target -eq "client_vk") {
+        & (Join-Path $OutDir "nexus_client_vk.exe")
     } elseif ($Target -eq "testclient") {
         & (Join-Path $OutDir "nexus_client_test.exe")
     } else {

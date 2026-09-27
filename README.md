@@ -43,9 +43,10 @@ Every target is one Odin package built from the shared game code in `src/*.odin`
 |---|---|
 | Server | `src/server` |
 | Graphical client | `src/client`, `src/client/sokol` |
+| Vulkan client | `src/client`, `src/client/vk` |
 | Headless test client | `src/test_client` |
 
-`src/client` is the client's game side and talks to the window only through the `platform_*` procedures. It also decides everything that is drawn: `render_scene.odin` places the camera and packs every object into a `Render_Scene`, `robe_cloth.odin` and `camera_fx.odin` animate the robes and the view, and `hud.odin` lays out the HUD on a character grid. `src/client/sokol` is the Sokol backend: it implements the platform procedures, uploads the `Render_Scene` to the ray-tracing shader, and draws the HUD's text. `src/persistence` is unwired scaffolding that no target builds yet.
+`src/client` is the client's game side and talks to the window only through the `platform_*` procedures. It also decides everything that is drawn: `render_scene.odin` places the camera and packs every object into a `Render_Scene`, `robe_cloth.odin` and `camera_fx.odin` animate the robes and the view, and `hud.odin` lays out the HUD on a character grid. `src/client/sokol` is the Sokol backend: it implements the platform procedures, uploads the `Render_Scene` to the ray-tracing shader, and draws the HUD's text. `src/client/vk` is the SDL3 + Vulkan backend that replaces it (see [Vulkan client](#vulkan-client)). `src/persistence` is unwired scaffolding that no target builds yet.
 
 ## Playtest
 
@@ -220,6 +221,21 @@ The client is a single fullscreen fragment shader (`shaders/scene.glsl`) that ra
 Other players are wisps: a hooded robe with nothing inside it but light, and three motes orbiting it. The hood is an ellipsoid leaned back so its peak droops behind, with an opening cut toward the front; through it is the dark lining and a face - two eyes and a smile - drawn as light on a disc, which is also where the wisp's light comes from. The body is two stacked open cones, shoulder to waist to hem, with an elliptical cross-section and pleats that displace the surface so the silhouette scallops. The cloth is a two-link pendulum chain simulated on the CPU per entity in the wearer's frame (`robe_simulate`): drag from travel pushes the waist back a little and the hem more, a stop throws the body's momentum into the hem as one forward swing, ropes lift the rings as they swing out, and a swing limit stands in for the cloth meeting the body. The result does not depend on the frame rate. The shader draws the surface through those two rings with two ray-cone intersections per wisp refined onto the pleats by two Newton steps, twists the pleats between the body's yaw and a lagging hem yaw, runs ripples down them, flutters the hem edge with a travelling wave that speeds up with the wearer, and stitches team-coloured trim along the hem and the hood's rim. It is all analytic - no marching - and only evaluated for rays that pass the wisp's bounding sphere.
 
 A wisp that is killed swells where it fell, as though the light inside were filling the cloth: over 0.40 seconds the robe and the motes orbiting it ease out to 1.8 times their size, the cloth and the face brighten, and the halo around the hood widens with them. Then it bursts. The body is gone in one frame and what was inside it is thrown wide - a sphere of the team's colour with a white core, blooming from the point the face was lighting a moment before and out in 0.12 seconds, flaring the stone underfoot as it goes. The wisp stays gone for the rest of the respawn delay and comes back with its cloth at rest, since it respawns somewhere else. The phases are timed on the CPU per wisp off the `dead` flag in the snapshot and read by the shader out of `robe_fx[i].y`, so everyone watching sees the same swell and the same burst; a wisp that died out of a client's sight, or before that client was watching it, stays gone rather than replaying a burst nobody saw. A player never draws their own robe, so their own death still reads as it did: the screen desaturates and the respawn count runs down.
+
+## Vulkan client
+
+The Vulkan client (`src/client/vk`) is the new renderer, on the way to standalone VR (OpenXR on Steam Frame and Quest). SDL3 owns the window and input; the renderer is Vulkan 1.1 with classic render passes, which is what mobile drivers support best and what multiview and fragment-density-map foveation attach to. For now it draws the scene with the same ray-tracing shader as the Sokol client (the fragment stage of `shaders/scene.glsl`, compiled to SPIR-V unchanged), so it plays and looks the same, and it times every frame on the GPU with timestamp queries: the HUD's top line and the `[Perf]` log show `gpu … ms`. The analytic renderer replaces that pass next and is measured against it.
+
+It needs SDL 3.4 (`libSDL3`), a Vulkan driver, and `glslangValidator` to build (`apt install glslang-tools`, or the Vulkan SDK on Windows). Debug builds turn on the Khronos validation layer when it is installed.
+
+```bash
+./build_vk_client.sh                    # bin/nexus_client_vk
+SERVER_IP=127.0.0.1 ./bin/nexus_client_vk
+```
+
+```powershell
+.\build.ps1 -Target client_vk            # bin\nexus_client_vk.exe, with SDL3.dll beside it
+```
 
 ## Linux
 
