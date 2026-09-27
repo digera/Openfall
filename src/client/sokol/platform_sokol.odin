@@ -96,6 +96,7 @@ sokol_key :: proc(code: sapp.Keycode) -> (key: Key, ok: bool) {
 	case .BACKSPACE: return .Backspace, true
 	case .SPACE: return .Space, true
 	case .ESCAPE: return .Escape, true
+	case .E: return .E, true
 	case .G: return .G, true
 	case .Z: return .Z, true
 	case .X: return .X, true

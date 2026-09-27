@@ -12,6 +12,7 @@ entity_tick_death_respawn :: proc(entity_world: ^Entity_World, chunks: ^Ore_Chun
 		}
 		char := entity_world.characters[i]
 		id := Entity_ID(i)
+		entity_world.last_attack_age[i] += dt
 
 		if char.health <= 0 && !char.dead {
 			char.dead = true

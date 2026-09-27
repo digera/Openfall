@@ -32,6 +32,9 @@ Remote_Loop :: struct {
 	// Last spell seen in this caster's hand, so a transfer gulp plays once
 	// when the channel appears and not again while it is held.
 	heard: Spell_ID,
+	// Newest snapshot already checked for a rune throw, so each one is judged
+	// once however many frames it stays newest.
+	launch_checked_tick: u32,
 }
 
 Client_Audio :: struct {
@@ -306,6 +309,7 @@ client_audio_update :: proc(gc: ^Game_Client, dt: f32) {
 
 	client_audio_update_loop(gc, dt)
 	client_audio_update_remote_loops(gc, dt)
+	client_audio_remote_launches(gc)
 	client_audio_world_events(gc, dt)
 	client_audio_local_events(gc)
 	client_audio_capture_projectiles(world)
@@ -342,6 +346,62 @@ client_audio_update_loop :: proc(gc: ^Game_Client, dt: f32) {
 			client_audio_play(cue)
 		}
 		client_audio.loop_timer = loop_interval(kind, charge)
+	}
+}
+
+// Rise that only a rune puts on a body. A rune sets the rise to
+// max(rise, GUST_LIFT_SPEED), and snapshots are two ticks apart, so a body
+// seen within two ticks of the throw is rising at most that and at least two
+// ticks of gravity less. A jump leaves at 6.6 m/s and cannot get here; a blast
+// that could usually overshoots it.
+@(private = "file")
+RUNE_RISE_MIN :: GUST_LIFT_SPEED - 2 * CHARACTER_GRAVITY * SIMULATION_DT - 0.05
+@(private = "file")
+RUNE_RISE_MAX :: GUST_LIFT_SPEED + 0.05
+
+// Near enough a rune to have been thrown by it within the last snapshot: two
+// ticks at the speed cap is a metre of travel, and two ticks of rise half that.
+@(private = "file")
+rune_nearby :: proc(pad_pos, feet: vec3) -> bool {
+	reach := GUST_PAD_RADIUS_M + 2 * CHARACTER_MAX_SPEED * SIMULATION_DT
+	dx := feet.x - pad_pos.x
+	dy := feet.y - pad_pos.y
+	dz := feet.z - pad_pos.z
+	return dx * dx + dy * dy <= reach * reach && dz >= -0.2 && dz <= GUST_PAD_REACH_Z + 0.5
+}
+
+// Someone else thrown off a rune. There is no event for it on the wire, and the
+// owner's launch is predicted locally, so this is read from what every snapshot
+// already carries: a body whose rise has just entered the band only a rune
+// produces, next to a rune this client knows about. Runes out of the snapshot's
+// nearest four go unheard, which is also about where Mid carry gives out.
+@(private = "file")
+client_audio_remote_launches :: proc(gc: ^Game_Client) {
+	world := &gc.client_world
+	pred := &world.prediction
+	for i in 0 ..< MAX_ENTITIES {
+		slot := &client_audio.remote_loops[i]
+		remote := &world.remote_entities[i]
+		if !remote.active || remote.count < 2 || Entity_ID(i) == world.local_entity_id {
+			continue
+		}
+		if remote.ticks[0] == slot.launch_checked_tick {
+			continue
+		}
+		slot.launch_checked_tick = remote.ticks[0]
+		newer := remote.states[0]
+		older := remote.states[1]
+		if newer.dead || newer.vel.z < RUNE_RISE_MIN || newer.vel.z > RUNE_RISE_MAX ||
+		   older.vel.z >= RUNE_RISE_MIN {
+			continue
+		}
+		for k in 0 ..< pred.pad_count {
+			pad := &pred.pads[k]
+			if rune_nearby(pad.pos, newer.pos) {
+				client_audio_play_at(.Gust_Launch, .Mid, newer.pos)
+				break
+			}
+		}
 	}
 }
 
@@ -481,6 +541,9 @@ client_audio_local_events :: proc(gc: ^Game_Client) {
 
 	if pred.teleported {
 		client_audio_play(.Blink_Arrive)
+	}
+	if pred.launched {
+		client_audio_play(.Gust_Launch)
 	}
 	if pred.respawned {
 		client_audio_play(.Respawn)

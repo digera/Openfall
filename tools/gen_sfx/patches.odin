@@ -36,6 +36,7 @@ LIBRARY := [?]Library_Entry {
 	{"fizzle", make_fizzle},
 	{"land", make_land},
 	{"jump", make_jump},
+	{"gust_launch", make_gust_launch},
 }
 
 @(private)
@@ -611,5 +612,29 @@ make_jump :: proc() -> wb.Patch {
 	return patch("Jump", "play_jump", nodes[:], link([][2]string{
 		{"osc_1", "gain_1"}, {"gain_1", "out"},
 		{"noise_1", "filter_1"}, {"filter_1", "gain_2"}, {"gain_2", "out"},
+	}))
+}
+
+// Gust: thrown off a wind rune. A soft low thump as the rune kicks, then two
+// bands of air sweeping upward, the second arriving as the first thins out, so
+// the rush climbs past the ears the way the body climbs off the floor.
+
+make_gust_launch :: proc() -> wb.Patch {
+	nodes := [?]wb.Graph_Node {
+		out_node(),
+		osc("osc_1", 40, "kick", .Sine, 96, 42, 0.12, 0, 0.05, .Exp),
+		gain("gain_1", 40, "kickAmp", 0.17, 0.12, 0, 0.05),
+		noise("noise_1", 200, "rush", 0.30, 0),
+		filter("filter_1", 200, "rushBp", .Bandpass, 380, 2600, 1.3, 0.28, 0.06),
+		gain("gain_2", 200, "rushAmp", 0.15, 0.30, 0, 0.06),
+		noise("noise_2", 380, "gust", 0.24, 0.11),
+		filter("filter_2", 380, "gustBp", .Bandpass, 1400, 5200, 1.8, 0.22, 0.08),
+		gain("gain_3", 380, "gustAmp", 0.09, 0.24, 0.11, 0.08),
+		panner("panner_1", 380, "past", 0.22),
+	}
+	return patch("Gust Launch", "play_gust_launch", nodes[:], link([][2]string{
+		{"osc_1", "gain_1"}, {"gain_1", "out"},
+		{"noise_1", "filter_1"}, {"filter_1", "gain_2"}, {"gain_2", "out"},
+		{"noise_2", "filter_2"}, {"filter_2", "gain_3"}, {"gain_3", "panner_1"}, {"panner_1", "out"},
 	}))
 }

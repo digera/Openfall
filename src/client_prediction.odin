@@ -43,12 +43,31 @@ Client_Prediction :: struct {
 	mispredict_count:  int,
 	total_predictions: int,
 
+	// Gust runes near the local player, straight from the newest snapshot.
+	// The prediction launches off them itself, so they live here rather than
+	// with the other effects.
+	pads:      [MAX_SNAPSHOT_PADS]Client_Pad,
+	pad_count: int,
+
 	// Events for the presentation layer (consumed each frame)
+	launched:     bool,  // a rune threw us this tick
 	teleported:   bool,
 	respawned:    bool,
 	died:         bool,
 	damage_taken: f32,
 	healed:       f32,
+}
+
+// A Gust rune as the client knows it. `ridden` starts every snapshot as the
+// server's word and is set again by the replay, so a rune the prediction has
+// already launched off is not ridden twice before the server hears about it.
+Client_Pad :: struct {
+	id:            u8,
+	team:          Team_ID,
+	pos:           vec3,
+	life:          f32,
+	server_ridden: bool,
+	ridden:        bool,
 }
 
 Remote_Entity :: struct {
@@ -257,7 +276,30 @@ client_prediction_step :: proc(pred: ^Client_Prediction, tick: u32, input: Input
 	pred.prev_char = pred.predicted_char
 	carry_apply_predicted_drop(&pred.predicted_char, input.drop)
 	simulate_character_step(&pred.predicted_char, input, SIMULATION_DT)
+	if client_prediction_ride_pads(pred, &pred.predicted_char) {
+		pred.launched = true
+	}
 	pred.total_predictions += 1
+}
+
+// Launch off any rune the feet are on and have not ridden. Same test, same
+// throw and the same place in the tick as the server's gust_pads_tick.
+@(private = "file")
+client_prediction_ride_pads :: proc(pred: ^Client_Prediction, char: ^Character_State) -> bool {
+	if char.dead {
+		return false
+	}
+	launched := false
+	for i in 0..<pred.pad_count {
+		pad := &pred.pads[i]
+		if pad.ridden || pad.life <= 0 || !gust_pad_touches(pad.pos, char.pos) {
+			continue
+		}
+		gust_launch(char)
+		pad.ridden = true
+		launched = true
+	}
+	return launched
 }
 
 // Rewind to the authoritative state and replay every input the server has
@@ -294,6 +336,9 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 
 	old_pos := pred.predicted_char.pos
 	pred.predicted_char = server_state
+	for i in 0..<pred.pad_count {
+		pred.pads[i].ridden = pred.pads[i].server_ridden
+	}
 
 	oldest := pred.buffer_head - PREDICTION_BUFFER_SIZE
 	if oldest < 0 {
@@ -304,6 +349,7 @@ client_prediction_reconcile :: proc(pred: ^Client_Prediction, ack_input_tick: u3
 		if pred.tick_buffer[idx] > ack_input_tick {
 			carry_apply_predicted_drop(&pred.predicted_char, pred.input_buffer[idx].drop)
 			simulate_character_step(&pred.predicted_char, pred.input_buffer[idx], SIMULATION_DT)
+			client_prediction_ride_pads(pred, &pred.predicted_char)
 		}
 	}
 
@@ -515,6 +561,21 @@ client_world_note_server_tick :: proc(world: ^Client_World, tick: u32) {
 client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snapshot_Packet) {
 	client_world_note_server_tick(world, snapshot.tick_id)
 
+	// Before the local body is reconciled: the replay rides these.
+	pred := &world.prediction
+	pred.pad_count = int(snapshot.pad_count)
+	for i in 0..<pred.pad_count {
+		g := &snapshot.pads[i]
+		pred.pads[i] = Client_Pad{
+			id            = g.id,
+			team          = g.team,
+			pos           = g.pos,
+			life          = g.life,
+			server_ridden = g.ridden,
+			ridden        = g.ridden,
+		}
+	}
+
 	for i in 0..<int(snapshot.entity_count) {
 		entity := &snapshot.entities[i]
 		state := Character_State{
@@ -535,6 +596,7 @@ client_world_apply_snapshot :: proc(world: ^Client_World, snapshot: ^Server_Snap
 
 		if entity.id == world.local_entity_id {
 			world.local_team = entity.team
+			state.hop = snapshot.local_hop
 			client_prediction_reconcile(&world.prediction, snapshot.ack_input_tick, state)
 			continue
 		}
@@ -1072,6 +1134,9 @@ client_world_update :: proc(world: ^Client_World, dt: f32) {
 
 	client_world_step_chunks(world, dt)
 	client_world_step_minions(world, dt)
+	for i in 0..<world.prediction.pad_count {
+		world.prediction.pads[i].life -= dt
+	}
 
 	for i in 0..<MAX_CLIENT_IMPACTS {
 		im := &world.impacts[i]
