@@ -34,7 +34,7 @@ import "core:strconv"
 // two towers that changed this tick so cover you are standing in does not
 // wait on the HUD packet.
 
-PROTOCOL_VERSION :: u8(19)  // hop state for the owner; Gust runes
+PROTOCOL_VERSION :: u8(20)  // Client_Leave
 MAX_PACKET_SIZE  :: 1400
 
 Packet_Type :: enum u8 {
@@ -47,6 +47,7 @@ Packet_Type :: enum u8 {
 	Client_Input        = 6,
 	Server_Lobby        = 7,
 	Server_Roster       = 8,
+	Client_Leave        = 9,
 }
 
 INPUT_REDUNDANCY :: 3
@@ -632,6 +633,16 @@ read_header :: proc(r: ^Byte_Reader, expect: Packet_Type) -> bool {
 serialize_client_hello :: proc(buffer: []u8) -> int {
 	w := bw_init(buffer)
 	write_header(&w, .Client_Hello)
+	return w.ok ? w.pos : 0
+}
+
+// Header only. Telling the server we are going frees the slot and the body on
+// the tick it lands, instead of leaving the wisp standing in the lane until
+// CLIENT_TIMEOUT_SEC runs out. Mid-fight the server keeps the body anyway
+// (server_kill_claim_live), so a leave never dodges a death.
+serialize_client_leave :: proc(buffer: []u8) -> int {
+	w := bw_init(buffer)
+	write_header(&w, .Client_Leave)
 	return w.ok ? w.pos : 0
 }
 
