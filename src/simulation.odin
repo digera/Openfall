@@ -98,7 +98,7 @@ STAMINA_SPRINT_DRAIN   :: f32(24.0)   // per second while sprinting
 STAMINA_SPRINT_MIN     :: f32(40.0)   // empty bar must climb back to here before sprint will start
 
 // Aim lock burns the bar faster than a sprint, so tracking is bought with the
-// legs: about three and a half seconds of help on a full bar, and none of it
+// legs: about ten and a half seconds of help on a full bar, and none of it
 // spent running. The client asks for the lock and the server charges for it,
 // so the cost cannot be dodged by a client that stops sending the flag; that
 // also stops the assist it is asking for.

@@ -130,7 +130,7 @@ Speed is something you pick up and then fight to keep. Nothing on the ground mak
 
 **Air control.** Below run speed the air works as it always did. Above it, strafing bends your heading without bleeding speed, so a hop chain can be steered round a corner. Pulling straight back against your momentum is the only way to shed it in the air.
 
-**Landings cost health.** Every landing is charged for what you hit the ground with. Coming down faster than 11 m/s costs 6 HP per m/s past that; a normal jump and a drop off a crate are free, and a rocket jump is not. Hitting the ground faster than a sprint costs 1.2 HP per m/s past 8 m/s: a hop at 20 m/s costs about 14 HP and one at 30 m/s about 26. A chain of hops is health traded for distance. A perfect chain at 25 m/s crosses a lane (86 m) in under three and a half seconds for about 120 HP, which is how you escape a fight or catch someone leaving one. Landing damage goes through the same damage path as everything else, so it shows in your combat log. A landing that kills you is credited to whoever last hit you, if that hit was within 8 seconds: throwing someone off a pillar is a kill.
+**Landings cost health.** Every landing is charged for what you hit the ground with, both down and across, and the two charges add. Coming down faster than 11 m/s costs 6 HP per m/s past that; a normal jump and a drop off a crate are free, and a rocket jump is not. Hitting the ground faster than a sprint costs 1.2 HP per m/s of horizontal speed past 8 m/s: a hop at 20 m/s costs about 14 HP and one at 30 m/s about 26. A chain of hops is health traded for distance. A perfect chain at 25 m/s crosses a lane (86 m) in under three and a half seconds for about 120 HP, which is how you escape a fight or catch someone leaving one. Landing damage goes through the same damage path as everything else, so it shows in your combat log. A landing that kills you is credited to whoever last hit you, if that hit was within 8 seconds: throwing someone off a pillar is a kill.
 
 **Gust (E).** Darkfall's Begone, by another name. It is instant (30 mana, 2 s cooldown) and drops a wind rune 1.5 m ahead of you on whatever is below: the floor, or the top of a crate. The first time anyone steps on it (you, an ally or an enemy), it throws them 8 m/s up and adds 9 m/s along the way they were already moving; someone standing still goes the way they face. From a sprint that is 16.8 m/s, and the arc lands just short of fall damage. Runes stack: hop off one, land on the next, and the speed adds. A rune lasts 5 seconds and throws each body once, so a rune left on your escape route will also throw the person chasing you. Your own client predicts the throw the tick your feet reach the rune, so it happens with no round trip. The server still decides, and tells each client which runes it has already ridden.
 
@@ -150,7 +150,7 @@ Thunderbolt is the exception: it is a held beam with no wind-up, and nothing hap
 |---|---|---|---|---|
 | Arcane Missile | 0.6s | 0.2s | 12 | 18 + splash |
 | Arcane Orb | 1.2s | 7.0s | 40 | 55 + heavy splash; throws everyone in it, you too (30% damage, 75% throw) |
-| Friendly Heal | 1.0s | 14.0s | 40 | 50 to you and a targeted ally |
+| Friendly Heal | 1.0s | 8.0s | 40 | 32 to you over the cooldown; an instant 50 to an ally in reach |
 | Frost Lance | 0.9s | 4.5s | 32 | 68, pierces 4 |
 | Call Lightning | 1.8s | 8.0s | 60 | 85 on the target + 40% splash in 2.5 m |
 | Thunderbolt | held | 2.0s after running dry | 24/s | 55/s on the first body under the crosshair, 50% arcing to up to 2 more within 6 m |
@@ -198,7 +198,7 @@ Strikes are instantaneous, so there is no projectile for the client to watch van
 
 Holding the right mouse button leans on the sticky target: the view is drawn toward it at 3.5 rad/s rather than snapped there, so what you get is tracking help, not a shot placed for you. It pulls to `strike_center`, the same point the server validates a cast against, so the crosshair settles exactly where a strike is legal.
 
-It is paid for in legs. Aim lock empties the stamina bar at 28/s against the 24/s a sprint costs, which is about three and a half seconds from full, and it cannot be held while sprinting. Tracking therefore costs you the ability to close or break away, and the server charges for it rather than the client: the flag only goes up on the wire when the lock actually ran, and the drain happens in the shared simulation both ends step.
+It is paid for in legs. Aim lock empties the stamina bar at 28/s against the 24/s a sprint costs, which is about ten and a half seconds from full, and it cannot be held while sprinting. Tracking therefore costs you the ability to close or break away, and the server charges for it rather than the client: the flag only goes up on the wire when the lock actually ran, and the drain happens in the shared simulation both ends step.
 
 The lock needs a healthy bar (20) to engage but runs until the bar is dry, so it does not chatter on and off around the threshold. It ends when the button comes up, the bar empties, the target dies or stops being hostile, the player dies, or the mouse unlocks.
 
