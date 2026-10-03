@@ -197,6 +197,7 @@ main :: proc() {
 
 	fmt.println("\n=== Test Complete ===")
 	test_client_print_stats(client)
+	network_client_send_leave(&client.network)
 	network_client_shutdown(&client.network)
 }
 
