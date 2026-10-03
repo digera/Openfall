@@ -77,6 +77,7 @@ Game_Client :: struct {
 	// Menu state
 	menu_selected:  int, // selected menu item (0-based)
 	is_spectating:  bool, // spectator mode
+	spectator_keepalive_timer: f32, // counts down to the next keepalive input
 
 	// Aim lock is latched rather than re-tested every frame: it takes a
 	// healthy bar to engage but runs until the bar is dry, so a lock does not
@@ -205,6 +206,10 @@ client_frame :: proc() {
 			client_handle_input(gc, dt)
 			client_step_simulation(gc, dt)
 		}
+	}
+
+	if (gc.phase == .Playing || gc.phase == .In_Menu) && gc.is_spectating {
+		client_spectator_keepalive(gc, dt)
 	}
 
 	client_audio_update(gc, dt)
@@ -378,6 +383,28 @@ client_poll_network :: proc(gc: ^Game_Client) {
 			client_world_apply_roster(&gc.client_world, &roster)
 		}
 	}
+}
+
+// A spectator has no body to step, so client_step_simulation sends nothing for
+// it, and the server drops any slot it has not heard from in
+// CLIENT_TIMEOUT_SEC. Once a second, menu open or not, a spectator sends one
+// hands-down input; the server takes it as proof of life and queues nothing.
+SPECTATOR_KEEPALIVE_SEC :: f32(1.0)
+
+@(private = "file")
+client_spectator_keepalive :: proc(gc: ^Game_Client, dt: f32) {
+	gc.spectator_keepalive_timer -= dt
+	if gc.spectator_keepalive_timer > 0 {
+		return
+	}
+	gc.spectator_keepalive_timer = SPECTATOR_KEEPALIVE_SEC
+	gc.client_world.client_tick += 1
+	packet := Client_Input_Packet{
+		newest_tick = gc.client_world.client_tick,
+		count       = 1,
+	}
+	packet.inputs[0] = input_quantize(Input_State{yaw = gc.view_yaw, pitch = gc.view_pitch})
+	network_client_send_input(&gc.network, &packet)
 }
 
 // Mouse look is applied to the view immediately (not quantized to sim ticks);

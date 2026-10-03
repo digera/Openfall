@@ -317,6 +317,12 @@ server_process_packets :: proc(server: ^Server) {
 			}
 			client := &server.clients[slot]
 			client.last_packet = time.tick_now()
+			// A spectator has no body for an input to drive. Its client sends
+			// one now and then only to be heard from, and queueing those would
+			// hand stale ticks to the body it next joins with.
+			if client.entity_id == INVALID_ENTITY {
+				continue
+			}
 			for k in 0..<int(pkt.count) {
 				tick := pkt.newest_tick - u32(k)
 				client_queue_input(client, tick, pkt.inputs[k])
