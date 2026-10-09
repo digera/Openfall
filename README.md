@@ -120,7 +120,7 @@ Pressing Esc while playing opens the game menu and releases the mouse. From the 
 - **Spectate** (4): Leave your playing body and observe the match. You can look around freely but cannot cast spells or interact.
 - **Resume**: Press Esc again to close the menu and return to the game (or to spectating).
 
-Opening the menu does not drop your current charge or target unless the existing unlock path already did so.
+Opening the menu lets go of every control: movement, aim lock, the current charge and the target. The match does not pause: your body stays in the lane and can still be hit, and the client keeps sending it hands-down inputs so the server does not time you out while the menu is open.
 
 ## Movement
 
