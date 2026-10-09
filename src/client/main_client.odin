@@ -221,6 +221,9 @@ client_frame :: proc() {
 }
 
 client_cleanup :: proc() {
+	// Closing the window is the one exit we know is on purpose. Sent from any
+	// phase: a server that never seated us has no slot for it and drops it.
+	network_client_send_leave(&game_client.network)
 	network_client_shutdown(&game_client.network)
 	client_renderer_shutdown(&game_client.renderer)
 	client_audio_shutdown()

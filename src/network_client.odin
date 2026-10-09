@@ -93,6 +93,20 @@ network_client_send_hello :: proc(client: ^Network_Client) -> bool {
 	return client_send_raw(client, buffer[:], serialize_client_hello(buffer[:]))
 }
 
+// Sent three times for the same reason inputs carry two old ones: there is no
+// reply to wait for on the way out, so one lost datagram would leave the body
+// standing until the server times it out. The server acts on the first that
+// arrives; the rest change nothing.
+LEAVE_COPIES :: 3
+
+network_client_send_leave :: proc(client: ^Network_Client) {
+	buffer: [16]u8
+	size := serialize_client_leave(buffer[:])
+	for _ in 0..<LEAVE_COPIES {
+		client_send_raw(client, buffer[:], size)
+	}
+}
+
 network_client_send_join :: proc(client: ^Network_Client, team: Team_ID, name := Player_Name{}) -> bool {
 	buffer: [32]u8
 	packet := Client_Join_Packet{team = team, name = name}

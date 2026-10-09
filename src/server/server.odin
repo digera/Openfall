@@ -30,6 +30,10 @@ Client_Slot :: struct {
 	input_count:  int,
 	last_applied_tick: u32,
 	has_applied:  bool,
+
+	// Said it was leaving while still owed a death. The body waits out
+	// CLIENT_TIMEOUT_SEC; this only keeps the leave's three copies to one line.
+	left_mid_fight: bool,
 }
 
 Server :: struct {
@@ -321,8 +325,48 @@ server_process_packets :: proc(server: ^Server) {
 				tick := pkt.newest_tick - u32(k)
 				client_queue_input(client, tick, pkt.inputs[k])
 			}
+
+		case .Client_Leave:
+			// Only the slot the packet came from, the same match inputs use, so
+			// nobody can remove anyone but themselves. Once a leave has removed
+			// the slot, the later copies find none and stop here.
+			if slot < 0 {
+				continue
+			}
+			// Quitting is not an escape. While a hit still has its claim on the
+			// kill (KILL_CREDIT_SEC), the leave is ignored and the body stays
+			// for CLIENT_TIMEOUT_SEC, the same as a player who simply went quiet,
+			// so whoever drew blood can still finish it.
+			client := &server.clients[slot]
+			id := client.entity_id
+			if server_kill_claim_live(server, id) {
+				if !client.left_mid_fight {
+					client.left_mid_fight = true
+					fmt.printf("[Server] Client %v left mid-fight, entity %d stays until timeout\n",
+						client.addr, id)
+				}
+				continue
+			}
+			fmt.printf("[Server] Client %v left, removing entity %d\n",
+				client.addr, id)
+			server_remove_client(server, slot)
 		}
 	}
+}
+
+// Someone other than this body drew blood on it recently enough to still be
+// owed the kill: the same test combat_record_death uses to credit one. A hard
+// landing or a body's own blast is not a claim.
+@(private = "file")
+server_kill_claim_live :: proc(server: ^Server, id: Entity_ID) -> bool {
+	if id == INVALID_ENTITY || id >= MAX_ENTITIES {
+		return false
+	}
+	attacker := server.world.last_attacker[id]
+	if attacker == INVALID_ENTITY || attacker == id {
+		return false
+	}
+	return server.world.last_attack_age[id] <= KILL_CREDIT_SEC
 }
 
 server_find_client :: proc(server: ^Server, addr: net.Endpoint) -> int {
