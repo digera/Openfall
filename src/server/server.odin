@@ -1020,7 +1020,7 @@ server_send_snapshots :: proc(server: ^Server) {
 // Unlike a snapshot this is not interest-managed. A scoreboard that only knew
 // about the players you happened to be standing near would be worse than no
 // scoreboard, and the name over a target has to survive them stepping out of
-// your nearest-21 for a moment.
+// the nearest MAX_SNAPSHOT_ENTITIES for a moment.
 
 #assert(MAX_CLIENTS + MAX_BOTS <= MAX_ROSTER_ENTRIES)
 
