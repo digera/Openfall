@@ -1070,10 +1070,10 @@ bool minion_trace(vec3 ro, vec3 rd, float tmax, out float t, out vec3 n, out int
 //
 // The body is two stacked open frusta, shoulder -> waist -> hem, so the profile
 // bells out rather than tilting like a lampshade. The waist and hem ring
-// centres are simulated on the CPU as a chain of pendulums (robe_waists[i].xyz,
-// robes[i].xyz): motion reaches the waist first and the hem later, so the cloth
-// bends and flows rather than tilting whole. The wall slopes are blended across
-// the waist so the bend shades smoothly.
+// centres come from a cloth simulated on the CPU (robe_simulate;
+// robe_waists[i].xyz, robes[i].xyz): motion reaches the waist first and the hem
+// later, so the cloth bends and flows rather than tilting whole. The wall
+// slopes are blended across the waist so the bend shades smoothly.
 //
 // The hood is an ellipsoid leaned back so its peak droops behind, draped over
 // the shoulder ring, with an opening cut toward the front. Through it is the

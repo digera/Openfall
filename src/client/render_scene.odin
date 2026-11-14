@@ -125,8 +125,6 @@ render_scene_build :: proc(scene: ^Render_Scene, sb: ^Scene_Builder, gc: ^Game_C
 	scene^ = {}
 	dt := f32(platform_frame_duration())
 	sb.world_t += dt
-	// A hitch must not launch the hem springs, and the sim divides by dt
-	robe_dt := clampf(dt, ROBE_SIM_DT_MIN, ROBE_SIM_DT_MAX)
 
 	world := &gc.client_world
 	pred := &world.prediction
@@ -368,8 +366,9 @@ render_scene_build :: proc(scene: ^Render_Scene, sb: ^Scene_Builder, gc: ^Game_C
 			// as it is hurt.
 			scale := 0.82 + 0.18 * hp
 			yaw := remote.display_state.yaw
-			robe_simulate(robe, remote.display_state.vel, yaw, scale, sb.world_t, phase, robe_dt, dead)
-			waist := pos + vec3{0, 0, ROBE_SHOULDER_Z_M * scale} + robe.waist_off
+			shoulder := pos + vec3{0, 0, ROBE_SHOULDER_Z_M * scale}
+			robe_simulate(robe, shoulder, yaw, scale, remote.display_state.pos.z, remote.display_state.on_ground, phase, dt, dead)
+			waist := shoulder + robe.waist_off
 			hem := waist + robe.hem_off
 			scene.robes[k] = {hem.x, hem.y, hem.z, yaw}
 			scene.robe_waists[k] = {waist.x, waist.y, waist.z, robe.hem_yaw}
